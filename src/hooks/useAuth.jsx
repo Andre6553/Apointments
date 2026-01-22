@@ -9,49 +9,56 @@ export const AuthProvider = ({ children }) => {
     const [loading, setLoading] = useState(true)
 
     useEffect(() => {
-        let isMounted = true
+        let mounted = true
 
-        // Timeout fallback - if Supabase doesn't respond in 15 seconds, proceed anyway
-        const timeoutId = setTimeout(() => {
-            if (isMounted && loading) {
-                console.warn('Auth check timed out - proceeding without session')
+        // 1. Safety Valve: Force loading to false after 5s if nothing else works
+        const safetyTimer = setTimeout(() => {
+            if (mounted && loading) {
+                console.warn("Auth check timed out - forcing app load")
                 setLoading(false)
             }
-        }, 15000)
+        }, 5000)
 
-        // Check active sessions and sets the user
-        supabase.auth.getSession()
-            .then(({ data: { session } }) => {
-                if (isMounted) {
-                    setUser(session?.user ?? null)
-                    if (session?.user) fetchProfile(session.user.id)
-                    setLoading(false)
-                }
-            })
-            .catch((err) => {
-                console.error("Auth session check failed:", err)
-                if (isMounted) {
-                    setUser(null)
-                    setLoading(false)
-                }
-            })
+        // 2. Async initialization
+        const initAuth = async () => {
+            try {
+                // Check active session
+                const { data: { session }, error } = await supabase.auth.getSession()
+                if (error) throw error
 
-        // Listen for changes on auth state (logged in, signed out, etc.)
+                if (mounted && session?.user) {
+                    setUser(session.user)
+                    await fetchProfile(session.user.id)
+                }
+            } catch (error) {
+                console.error("Auth Init Error (Offline likely):", error)
+            } finally {
+                // CRITICAL: Always turn off loading, success or fail
+                if (mounted) setLoading(false)
+            }
+        }
+
+        initAuth()
+
+        // 3. Real-time listener
         const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
-            if (isMounted) {
+            if (mounted) {
                 setUser(session?.user ?? null)
+
                 if (session?.user) {
                     await fetchProfile(session.user.id)
                 } else {
                     setProfile(null)
                 }
+
+                // Also ensure loading is off here in case listener fires first
                 setLoading(false)
             }
         })
 
         return () => {
-            isMounted = false
-            clearTimeout(timeoutId)
+            mounted = false
+            clearTimeout(safetyTimer)
             subscription.unsubscribe()
         }
     }, [])
