@@ -11,10 +11,15 @@ export const AuthProvider = ({ children }) => {
     useEffect(() => {
         let mounted = true
 
-        // 1. Safety Valve: Force loading to false after 5s if nothing else works
+        // 1. Safety Valve: Force loading to false and CLEAR BAD SESSION if timeout occurs
         const safetyTimer = setTimeout(() => {
             if (mounted && loading) {
-                console.warn("Auth check timed out - forcing app load")
+                console.warn("Auth check timed out - forcing app load & clearing potential stuck session")
+                // Auto-heal: If we are stuck, it's likely a bad token in local storage. Kill it.
+                localStorage.removeItem('sb-' + import.meta.env.VITE_SUPABASE_URL?.split('.')[0]?.split('//')[1] + '-auth-token')
+                // Also standard clear just in case
+                localStorage.clear()
+
                 setLoading(false)
             }
         }, 5000)
