@@ -7,22 +7,19 @@ export const AuthProvider = ({ children }) => {
     const [user, setUser] = useState(null)
     const [profile, setProfile] = useState(null)
     const [loading, setLoading] = useState(true)
+    const [connectionError, setConnectionError] = useState(null)
 
     useEffect(() => {
         let mounted = true
 
-        // 1. Safety Valve: Force loading to false and CLEAR BAD SESSION if timeout occurs
+        // 1. Safety Valve: If initialization takes too long, we assume connection failure
         const safetyTimer = setTimeout(() => {
             if (mounted && loading) {
-                console.warn("Auth check timed out - forcing app load & clearing potential stuck session")
-                // Auto-heal: If we are stuck, it's likely a bad token in local storage. Kill it.
-                localStorage.removeItem('sb-' + import.meta.env.VITE_SUPABASE_URL?.split('.')[0]?.split('//')[1] + '-auth-token')
-                // Also standard clear just in case
-                localStorage.clear()
-
+                console.warn("Auth check timed out - assuming network blockage")
+                setConnectionError("Connection timed out. Please check your internet or Supabase status.")
                 setLoading(false)
             }
-        }, 5000)
+        }, 8000) // 8 seconds grace period
 
         // 2. Async initialization
         const initAuth = async () => {
@@ -33,12 +30,14 @@ export const AuthProvider = ({ children }) => {
 
                 if (mounted && session?.user) {
                     setUser(session.user)
-                    await fetchProfile(session.user.id)
+                    // Fire-and-forget profile fetch
+                    fetchProfile(session.user.id).catch(err => console.warn("Profile fetch warning:", err))
                 }
             } catch (error) {
-                console.error("Auth Init Error (Offline likely):", error)
+                console.error("Auth Init Error:", error)
+                // If getSession throws (e.g. network error), we catch it here
+                if (mounted) setConnectionError(error.message || "Failed to connect to authentication server")
             } finally {
-                // CRITICAL: Always turn off loading, success or fail
                 if (mounted) setLoading(false)
             }
         }
@@ -48,15 +47,16 @@ export const AuthProvider = ({ children }) => {
         // 3. Real-time listener
         const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
             if (mounted) {
+                // If we get an event, connection is alive, so clear error
+                setConnectionError(null)
                 setUser(session?.user ?? null)
 
                 if (session?.user) {
-                    await fetchProfile(session.user.id)
+                    fetchProfile(session.user.id).catch(console.error)
                 } else {
                     setProfile(null)
                 }
 
-                // Also ensure loading is off here in case listener fires first
                 setLoading(false)
             }
         })
@@ -81,7 +81,7 @@ export const AuthProvider = ({ children }) => {
     const signOut = () => supabase.auth.signOut()
 
     return (
-        <AuthContext.Provider value={{ user, profile, loading, signOut, fetchProfile }}>
+        <AuthContext.Provider value={{ user, profile, loading, connectionError, signOut, fetchProfile }}>
             {children}
         </AuthContext.Provider>
     )
