@@ -9,25 +9,51 @@ export const AuthProvider = ({ children }) => {
     const [loading, setLoading] = useState(true)
 
     useEffect(() => {
+        let isMounted = true
+
+        // Timeout fallback - if Supabase doesn't respond in 15 seconds, proceed anyway
+        const timeoutId = setTimeout(() => {
+            if (isMounted && loading) {
+                console.warn('Auth check timed out - proceeding without session')
+                setLoading(false)
+            }
+        }, 15000)
+
         // Check active sessions and sets the user
-        const session = supabase.auth.getSession().then(({ data: { session } }) => {
-            setUser(session?.user ?? null)
-            if (session?.user) fetchProfile(session.user.id)
-            setLoading(false)
-        })
+        supabase.auth.getSession()
+            .then(({ data: { session } }) => {
+                if (isMounted) {
+                    setUser(session?.user ?? null)
+                    if (session?.user) fetchProfile(session.user.id)
+                    setLoading(false)
+                }
+            })
+            .catch((err) => {
+                console.error("Auth session check failed:", err)
+                if (isMounted) {
+                    setUser(null)
+                    setLoading(false)
+                }
+            })
 
         // Listen for changes on auth state (logged in, signed out, etc.)
         const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
-            setUser(session?.user ?? null)
-            if (session?.user) {
-                await fetchProfile(session.user.id)
-            } else {
-                setProfile(null)
+            if (isMounted) {
+                setUser(session?.user ?? null)
+                if (session?.user) {
+                    await fetchProfile(session.user.id)
+                } else {
+                    setProfile(null)
+                }
+                setLoading(false)
             }
-            setLoading(false)
         })
 
-        return () => subscription.unsubscribe()
+        return () => {
+            isMounted = false
+            clearTimeout(timeoutId)
+            subscription.unsubscribe()
+        }
     }, [])
 
     const fetchProfile = async (userId) => {
