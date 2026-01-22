@@ -105,6 +105,8 @@ const Auth = () => {
                                             <User className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-primary transition-colors" size={18} />
                                             <input
                                                 type="text"
+                                                name="fullName"
+                                                autoComplete="name"
                                                 value={fullName}
                                                 onChange={(e) => setFullName(e.target.value)}
                                                 className="glass-input w-full pl-12"
@@ -139,6 +141,8 @@ const Auth = () => {
                                 <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-primary transition-colors" size={18} />
                                 <input
                                     type="email"
+                                    name="email"
+                                    autoComplete="email"
                                     value={email}
                                     onChange={(e) => setEmail(e.target.value)}
                                     className="glass-input w-full pl-12"
@@ -154,6 +158,8 @@ const Auth = () => {
                                 <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-primary transition-colors" size={18} />
                                 <input
                                     type="password"
+                                    name="password"
+                                    autoComplete={isSignUp ? "new-password" : "current-password"}
                                     value={password}
                                     onChange={(e) => setPassword(e.target.value)}
                                     className="glass-input w-full pl-12"
