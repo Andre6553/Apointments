@@ -168,7 +168,7 @@ const Reports = () => {
                         <AlertTriangle size={24} />
                     </div>
                     <div>
-                        <p className="text-slate-500 text-xs font-bold uppercase tracking-wider">Delayed (>5m)</p>
+                        <p className="text-slate-500 text-xs font-bold uppercase tracking-wider">Delayed (&gt;5m)</p>
                         <h3 className="text-2xl font-bold text-white">{stats.delayed}</h3>
                     </div>
                 </div>
