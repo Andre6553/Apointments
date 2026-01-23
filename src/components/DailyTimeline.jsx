@@ -169,12 +169,12 @@ const DailyTimeline = ({ selectedDate = new Date() }) => {
 
             <div className="relative p-6 h-[600px] overflow-y-auto scrollbar-hide">
                 {loading ? (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/50 backdrop-blur-sm z-10 text-slate-500">
+                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/50 backdrop-blur-sm z-50 text-slate-500">
                         <Loader2 className="w-8 h-8 animate-spin mb-2" />
                         <span className="text-sm font-medium">Syncing timeline...</span>
                     </div>
                 ) : (
-                    <div className="relative h-[800px] mt-4 ml-12">
+                    <div className="relative h-[1200px] mt-4 ml-12">
                         {/* Hour Grid */}
                         {hours.map(m => (
                             <div
@@ -231,17 +231,18 @@ const DailyTimeline = ({ selectedDate = new Date() }) => {
                                 style={{
                                     top: `${getPosition(event.start)}%`,
                                     height: `${getDurationHeight(event.duration)}%`,
-                                    minHeight: '40px',
                                     zIndex: 5
                                 }}
                             >
-                                <div className="flex items-center gap-1.5 overflow-hidden">
-                                    {event.type === 'appointment' ? <User size={10} className="shrink-0" /> : <Coffee size={10} className="shrink-0" />}
-                                    <span className="text-[10px] font-bold truncate leading-tight">{event.label}</span>
+                                <div className="flex items-center gap-1 overflow-hidden min-h-[14px]">
+                                    {event.type === 'appointment' ? <User size={9} className="shrink-0" /> : <Coffee size={9} className="shrink-0" />}
+                                    <span className="text-[9px] font-extrabold truncate leading-none">{event.label}</span>
                                 </div>
-                                <span className="text-[8px] font-bold opacity-60 leading-none mt-0.5">
-                                    {format(event.start, 'HH:mm')} ({event.duration}m)
-                                </span>
+                                {event.duration >= 15 && (
+                                    <span className="text-[8px] font-bold opacity-60 leading-none mt-0.5">
+                                        {format(event.start, 'HH:mm')} ({event.duration}m)
+                                    </span>
+                                )}
 
                                 {event.type === 'appointment' && (
                                     <div className="absolute top-2 right-2 flex items-center gap-1">
