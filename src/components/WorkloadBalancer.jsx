@@ -34,7 +34,7 @@ const WorkloadBalancer = () => {
             // 1. Find delayed appointments (delay > 15 mins)
             const { data: delayed, error: delayedError } = await supabase
                 .from('appointments')
-                .select('*, client:clients(first_name, last_name), profile:profiles(full_name)')
+                .select('*, client:clients(first_name, last_name), profile:profiles!appointments_assigned_profile_id_fkey(full_name)')
                 .gt('delay_minutes', 15)
                 .eq('status', 'pending')
 
@@ -116,7 +116,7 @@ const WorkloadBalancer = () => {
                     <div className="flex -space-x-2">
                         {freeProviders.slice(0, 3).map((p, i) => (
                             <div key={i} className="w-8 h-8 rounded-full bg-indigo-500 flex items-center justify-center text-[10px] font-bold border-2 border-slate-900">
-                                {p.full_name.charAt(0)}
+                                {p.full_name?.charAt(0) || '?'}
                             </div>
                         ))}
                     </div>

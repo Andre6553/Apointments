@@ -1,33 +1,58 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
-import { Play, Square, AlertCircle, Clock, ArrowRight, Plus, Timer, Calendar as CalendarIcon, Loader2, CheckCircle2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { format } from 'date-fns';
+import { format, isSameDay } from 'date-fns';
+import { useAuth } from '../hooks/useAuth';
 import AddAppointmentModal from './AddAppointmentModal';
+import { Edit2, Play, Square, AlertCircle, Clock, ArrowRight, Plus, Timer, Calendar as CalendarIcon, Loader2, CheckCircle2 } from 'lucide-react';
+import TransferModal from './TransferModal';
 import { calculateAndApplyDelay } from '../lib/delayEngine';
+import { getCache, setCache, CACHE_KEYS } from '../lib/cache';
 
 const AppointmentList = () => {
-    const [appointments, setAppointments] = useState([]);
-    const [loading, setLoading] = useState(true);
+    const { user, profile } = useAuth();
+    const [appointments, setAppointments] = useState(() => getCache(CACHE_KEYS.APPOINTMENTS) || []);
+    const [loading, setLoading] = useState(!getCache(CACHE_KEYS.APPOINTMENTS));
     const [isModalOpen, setIsModalOpen] = useState(false);
+    const [isTransferOpen, setIsTransferOpen] = useState(false);
+    const [editData, setEditData] = useState(null);
+    const [selectedApt, setSelectedApt] = useState(null);
 
-    const fetchAppointments = async () => {
-        setLoading(true);
+    const fetchAppointments = async (silent = false, useOptimistic = false) => {
+        if (useOptimistic) {
+            const cached = getCache(CACHE_KEYS.APPOINTMENTS);
+            if (cached) setAppointments(cached);
+        }
+        if (!silent) setLoading(true);
         const { data, error } = await supabase
             .from('appointments')
             .select(`
                 *,
-                client:clients(first_name, last_name, phone)
+                client:clients(first_name, last_name, phone),
+                provider:profiles!appointments_assigned_profile_id_fkey(full_name)
             `)
+            .or(`status.eq.active,status.eq.pending`)
             .order('scheduled_start', { ascending: true });
 
-        if (data) setAppointments(data);
+        if (data) {
+            setAppointments(data);
+            setCache(CACHE_KEYS.APPOINTMENTS, data);
+        }
         setLoading(false);
     };
 
     useEffect(() => {
+        if (!user) return;
         fetchAppointments();
-    }, []);
+
+        const channel = supabase.channel('list-updates')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'appointments' }, () => fetchAppointments(true))
+            .subscribe();
+
+        return () => {
+            supabase.removeChannel(channel);
+        };
+    }, [user]);
 
     const startAppointment = async (id) => {
         const startTime = new Date().toISOString();
@@ -71,9 +96,19 @@ const AppointmentList = () => {
 
             <AddAppointmentModal
                 isOpen={isModalOpen}
-                onClose={() => setIsModalOpen(false)}
+                onClose={() => { setIsModalOpen(false); setEditData(null); }}
                 onRefresh={fetchAppointments}
+                editData={editData}
             />
+
+            {selectedApt && (
+                <TransferModal
+                    isOpen={isTransferOpen}
+                    onClose={() => { setIsTransferOpen(false); setSelectedApt(null); }}
+                    appointment={selectedApt}
+                    onComplete={fetchAppointments}
+                />
+            )}
 
             <div className="space-y-4">
                 {loading ? (
@@ -122,6 +157,11 @@ const AppointmentList = () => {
                                         </div>
                                     </>
                                 )}
+                                {isSameDay(new Date(apt.scheduled_start), new Date()) && apt.status === 'pending' && (
+                                    <div className="absolute top-4 right-4 px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-500 text-[8px] font-bold uppercase tracking-widest">
+                                        Today
+                                    </div>
+                                )}
 
                                 <div className="p-6 flex flex-col md:flex-row md:items-center gap-6 md:gap-8">
                                     {/* Time Block */}
@@ -140,6 +180,9 @@ const AppointmentList = () => {
                                             <h4 className="font-heading font-bold text-white text-xl">
                                                 {apt.client?.first_name} {apt.client?.last_name}
                                             </h4>
+                                            <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-1">
+                                                By {apt.provider?.full_name || 'Unassigned'}
+                                            </p>
                                             <div className="flex items-center gap-2 mt-2">
                                                 <span className={`text-[10px] font-bold uppercase tracking-widest px-2.5 py-1 rounded-lg border ${apt.status === 'completed' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' :
                                                     apt.status === 'active' ? 'bg-primary/10 text-primary border-primary/20' :
@@ -157,6 +200,9 @@ const AppointmentList = () => {
                                             <h4 className="font-heading font-bold text-2xl text-white group-hover:text-primary/90 transition-colors">
                                                 {apt.client?.first_name} {apt.client?.last_name}
                                             </h4>
+                                            <span className="text-[10px] font-bold text-slate-500 bg-white/5 px-2 py-0.5 rounded border border-white/5 uppercase tracking-widest">
+                                                {apt.provider?.full_name || 'Unassigned'}
+                                            </span>
                                             {apt.delay_minutes > 0 && (
                                                 <span className="bg-red-500/10 text-red-400 text-[10px] font-bold px-2 py-0.5 rounded-full border border-red-500/20 flex items-center gap-1">
                                                     <AlertCircle size={12} className="stroke-[3]" /> +{apt.delay_minutes}m Delay
@@ -170,7 +216,7 @@ const AppointmentList = () => {
                                             </span>
                                             <span className="flex items-center gap-2">
                                                 <ArrowRight size={14} className="text-slate-600" />
-                                                Ends {format(new Date(new Date(apt.scheduled_start).getTime() + (apt.duration_minutes + apt.delay_minutes) * 60000), 'HH:mm')}
+                                                Ends {format(new Date(new Date(apt.scheduled_start).getTime() + (apt.duration_minutes + (apt.delay_minutes || 0)) * 60000), 'HH:mm')}
                                             </span>
                                         </div>
 
@@ -184,13 +230,29 @@ const AppointmentList = () => {
                                     {/* Actions */}
                                     <div className="flex items-center justify-end md:min-w-[180px] pt-4 md:pt-0 border-t border-white/5 md:border-0">
                                         {apt.status === 'pending' && (
-                                            <button
-                                                onClick={() => startAppointment(apt.id)}
-                                                className="w-full md:w-auto h-12 px-6 rounded-xl bg-surface hover:bg-primary text-slate-300 hover:text-white border border-white/5 hover:border-primary/50 transition-all duration-300 font-bold flex items-center justify-center gap-2 group/btn shadow-lg"
-                                            >
-                                                <Play size={16} className="fill-current group-hover/btn:scale-110 transition-transform" />
-                                                <span>Start</span>
-                                            </button>
+                                            <div className="flex items-center gap-2">
+                                                <button
+                                                    onClick={() => startAppointment(apt.id)}
+                                                    className="w-full md:w-auto h-12 px-6 rounded-xl bg-surface hover:bg-primary text-slate-300 hover:text-white border border-white/5 hover:border-primary/50 transition-all duration-300 font-bold flex items-center justify-center gap-2 group/btn shadow-lg"
+                                                >
+                                                    <Play size={16} className="fill-current group-hover/btn:scale-110 transition-transform" />
+                                                    <span>Start</span>
+                                                </button>
+                                                <button
+                                                    onClick={() => { setEditData(apt); setIsModalOpen(true); }}
+                                                    className="p-3 rounded-xl bg-surface hover:bg-white/5 text-slate-500 hover:text-amber-400 border border-white/5 transition-all group"
+                                                    title="Edit Appointment"
+                                                >
+                                                    <Edit2 size={18} />
+                                                </button>
+                                                <button
+                                                    onClick={() => { setSelectedApt(apt); setIsTransferOpen(true); }}
+                                                    className="p-3 rounded-xl bg-surface hover:bg-white/5 text-slate-500 hover:text-primary border border-white/5 transition-all group"
+                                                    title="Transfer Appointment"
+                                                >
+                                                    <ArrowRight size={18} className="group-hover:translate-x-1 transition-transform" />
+                                                </button>
+                                            </div>
                                         )}
                                         {apt.status === 'active' && (
                                             <button

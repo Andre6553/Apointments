@@ -4,9 +4,14 @@ import { useAuth } from '../hooks/useAuth';
 import { motion, AnimatePresence } from 'framer-motion';
 import ClientList from './ClientList';
 import AppointmentList from './AppointmentList';
-import BreakManagement from './BreakManagement';
+import DailyTimeline from './DailyTimeline';
+import ScheduleSettings from './ScheduleSettings';
 import WorkloadBalancer from './WorkloadBalancer';
 import Reports from './Reports';
+import NotificationCenter from './NotificationCenter';
+import TransferResponseModal from './TransferResponseModal';
+import ProfileSettings from './ProfileSettings';
+import ErrorBoundary from './ErrorBoundary';
 import {
     Users,
     Calendar,
@@ -18,29 +23,61 @@ import {
     Menu,
     X,
     LayoutDashboard,
-    Sparkles
+    Sparkles,
+    Settings,
+    User,
+    AlertTriangle
 } from 'lucide-react';
 
 const Dashboard = () => {
     const { user, profile, signOut } = useAuth();
     const [activeTab, setActiveTab] = useState('appointments');
     const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+    const [currentTime, setCurrentTime] = useState(new Date());
+    const [selectedNotification, setSelectedNotification] = useState(null);
+    const [isResponseModalOpen, setIsResponseModalOpen] = useState(false);
+
+    useEffect(() => {
+        const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+        return () => clearInterval(timer);
+    }, []);
 
     const tabs = [
-        { id: 'appointments', label: 'Schedule', icon: Calendar, color: 'text-primary' },
+        { id: 'appointments', label: 'Dashboard', icon: Calendar, color: 'text-primary' },
         { id: 'clients', label: 'Clients', icon: Users, color: 'text-secondary' },
-        { id: 'breaks', label: 'Breaks', icon: Clock, color: 'text-orange-400' },
+        { id: 'schedule', label: 'Schedule', icon: Clock, color: 'text-orange-400' },
         { id: 'balancer', label: 'Workload', icon: Scale, color: 'text-purple-400' },
         { id: 'reports', label: 'Reports', icon: FileText, color: 'text-blue-400' },
+        { id: 'profile', label: 'Profile', icon: User, color: 'text-emerald-400' },
     ];
 
-    const ActiveComponent = {
-        appointments: AppointmentList,
-        clients: ClientList,
-        breaks: BreakManagement,
-        balancer: WorkloadBalancer,
-        reports: Reports,
-    }[activeTab];
+    const activeTabData = tabs.find(t => t.id === activeTab) || tabs[0];
+
+    const renderActiveComponent = () => {
+        const components = {
+            appointments: (
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+                    <div className="lg:col-span-8">
+                        <AppointmentList />
+                    </div>
+                    <div className="lg:col-span-4">
+                        <DailyTimeline />
+                    </div>
+                </div>
+            ),
+            clients: <ClientList />,
+            schedule: <ScheduleSettings />,
+            balancer: <WorkloadBalancer />,
+            reports: <Reports />,
+            profile: <ProfileSettings />
+        };
+
+        return (
+            <ErrorBoundary key={activeTab}>
+                {components[activeTab] || components.appointments}
+            </ErrorBoundary>
+        );
+    };
 
     return (
         <div className="min-h-screen flex flex-col md:flex-row font-sans overflow-hidden">
@@ -118,7 +155,10 @@ const Dashboard = () => {
                 </div>
 
                 <div className="mt-8 space-y-4">
-                    <div className="p-4 rounded-3xl bg-surface/50 border border-white/5 backdrop-blur-md relative overflow-hidden group">
+                    <button
+                        onClick={() => setActiveTab('profile')}
+                        className="w-full text-left p-4 rounded-3xl bg-surface/50 border border-white/5 backdrop-blur-md relative overflow-hidden group transition-all hover:border-primary/30"
+                    >
                         <div className="absolute inset-0 bg-gradient-to-br from-primary/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
                         <div className="flex items-center gap-3 relative z-10">
                             <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-slate-700 to-slate-800 flex items-center justify-center font-bold text-xl text-primary border border-white/10 shadow-inner">
@@ -126,10 +166,16 @@ const Dashboard = () => {
                             </div>
                             <div className="overflow-hidden">
                                 <p className="text-sm font-bold text-white truncate font-heading">{profile?.full_name || 'My Profile'}</p>
-                                <p className="text-[11px] text-slate-400 truncate">{user?.email}</p>
+                                <p className="text-[11px] text-slate-400 truncate mb-0.5">{user?.email}</p>
+                                {profile?.whatsapp && (
+                                    <div className="flex items-center gap-1.5 text-primary">
+                                        <svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.414 0 .018 5.396.015 12.03a11.847 11.847 0 001.592 5.96L0 24l6.117-1.605a11.803 11.803 0 005.925 1.583h.005c6.637 0 12.032-5.396 12.035-12.031a11.815 11.815 0 00-3.534-8.514z" /></svg>
+                                        <span className="text-[10px] font-bold tracking-tight">{profile.whatsapp}</span>
+                                    </div>
+                                )}
                             </div>
                         </div>
-                    </div>
+                    </button>
 
                     <button
                         onClick={signOut}
@@ -158,22 +204,54 @@ const Dashboard = () => {
                             <div className="mb-10 flex flex-col sm:flex-row sm:items-end justify-between gap-4">
                                 <div>
                                     <h1 className="text-4xl font-heading font-bold text-white tracking-tight mb-2">
-                                        {tabs.find(t => t.id === activeTab)?.label}
+                                        {activeTabData?.label}
                                     </h1>
                                     <p className="text-slate-400 text-sm max-w-md">
-                                        Manage your {tabs.find(t => t.id === activeTab)?.label.toLowerCase()} seamlessly with real-time updates.
+                                        Manage your {activeTabData?.label?.toLowerCase() || 'dashboard'} seamlessly with real-time updates.
                                     </p>
                                 </div>
-                                <div className="text-right hidden sm:block">
-                                    <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">{new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
+                                <div className="flex items-center gap-6">
+                                    <NotificationCenter onOpenNotification={(notif) => {
+                                        if (notif.type === 'transfer_request') {
+                                            setSelectedNotification(notif);
+                                            setIsResponseModalOpen(true);
+                                        }
+                                    }} />
+                                    <div className="text-right hidden sm:block">
+                                        <div className="text-3xl font-black text-white leading-none tracking-tight mb-1">
+                                            {currentTime.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false })}
+                                        </div>
+                                        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest leading-none">
+                                            {currentTime.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
+                                        </p>
+                                    </div>
                                 </div>
                             </div>
 
-                            <div className="glass-card p-1">
-                                <ActiveComponent />
+                            <div className="p-1">
+                                {renderActiveComponent()}
                             </div>
                         </motion.div>
                     </AnimatePresence>
+
+                    {selectedNotification && (
+                        <TransferResponseModal
+                            isOpen={isResponseModalOpen}
+                            onClose={() => {
+                                setIsResponseModalOpen(false);
+                                setSelectedNotification(null);
+                            }}
+                            notification={selectedNotification}
+                            onComplete={() => {
+                                // Refresh appointments if on dashboard tab
+                                if (activeTab === 'appointments') {
+                                    // This is tricky as we don't have direct access to AppointmentList's refresh
+                                    // But Supabase Realtime in AppointmentList (if implemented) or just a manual refresh would work.
+                                    window.location.reload(); // Simple nuclear option for now to ensure data consistency
+                                }
+                            }}
+                        />
+                    )}
                 </div>
             </main>
         </div>

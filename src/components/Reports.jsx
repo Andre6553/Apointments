@@ -39,7 +39,7 @@ const Reports = () => {
                 .select(`
             *,
             client:clients(first_name, last_name, phone),
-            provider:profiles(full_name)
+            provider:profiles!appointments_assigned_profile_id_fkey(full_name)
           `)
                 .order('scheduled_start', { ascending: false })
 

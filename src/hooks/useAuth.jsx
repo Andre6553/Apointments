@@ -11,59 +11,97 @@ export const AuthProvider = ({ children }) => {
 
     useEffect(() => {
         let mounted = true
+        let initFinished = false
 
-        // 1. Safety Valve: If initialization takes too long, we assume connection failure
-        const safetyTimer = setTimeout(() => {
-            if (mounted && loading) {
-                console.warn("Auth check timed out - assuming network blockage")
-                setConnectionError("Connection timed out. Please check your internet or Supabase status.")
+        // 1. Safety Valve: If initialization takes too long, we declare failure
+        const totalTimeout = setTimeout(() => {
+            if (mounted && loading && !initFinished) {
+                console.error("Auth initialization total timeout")
+                setConnectionError("The server is taking too long to respond. Please check your internet connection.")
                 setLoading(false)
             }
-        }, 8000) // 8 seconds grace period
+        }, 12000)
 
-        // 2. Async initialization
-        const initAuth = async () => {
+        const startInit = async () => {
             try {
-                // Check active session
-                const { data: { session }, error } = await supabase.auth.getSession()
-                if (error) throw error
+                const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
 
-                if (mounted && session?.user) {
-                    setUser(session.user)
-                    // Fire-and-forget profile fetch
-                    fetchProfile(session.user.id).catch(err => console.warn("Profile fetch warning:", err))
+                // PHASE 1: Raw Network Reachability (The "Truth" check)
+                try {
+                    const controller = new AbortController()
+                    const pingTimeout = setTimeout(() => controller.abort(), 6000)
+
+                    const res = await fetch(`${supabaseUrl}/auth/v1/health`, {
+                        method: 'GET',
+                        signal: controller.signal,
+                        headers: { 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY }
+                    })
+                    clearTimeout(pingTimeout)
+
+                    // If we get a response (200 or 401), the server is reachable
+                    if (res.status === 200 || res.status === 401) {
+                        console.log("Supabase connectivity verified")
+                    } else {
+                        throw new Error(`Connectivity check returned ${res.status}`)
+                    }
+                } catch (e) {
+                    if (mounted) {
+                        console.error("Network verification failed:", e)
+                        setConnectionError("Network Error: Cannot reach Supabase servers. Please check your ISP or VPN.")
+                        setLoading(false)
+                        return
+                    }
                 }
+
+                if (!mounted) return
+
+                // PHASE 2: Auth Client Initialization
+                const sessionPromise = supabase.auth.getSession()
+                const timeoutPromise = new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('Auth client unresponsive')), 4000)
+                )
+
+                try {
+                    const { data: { session }, error } = await Promise.race([sessionPromise, timeoutPromise])
+                    if (error) throw error
+
+                    if (mounted) {
+                        setUser(session?.user ?? null)
+                        if (session?.user) fetchProfile(session.user.id).catch(console.error)
+                    }
+                } catch (err) {
+                    console.warn("Auth check slow or failed, relying on background listener:", err)
+                }
+
+                if (mounted) {
+                    initFinished = true
+                    setLoading(false)
+                }
+
             } catch (error) {
-                console.error("Auth Init Error:", error)
-                // If getSession throws (e.g. network error), we catch it here
-                if (mounted) setConnectionError(error.message || "Failed to connect to authentication server")
-            } finally {
+                console.error("Unexpected Auth Init error:", error)
                 if (mounted) setLoading(false)
             }
         }
 
-        initAuth()
-
         // 3. Real-time listener
-        const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+        const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
             if (mounted) {
-                // If we get an event, connection is alive, so clear error
-                setConnectionError(null)
                 setUser(session?.user ?? null)
+                if (session?.user) fetchProfile(session.user.id).catch(console.error)
+                else setProfile(null)
 
-                if (session?.user) {
-                    fetchProfile(session.user.id).catch(console.error)
-                } else {
-                    setProfile(null)
-                }
-
+                setConnectionError(null)
                 setLoading(false)
+                initFinished = true
             }
         })
 
+        startInit()
+
         return () => {
             mounted = false
-            clearTimeout(safetyTimer)
+            clearTimeout(totalTimeout)
             subscription.unsubscribe()
         }
     }, [])
