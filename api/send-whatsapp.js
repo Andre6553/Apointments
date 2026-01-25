@@ -20,9 +20,9 @@ export default async function handler(req, res) {
     }
 
     const { to, message } = req.body;
-    const accountSid = process.env.TWILIO_ACCOUNT_SID;
-    const authToken = process.env.TWILIO_AUTH_TOKEN;
-    const fromNumber = process.env.TWILIO_WHATSAPP_FROM;
+    const accountSid = process.env.TWILIO_ACCOUNT_SID?.trim();
+    const authToken = process.env.TWILIO_AUTH_TOKEN?.trim();
+    const fromNumber = process.env.TWILIO_WHATSAPP_FROM?.trim();
 
     if (!accountSid || !authToken) {
         return res.status(500).json({ error: 'Server configuration error: Missing Twilio Credentials' });
