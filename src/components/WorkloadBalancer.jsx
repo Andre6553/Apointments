@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { ArrowLeftRight, UserCheck, AlertTriangle, CheckCircle2, Clock, BarChart3, Loader2 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { sendWhatsApp } from '../lib/notifications'
 
 const WorkloadBalancer = () => {
     const [delayedApts, setDelayedApts] = useState([])
@@ -92,8 +93,14 @@ const WorkloadBalancer = () => {
                 .eq('id', aptId)
 
             if (!error) {
-                // Success message or toast could go here
-                alert('Client successfully shifted!')
+                // Trigger notification
+                const apt = delayedApts.find(a => a.id === aptId);
+                const provider = freeProviders.find(p => p.id === newProviderId);
+                if (apt && provider) {
+                    await sendWhatsApp(apt.client?.phone, `Hi ${apt.client?.first_name}, your session has been reassigned to ${provider.full_name} to minimize your wait time. See you soon!`);
+                }
+
+                alert('Client successfully shifted and notified!');
                 fetchData() // Refresh real data
             } else {
                 throw error

@@ -107,6 +107,13 @@ export const AuthProvider = ({ children }) => {
     }, [])
 
     const fetchProfile = async (userId) => {
+        // 1. Set Status Online
+        // We do this concurrently with fetching to avoid blocking UI
+        supabase.from('profiles').update({ is_online: true }).eq('id', userId).then(({ error }) => {
+            if (error) console.error('Failed to set online status:', error)
+        })
+
+        // 2. Fetch Data
         const { data, error } = await supabase
             .from('profiles')
             .select('*')
@@ -116,7 +123,12 @@ export const AuthProvider = ({ children }) => {
         if (data) setProfile(data)
     }
 
-    const signOut = () => supabase.auth.signOut()
+    const signOut = async () => {
+        if (user) {
+            await supabase.from('profiles').update({ is_online: false }).eq('id', user.id)
+        }
+        return supabase.auth.signOut()
+    }
 
     return (
         <AuthContext.Provider value={{ user, profile, loading, connectionError, signOut, fetchProfile }}>

@@ -14,6 +14,7 @@ const DailyTimeline = ({ selectedDate = new Date() }) => {
     const [rawAppointments, setRawAppointments] = useState([])
     const [workingHours, setWorkingHours] = useState(() => getCache(CACHE_KEYS.DAILY_WORKING_HOURS) || null)
     const [loading, setLoading] = useState(!getCache(CACHE_KEYS.TIMELINE))
+    const [bufferSettings, setBufferSettings] = useState({ enabled: false, duration: 0 })
     const [now, setNow] = useState(new Date())
     const [selectedApt, setSelectedApt] = useState(null)
     const [isTransferOpen, setIsTransferOpen] = useState(false)
@@ -60,15 +61,20 @@ const DailyTimeline = ({ selectedDate = new Date() }) => {
                 aptQuery = aptQuery.eq('assigned_profile_id', user.id)
             }
 
-            const [hoursRes, aptsRes, breaksRes] = await Promise.all([
+            const [hoursRes, aptsRes, breaksRes, profileRes] = await Promise.all([
                 supabase.from('working_hours').select('*').eq('profile_id', user.id).eq('day_of_week', dayOfWeek).maybeSingle(),
                 aptQuery,
-                supabase.from('breaks').select('*').eq('profile_id', user.id).eq('day_of_week', dayOfWeek)
+                supabase.from('breaks').select('*').eq('profile_id', user.id).eq('day_of_week', dayOfWeek),
+                supabase.from('profiles').select('enable_buffer, buffer_minutes').eq('id', user.id).single()
             ])
 
             setWorkingHours(hoursRes.data || null)
             setRawAppointments(aptsRes.data || [])
             setCache(CACHE_KEYS.DAILY_WORKING_HOURS, hoursRes.data || null)
+            setBufferSettings({
+                enabled: profileRes.data?.enable_buffer || false,
+                duration: profileRes.data?.buffer_minutes || 0
+            })
 
             const timelineEvents = [
                 ...(aptsRes.data?.map(a => ({
@@ -105,6 +111,8 @@ const DailyTimeline = ({ selectedDate = new Date() }) => {
         }
     }
 
+    const dateKey = format(selectedDate, 'yyyy-MM-dd')
+
     useEffect(() => {
         if (!user) return;
         const hasCache = getCache(CACHE_KEYS.TIMELINE);
@@ -122,7 +130,7 @@ const DailyTimeline = ({ selectedDate = new Date() }) => {
         return () => {
             supabase.removeChannel(channel)
         }
-    }, [selectedDate, user?.id, profile?.role])
+    }, [dateKey, user?.id, profile?.role])
 
     const timeToMinutes = (timeStr) => {
         if (!timeStr || typeof timeStr !== 'string') return 0
@@ -130,24 +138,37 @@ const DailyTimeline = ({ selectedDate = new Date() }) => {
         return (h || 0) * 60 + (m || 0)
     }
 
-    const startMinutes = (workingHours && !Array.isArray(workingHours)) ? timeToMinutes(workingHours.start_time) : 8 * 60
+    const isToday = isSameDay(selectedDate, new Date())
+
+    // 1. Calculate the start of our timeline viewport (Past time is hidden)
+    const baseStartMinutes = (workingHours && !Array.isArray(workingHours)) ? timeToMinutes(workingHours.start_time) : 8 * 60
+    const startMinutes = isToday
+        ? now.getHours() * 60 + now.getMinutes()
+        : baseStartMinutes
+
     const endMinutes = (workingHours && !Array.isArray(workingHours)) ? timeToMinutes(workingHours.end_time) : 17 * 60
-    const totalMinutes = (endMinutes - startMinutes) || 480 // Min 8 hours if same or zero
+    const totalMinutes = Math.max(60, endMinutes - startMinutes)
 
     const getPosition = (dateValue) => {
         const date = dateValue instanceof Date ? dateValue : new Date(dateValue)
         if (isNaN(date.getTime())) return 0
         const mins = date.getHours() * 60 + date.getMinutes()
-        return ((mins - startMinutes) / totalMinutes) * 100
+        const pos = ((mins - startMinutes) / totalMinutes) * 100
+        return Math.max(0, pos)
     }
 
     const getDurationHeight = (duration) => {
         return (duration / totalMinutes) * 100
     }
 
-    const hours = []
-    for (let m = startMinutes; m <= endMinutes; m += 60) {
-        hours.push(m)
+    const timelineHours = []
+    // Add 'Now' marker if today
+    if (isToday) timelineHours.push(startMinutes)
+
+    // Add subsequent full hours
+    const firstFullHour = Math.ceil(startMinutes / 60) * 60
+    for (let m = firstFullHour; m <= endMinutes; m += 60) {
+        if (m > startMinutes) timelineHours.push(m)
     }
 
     return (
@@ -176,14 +197,14 @@ const DailyTimeline = ({ selectedDate = new Date() }) => {
                 ) : (
                     <div className="relative h-[1200px] mt-4 ml-12">
                         {/* Hour Grid */}
-                        {hours.map(m => (
+                        {timelineHours.map(m => (
                             <div
                                 key={m}
-                                className="absolute left-0 right-0 border-t border-white/5 flex items-center"
+                                className={`absolute left-0 right-0 border-t flex items-center ${m === startMinutes && isToday ? 'border-primary/50' : 'border-white/5'}`}
                                 style={{ top: `${((m - startMinutes) / totalMinutes) * 100}%` }}
                             >
-                                <span className="absolute -left-12 text-[10px] font-bold text-slate-600 w-10 text-right">
-                                    {Math.floor(m / 60).toString().padStart(2, '0')}:00
+                                <span className={`absolute -left-12 text-[10px] font-bold w-10 text-right ${m === startMinutes && isToday ? 'text-primary' : 'text-slate-600'}`}>
+                                    {Math.floor(m / 60).toString().padStart(2, '0')}:{Math.floor(m % 60).toString().padStart(2, '0')}
                                 </span>
                             </div>
                         ))}
@@ -217,70 +238,94 @@ const DailyTimeline = ({ selectedDate = new Date() }) => {
                             </div>
                         )}
 
-                        {/* Events */}
-                        {events.map(event => (
-                            <motion.div
-                                key={event.id}
-                                initial={{ opacity: 0, x: -10 }}
-                                animate={{ opacity: 1, x: 0 }}
-                                className={`absolute left-2 right-2 rounded-xl border p-2 flex flex-col shadow-lg transition-transform hover:scale-[1.01] cursor-pointer group
+                        {/* Events (Filtered for today) */}
+                        {events
+                            .filter(event => {
+                                if (!isToday) return true;
+                                const startDate = new Date(event.start);
+                                const eventEnd = new Date(startDate.getTime() + event.duration * 60000);
+                                return eventEnd > now;
+                            })
+                            .map(event => (
+                                <motion.div
+                                    key={event.id}
+                                    initial={{ opacity: 0, x: -10 }}
+                                    animate={{ opacity: 1, x: 0 }}
+                                    className={`absolute left-2 right-2 rounded-xl border p-2 flex flex-col shadow-lg transition-transform hover:scale-[1.01] cursor-pointer group
                                     ${event.type === 'appointment'
-                                        ? 'bg-indigo-500/10 border-indigo-500/30 text-indigo-400'
-                                        : 'bg-orange-500/10 border-orange-500/30 text-orange-400'
-                                    }`}
-                                style={{
-                                    top: `${getPosition(event.start)}%`,
-                                    height: `${getDurationHeight(event.duration)}%`,
-                                    zIndex: 5
-                                }}
-                            >
-                                <div className="flex items-center gap-1 overflow-hidden min-h-[14px]">
-                                    {event.type === 'appointment' ? <User size={9} className="shrink-0" /> : <Coffee size={9} className="shrink-0" />}
-                                    <span className="text-[9px] font-extrabold truncate leading-none">{event.label}</span>
-                                </div>
-                                {event.duration >= 15 && (
-                                    <span className="text-[8px] font-bold opacity-60 leading-none mt-0.5">
-                                        {format(event.start, 'HH:mm')} ({event.duration}m)
-                                    </span>
-                                )}
-
-                                {event.type === 'appointment' && (
-                                    <div className="absolute top-2 right-2 flex items-center gap-1">
-                                        <button
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                const aptData = rawAppointments.find(a => a.id === event.id);
-                                                setEditData(aptData);
-                                                setIsEditOpen(true);
-                                            }}
-                                            className="p-1.5 rounded-lg bg-white/10 opacity-0 group-hover:opacity-100 transition-all hover:bg-amber-500 hover:text-white"
-                                            title="Edit"
-                                        >
-                                            <Edit2 size={10} />
-                                        </button>
-                                        <button
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                setSelectedApt({
-                                                    id: event.id,
-                                                    scheduled_start: event.start.toISOString(),
-                                                    duration_minutes: event.duration,
-                                                    client: {
-                                                        first_name: event.label.split(' ')[0],
-                                                        last_name: event.label.split(' ')[1] || ''
-                                                    }
-                                                });
-                                                setIsTransferOpen(true);
-                                            }}
-                                            className="p-1.5 rounded-lg bg-white/10 opacity-0 group-hover:opacity-100 transition-all hover:bg-primary hover:text-white"
-                                            title="Transfer"
-                                        >
-                                            <ArrowRight size={10} />
-                                        </button>
+                                            ? 'bg-indigo-500/10 border-indigo-500/30 text-indigo-400'
+                                            : 'bg-orange-500/10 border-orange-500/30 text-orange-400'
+                                        }`}
+                                    style={{
+                                        top: `${getPosition(event.start)}%`,
+                                        height: `${getDurationHeight(
+                                            isToday && new Date(event.start) < now
+                                                ? Math.max(0, event.duration - (now - new Date(event.start)) / 60000)
+                                                : event.duration
+                                        )}%`,
+                                        zIndex: 5
+                                    }}
+                                >
+                                    <div className="flex items-center gap-1 overflow-hidden min-h-[14px]">
+                                        {event.type === 'appointment' ? <User size={9} className="shrink-0" /> : <Coffee size={9} className="shrink-0" />}
+                                        <span className="text-[9px] font-extrabold truncate leading-none">{event.label}</span>
                                     </div>
-                                )}
-                            </motion.div>
-                        ))}
+                                    {event.duration >= 15 && (
+                                        <span className="text-[8px] font-bold opacity-60 leading-none mt-0.5">
+                                            {format(event.start, 'HH:mm')} ({event.duration}m)
+                                        </span>
+                                    )}
+
+                                    {/* Buffer Block Indicator */}
+                                    {event.type === 'appointment' && bufferSettings.enabled && bufferSettings.duration > 0 && (
+                                        <div
+                                            className="absolute left-0 right-0 border-t border-dashed border-white/20 bg-slate-500/10 -z-10 flex items-center justify-center"
+                                            style={{
+                                                top: '100%',
+                                                height: `${(bufferSettings.duration / event.duration) * 100}%`
+                                            }}
+                                        >
+                                            <span className="text-[7px] font-mono text-slate-500 opacity-70 rotate-90 md:rotate-0">+Buffer</span>
+                                        </div>
+                                    )}
+
+                                    {event.type === 'appointment' && (
+                                        <div className="absolute top-2 right-2 flex items-center gap-1">
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    const aptData = rawAppointments.find(a => a.id === event.id);
+                                                    setEditData(aptData);
+                                                    setIsEditOpen(true);
+                                                }}
+                                                className="p-1.5 rounded-lg bg-white/10 opacity-0 group-hover:opacity-100 transition-all hover:bg-amber-500 hover:text-white"
+                                                title="Edit"
+                                            >
+                                                <Edit2 size={10} />
+                                            </button>
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setSelectedApt({
+                                                        id: event.id,
+                                                        scheduled_start: event.start.toISOString(),
+                                                        duration_minutes: event.duration,
+                                                        client: {
+                                                            first_name: event.label.split(' ')[0],
+                                                            last_name: event.label.split(' ')[1] || ''
+                                                        }
+                                                    });
+                                                    setIsTransferOpen(true);
+                                                }}
+                                                className="p-1.5 rounded-lg bg-white/10 opacity-0 group-hover:opacity-100 transition-all hover:bg-primary hover:text-white"
+                                                title="Transfer"
+                                            >
+                                                <ArrowRight size={10} />
+                                            </button>
+                                        </div>
+                                    )}
+                                </motion.div>
+                            ))}
 
                         {/* Current Time Indicator */}
                         {format(now, 'yyyy-MM-dd') === format(selectedDate, 'yyyy-MM-dd') && (

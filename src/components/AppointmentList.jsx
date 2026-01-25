@@ -29,7 +29,8 @@ const AppointmentList = () => {
             .select(`
                 *,
                 client:clients(first_name, last_name, phone),
-                provider:profiles!appointments_assigned_profile_id_fkey(full_name)
+                provider:profiles!appointments_assigned_profile_id_fkey(full_name),
+                transfer_requests(id, status, receiver_id)
             `)
             .or(`status.eq.active,status.eq.pending`)
             .order('scheduled_start', { ascending: true });
@@ -73,6 +74,56 @@ const AppointmentList = () => {
             .update({ actual_end: new Date().toISOString(), status: 'completed' })
             .eq('id', id);
         if (!error) fetchAppointments();
+    };
+
+    const SessionTimer = ({ startTime, duration }) => {
+        const [timeLeft, setTimeLeft] = useState({ minutes: duration, seconds: 0 });
+        const [isOvertime, setIsOvertime] = useState(false);
+
+        useEffect(() => {
+            const calculateTime = () => {
+                if (!startTime) return;
+                const start = new Date(startTime).getTime();
+                const now = new Date().getTime();
+                const end = start + duration * 60000;
+                const diff = end - now;
+
+                if (diff <= 0) {
+                    setIsOvertime(true);
+                    const over = Math.abs(diff);
+                    setTimeLeft({
+                        minutes: Math.floor(over / 60000),
+                        seconds: Math.floor((over % 60000) / 1000)
+                    });
+                } else {
+                    setIsOvertime(false);
+                    setTimeLeft({
+                        minutes: Math.floor(diff / 60000),
+                        seconds: Math.floor((diff % 60000) / 1000)
+                    });
+                }
+            };
+
+            calculateTime();
+            const timer = setInterval(calculateTime, 1000);
+            return () => clearInterval(timer);
+        }, [startTime, duration]);
+
+        return (
+            <div className={`
+                flex items-center justify-center gap-2 text-xs font-bold uppercase tracking-widest py-2 rounded-lg border
+                ${isOvertime
+                    ? 'bg-red-500/10 text-red-500 border-red-500/20 animate-pulse'
+                    : 'bg-primary/10 text-primary border-primary/20'}
+            `}>
+                <Timer size={12} className={isOvertime ? 'animate-bounce' : ''} />
+                <span>
+                    {isOvertime ? '+' : ''}
+                    {String(timeLeft.minutes).padStart(2, '0')}:{String(timeLeft.seconds).padStart(2, '0')}
+                    {isOvertime ? ' Over' : ' Left'}
+                </span>
+            </div>
+        );
     };
 
     return (
@@ -144,24 +195,44 @@ const AppointmentList = () => {
                                 key={apt.id}
                                 className={`
                                     relative glass-card group overflow-hidden transition-all duration-300 hover:border-white/10 hover:translate-x-1
-                                    ${apt.status === 'active' ? 'border-primary/50 bg-primary/5 shadow-glow' : ''}
+                                    ${apt.status === 'active' ? 'border-emerald-500 shadow-[0_0_20px_rgba(16,185,129,0.3)] bg-emerald-500/5' : ''}
                                 `}
                             >
                                 {/* Active Status Indicator */}
                                 {apt.status === 'active' && (
-                                    <>
-                                        <div className="absolute top-0 left-0 bottom-0 w-1 bg-primary shadow-[0_0_15px_rgba(99,102,241,0.6)]" />
-                                        <div className="absolute top-4 right-4 flex items-center gap-2 px-3 py-1 rounded-full bg-primary/20 border border-primary/20 text-primary text-[10px] font-bold uppercase tracking-widest animate-pulse">
-                                            <div className="w-2 h-2 rounded-full bg-primary" />
-                                            Live Session
-                                        </div>
-                                    </>
+                                    <div className="absolute top-0 left-0 bottom-0 w-1 bg-primary shadow-[0_0_15px_rgba(99,102,241,0.6)]" />
                                 )}
                                 {isSameDay(new Date(apt.scheduled_start), new Date()) && apt.status === 'pending' && (
                                     <div className="absolute top-4 right-4 px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-500 text-[8px] font-bold uppercase tracking-widest">
                                         Today
                                     </div>
                                 )}
+
+                                {(() => {
+                                    const transferredAway = apt.shifted_from_id === user?.id;
+                                    const pendingTransfer = !transferredAway && (apt.transfer_requests || []).some(r => r.status === 'pending');
+
+                                    if (transferredAway) {
+                                        return (
+                                            <div className="absolute inset-0 bg-slate-950/60 backdrop-blur-[1px] z-10 flex items-center justify-center">
+                                                <div className="px-4 py-2 bg-indigo-500/20 border border-indigo-500/30 rounded-xl text-indigo-300 font-bold flex items-center gap-2 shadow-xl">
+                                                    <ArrowRight size={16} />
+                                                    Transferred to {apt.provider?.full_name}
+                                                </div>
+                                            </div>
+                                        )
+                                    }
+
+                                    if (pendingTransfer) {
+                                        return (
+                                            <div className="absolute top-4 right-16 px-2 py-0.5 rounded bg-blue-500/10 border border-blue-500/20 text-blue-400 text-[8px] font-bold uppercase tracking-widest flex items-center gap-1">
+                                                <Loader2 size={8} className="animate-spin" />
+                                                Transfer Pending
+                                            </div>
+                                        )
+                                    }
+                                    return null;
+                                })()}
 
                                 <div className="p-6 flex flex-col md:flex-row md:items-center gap-6 md:gap-8">
                                     {/* Time Block */}
@@ -233,7 +304,10 @@ const AppointmentList = () => {
                                             <div className="flex items-center gap-2">
                                                 <button
                                                     onClick={() => startAppointment(apt.id)}
-                                                    className="w-full md:w-auto h-12 px-6 rounded-xl bg-surface hover:bg-primary text-slate-300 hover:text-white border border-white/5 hover:border-primary/50 transition-all duration-300 font-bold flex items-center justify-center gap-2 group/btn shadow-lg"
+                                                    disabled={(apt.transfer_requests || []).some(r => r.status === 'pending')}
+                                                    className={`w-full md:w-auto h-12 px-6 rounded-xl bg-surface hover:bg-primary text-slate-300 hover:text-white border border-white/5 hover:border-primary/50 transition-all duration-300 font-bold flex items-center justify-center gap-2 group/btn shadow-lg
+                                                        ${(apt.transfer_requests || []).some(r => r.status === 'pending') ? 'opacity-50 cursor-not-allowed' : ''}
+                                                    `}
                                                 >
                                                     <Play size={16} className="fill-current group-hover/btn:scale-110 transition-transform" />
                                                     <span>Start</span>
@@ -255,13 +329,20 @@ const AppointmentList = () => {
                                             </div>
                                         )}
                                         {apt.status === 'active' && (
-                                            <button
-                                                onClick={() => endAppointment(apt.id)}
-                                                className="w-full md:w-auto h-12 px-8 rounded-xl bg-gradient-to-r from-red-500 to-red-600 hover:from-red-400 hover:to-red-500 text-white font-bold transition-all shadow-lg shadow-red-500/20 active:scale-95 flex items-center justify-center gap-2"
-                                            >
-                                                <Square size={16} className="fill-current animate-pulse" />
-                                                <span>End Session</span>
-                                            </button>
+                                            <div className="flex flex-col gap-2 w-full md:w-auto items-end">
+                                                <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-primary/20 border border-primary/20 text-primary text-[10px] font-bold uppercase tracking-widest animate-pulse mb-1">
+                                                    <div className="w-2 h-2 rounded-full bg-primary" />
+                                                    Live Session
+                                                </div>
+                                                <button
+                                                    onClick={() => endAppointment(apt.id)}
+                                                    className="w-full md:w-auto h-12 px-8 rounded-xl bg-gradient-to-r from-red-500 to-red-600 hover:from-red-400 hover:to-red-500 text-white font-bold transition-all shadow-lg shadow-red-500/20 active:scale-95 flex items-center justify-center gap-2"
+                                                >
+                                                    <Square size={16} className="fill-current animate-pulse" />
+                                                    <span>End Session</span>
+                                                </button>
+                                                <SessionTimer startTime={apt.actual_start} duration={apt.duration_minutes} />
+                                            </div>
                                         )}
                                         {apt.status === 'completed' && (
                                             <div className="flex items-center gap-2 text-emerald-400 font-bold bg-emerald-500/10 border border-emerald-500/20 px-6 py-3 rounded-xl shadow-[0_0_15px_rgba(16,185,129,0.1)]">

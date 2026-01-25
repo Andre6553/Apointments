@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
-import { Search, Plus, Trash2, Phone, Mail, User, AlertCircle, Loader2, X } from 'lucide-react';
+import { Search, Plus, Trash2, Phone, Mail, User, AlertCircle, Loader2, X, Edit2, MessageCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import EditClientModal from './EditClientModal';
 
 const ClientList = () => {
     const [clients, setClients] = useState([]);
@@ -10,6 +11,8 @@ const ClientList = () => {
     const [search, setSearch] = useState('');
     const [newClient, setNewClient] = useState({ firstName: '', lastName: '', phone: '', email: '' });
     const [isSubmitting, setIsSubmitting] = useState(false);
+    const [editingClient, setEditingClient] = useState(null);
+    const [isEditOpen, setIsEditOpen] = useState(false);
 
     const fetchClients = async () => {
         setLoading(true);
@@ -210,10 +213,46 @@ const ClientList = () => {
                                     <span className="text-sm font-medium truncate">{c.email}</span>
                                 </a>
                             )}
+
+                            {/* WhatsApp Status Indicator */}
+                            <div className="flex items-center gap-4 text-slate-400 p-2 -mx-2 bg-white/[0.02] rounded-xl border border-white/5">
+                                <div className={`p-2 rounded-lg border border-white/5 ${c.whatsapp_opt_in === true ? 'bg-emerald-500/10 text-emerald-400' :
+                                    c.whatsapp_opt_in === false ? 'bg-rose-500/10 text-rose-400' :
+                                        'bg-surface text-slate-500'
+                                    }`}>
+                                    <MessageCircle size={16} className={c.whatsapp_opt_in === null ? 'opacity-50' : ''} />
+                                </div>
+                                <div className="flex flex-col">
+                                    <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">WhatsApp Status</span>
+                                    <span className={`text-xs font-bold ${c.whatsapp_opt_in === true ? 'text-emerald-400' :
+                                        c.whatsapp_opt_in === false ? 'text-rose-400' :
+                                            'text-slate-500'
+                                        }`}>
+                                        {c.whatsapp_opt_in === true ? 'Opted In' :
+                                            c.whatsapp_opt_in === false ? 'Opted Out' : 'Not Set'}
+                                    </span>
+                                </div>
+                                <button
+                                    onClick={() => {
+                                        setEditingClient(c)
+                                        setIsEditOpen(true)
+                                    }}
+                                    className="ml-auto text-xs font-bold text-primary hover:text-white hover:underline decoration-primary underline-offset-4"
+                                >
+                                    Manage
+                                </button>
+                            </div>
                         </div>
                     </motion.div>
                 ))}
             </div>
+
+            <EditClientModal
+                isOpen={isEditOpen}
+                onClose={() => { setIsEditOpen(false); setEditingClient(null) }}
+                client={editingClient}
+                onUpdate={fetchClients}
+            />
         </div>
     );
 };

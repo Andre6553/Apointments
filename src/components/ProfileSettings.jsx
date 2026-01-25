@@ -8,6 +8,7 @@ const ProfileSettings = () => {
     const { user, profile, fetchProfile } = useAuth()
     const [fullName, setFullName] = useState('')
     const [whatsapp, setWhatsapp] = useState('')
+    const [acceptsTransfers, setAcceptsTransfers] = useState(true)
     const [isSubmitting, setIsSubmitting] = useState(false)
     const [status, setStatus] = useState(null) // 'saved' | 'error'
 
@@ -15,6 +16,7 @@ const ProfileSettings = () => {
         if (profile) {
             setFullName(profile.full_name || '')
             setWhatsapp(profile.whatsapp || '')
+            setAcceptsTransfers(profile.accepts_transfers ?? true)
         }
     }, [profile])
 
@@ -30,7 +32,8 @@ const ProfileSettings = () => {
                 .from('profiles')
                 .update({
                     full_name: fullName,
-                    whatsapp: whatsapp
+                    whatsapp: whatsapp,
+                    accepts_transfers: acceptsTransfers
                 })
                 .eq('id', user.id)
 
@@ -85,6 +88,26 @@ const ProfileSettings = () => {
                                 placeholder="+27 12 345 6789"
                                 required
                             />
+                        </div>
+                    </div>
+
+                    <div className="space-y-4 pt-2 border-t border-white/5">
+                        <div className="flex items-center justify-between">
+                            <div className="space-y-1">
+                                <label className="text-xs font-bold text-slate-400 uppercase tracking-widest ml-1">Accept Transfers</label>
+                                <p className="text-[10px] text-slate-500 font-medium max-w-[250px]">
+                                    Allow other providers to transfer their clients to your schedule.
+                                </p>
+                            </div>
+                            <label className="relative inline-flex items-center cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    className="sr-only peer"
+                                    checked={acceptsTransfers}
+                                    onChange={(e) => setAcceptsTransfers(e.target.checked)}
+                                />
+                                <div className="w-11 h-6 bg-slate-800 border border-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-slate-400 after:border-slate-500 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary peer-checked:after:bg-white peer-checked:border-primary/50"></div>
+                            </label>
                         </div>
                     </div>
 

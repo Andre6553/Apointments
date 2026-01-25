@@ -1,4 +1,5 @@
 import { supabase } from './supabase'
+import { sendWhatsApp } from './notifications'
 
 /**
  * Calculates and applies delays to subsequent appointments.
@@ -55,26 +56,11 @@ export const calculateAndApplyDelay = async (appointmentId, actualTime) => {
 }
 
 const sendDelayNotification = async (client, delayMinutes, scheduledStart) => {
-    if (!client?.phone) return
-
     const originalTime = new Date(scheduledStart).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     const newTime = new Date(new Date(scheduledStart).getTime() + delayMinutes * 60000)
         .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
-    const message = `Hi ${client.first_name}, friendly reminder from B.L.A.S.T. Tracker! We are running about ${delayMinutes} mins late today. Your ${originalTime} appointment is now scheduled for ${newTime}. Sorry for the wait!`
+    const message = `Hi ${client.first_name}, friendly reminder from Tracker! We are running about ${delayMinutes} mins late today. Your ${originalTime} appointment is now scheduled for ${newTime}. Sorry for the wait!`
 
-    console.log(`Sending WhatsApp to ${client.phone}: ${message}`)
-
-    // Here we would call the Twilio API. 
-    // Since we are in the frontend, we'll use a Supabase Edge Function call or a Proxy.
-    // For now, let's assume we have a utility to handle this.
-    try {
-        // NOTE: We need a secure way to call Twilio. I'll implement a 'tools' script 
-        // that the user can run as a background worker, or use a Supabase Function.
-        await supabase.functions.invoke('send-whatsapp', {
-            body: { to: client.phone, message }
-        })
-    } catch (err) {
-        console.error('Failed to send WhatsApp:', err)
-    }
+    return await sendWhatsApp(client?.phone, message)
 }

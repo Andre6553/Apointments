@@ -20,6 +20,7 @@ const ScheduleSettings = () => {
     const [newBreak, setNewBreak] = useState({ label: 'Lunch Break', startTime: '13:00', duration: 60 })
     const [isSubmitting, setIsSubmitting] = useState(false)
     const [saveStatus, setSaveStatus] = useState({}) // { dayIdx: 'saved' | 'saving' | 'error' }
+    const [bufferSettings, setBufferSettings] = useState({ enabled: false, duration: 15 })
 
     const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
@@ -27,13 +28,21 @@ const ScheduleSettings = () => {
         if (!user) return
         if (!silent) setLoading(true)
         try {
-            const [breakRes, hoursRes] = await Promise.all([
+            const [breakRes, hoursRes, profileRes] = await Promise.all([
                 supabase.from('breaks').select('*').eq('profile_id', user.id).order('start_time', { ascending: true }),
-                supabase.from('working_hours').select('*').eq('profile_id', user.id)
+                supabase.from('working_hours').select('*').eq('profile_id', user.id),
+                supabase.from('profiles').select('enable_buffer, buffer_minutes').eq('id', user.id).single()
             ])
 
             setBreaks(breakRes.data || [])
             setWorkingHours(hoursRes.data || [])
+            if (profileRes.data) {
+                setBufferSettings({
+                    enabled: profileRes.data.enable_buffer || false,
+                    duration: profileRes.data.buffer_minutes || 15
+                })
+            }
+
             setCache(CACHE_KEYS.BREAKS, breakRes.data || [])
             setCache(CACHE_KEYS.WORKING_HOURS, hoursRes.data || [])
         } catch (error) {
@@ -73,10 +82,13 @@ const ScheduleSettings = () => {
 
         // 2. Validate before saving
         const timeRegex = /^([01]\d|2[0-3]):[0-5]\d$/
-        if (!timeRegex.test(start) || !timeRegex.test(end)) {
+        // Only show error if complete (length 5) and invalid
+        if ((start.length === 5 && !timeRegex.test(start)) || (end.length === 5 && !timeRegex.test(end))) {
             setSaveStatus(prev => ({ ...prev, [dayIdx]: 'invalid format' }))
             return
         }
+        // If incomplete, just return without saving (but don't show error yet)
+        if (start.length < 5 || end.length < 5) return
 
         setSaveStatus(prev => ({ ...prev, [dayIdx]: 'saving' }))
 
@@ -161,6 +173,23 @@ const ScheduleSettings = () => {
             console.error(e)
         }
     }
+
+    const handleUpdateBuffer = async (enabled, duration) => {
+        const newSettings = { enabled, duration: parseInt(duration) || 0 };
+        setBufferSettings(newSettings);
+
+        try {
+            const { error } = await supabase.from('profiles').update({
+                enable_buffer: newSettings.enabled,
+                buffer_minutes: newSettings.duration
+            }).eq('id', user.id);
+
+            if (error) throw error;
+        } catch (e) {
+            console.error('Failed to update buffer settings:', e);
+            fetchData(true); // Revert on error
+        }
+    };
 
     return (
         <div className="space-y-12">
@@ -258,6 +287,64 @@ const ScheduleSettings = () => {
                             </div>
                         )
                     })}
+                </div>
+            </section>
+
+            {/* Buffer Settings */}
+            <section className="space-y-6">
+                <div>
+                    <h3 className="text-2xl font-bold text-white mb-1">Appointment Efficiency</h3>
+                    <p className="text-slate-500 text-sm">Configure automatic gaps between sessions</p>
+                </div>
+
+                <div className="glass-card p-6 flex flex-col md:flex-row md:items-center justify-between gap-6 border-indigo-500/20 bg-indigo-500/5">
+                    <div className="flex items-start gap-4">
+                        <div className={`p-3 rounded-xl border ${bufferSettings.enabled ? 'bg-indigo-500/20 border-indigo-500' : 'bg-slate-800/50 border-white/5'}`}>
+                            <Clock size={24} className={bufferSettings.enabled ? 'text-indigo-400' : 'text-slate-500'} />
+                        </div>
+                        <div>
+                            <h4 className="font-bold text-white mb-1">Buffer Time</h4>
+                            <p className="text-xs text-slate-400 max-w-sm">
+                                Adding a buffer creates a small recovery gap after every appointment.
+                                This helps with cleaning, notes, or short breaks.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div className="flex items-center gap-6">
+                        <div className={`transition-opacity ${!bufferSettings.enabled ? 'opacity-40 pointer-events-none' : ''}`}>
+                            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block mb-1">Duration (min)</label>
+                            <div className="relative">
+                                <input
+                                    type="number"
+                                    className="glass-input h-10 w-24 text-center"
+                                    value={bufferSettings.duration}
+                                    step="5"
+                                    min="0"
+                                    max="60"
+                                    onChange={(e) => handleUpdateBuffer(bufferSettings.enabled, e.target.value)}
+                                />
+                                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-500">m</span>
+                            </div>
+                        </div>
+
+                        <div className="h-10 w-px bg-white/10 hidden md:block" />
+
+                        <div className="flex items-center gap-3">
+                            <span className={`text-xs font-bold ${!bufferSettings.enabled ? 'text-slate-500' : 'text-white'}`}>
+                                {bufferSettings.enabled ? 'Enabled' : 'Disabled'}
+                            </span>
+                            <button
+                                onClick={() => handleUpdateBuffer(!bufferSettings.enabled, bufferSettings.duration)}
+                                className={`w-12 h-6 rounded-full relative transition-colors ${bufferSettings.enabled ? 'bg-indigo-500' : 'bg-slate-700'}`}
+                            >
+                                <motion.div
+                                    animate={{ x: bufferSettings.enabled ? 26 : 2 }}
+                                    className="absolute top-1 w-4 h-4 rounded-full bg-white shadow-sm"
+                                />
+                            </button>
+                        </div>
+                    </div>
                 </div>
             </section>
 

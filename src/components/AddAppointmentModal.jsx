@@ -3,9 +3,11 @@ import { supabase } from '../lib/supabase';
 import { X, Calendar, Clock, User, MessageCircle, ArrowRight, Loader2, Timer, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { format } from 'date-fns';
+import { useAuth } from '../hooks/useAuth';
 import { getCache, setCache, CACHE_KEYS } from '../lib/cache';
 
 const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) => {
+    const { user } = useAuth();
     const [clients, setClients] = useState([]);
     const [formData, setFormData] = useState({
         clientId: '',
@@ -16,7 +18,9 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
     });
     const [loading, setLoading] = useState(false);
     const [fetchingClients, setFetchingClients] = useState(false);
-    const [slotStatus, setSlotStatus] = useState({ type: 'idle', message: '' });
+    const [slotStatus, setSlotStatus] = useState({ type: 'idle', message: '', suggestion: null });
+    const [providerData, setProviderData] = useState({ hours: null, breaks: [] });
+    const [isFetchingProviderBase, setIsFetchingProviderBase] = useState(false);
 
     useEffect(() => {
         if (isOpen) {
@@ -42,12 +46,43 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
     }, [isOpen, editData]);
 
     useEffect(() => {
+        if (isOpen && user?.id) {
+            fetchProviderBaseData();
+        }
+    }, [isOpen, user?.id, formData.date]);
+
+    const fetchProviderBaseData = async () => {
+        if (!user?.id || !formData.date) return;
+        setIsFetchingProviderBase(true);
+
+        try {
+            const [y, m, d] = formData.date.split('-').map(Number);
+            const dayOfWeek = new Date(y, m - 1, d).getDay();
+
+
+            const [hoursRes, breaksRes] = await Promise.all([
+                supabase.from('working_hours').select('*').eq('profile_id', user.id).eq('day_of_week', dayOfWeek).maybeSingle(),
+                supabase.from('breaks').select('*').eq('profile_id', user.id).eq('day_of_week', dayOfWeek)
+            ]);
+
+            setProviderData({
+                hours: hoursRes.data || null,
+                breaks: breaksRes.data || []
+            });
+        } catch (err) {
+            console.error(`Failed to fetch provider base data:`, err);
+        } finally {
+            setIsFetchingProviderBase(false);
+        }
+    };
+
+    useEffect(() => {
         let isCurrent = true;
         const timer = setTimeout(async () => {
             if (isOpen && formData.clientId && formData.date && formData.time && isCurrent) {
                 await checkConflicts(isCurrent);
             }
-        }, 500);
+        }, 200);
 
         return () => {
             isCurrent = false;
@@ -56,93 +91,100 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
     }, [formData.date, formData.time, formData.duration, formData.clientId, isOpen]);
 
     const checkConflicts = async (isCurrent) => {
-        // Prevent check if fundamental data is missing or time format is invalid
         const timeRegex = /^([01]\d|2[0-3]):[0-5]\d$/;
         if (!formData.date || !formData.time || !formData.duration || !timeRegex.test(formData.time)) {
             if (isCurrent) {
-                if (formData.time && !timeRegex.test(formData.time)) {
-                    setSlotStatus({ type: 'error', message: 'Time must be HH:mm (e.g. 09:15)' });
-                } else {
-                    setSlotStatus({ type: 'idle', message: '' });
-                }
+                setSlotStatus(formData.time && !timeRegex.test(formData.time)
+                    ? { type: 'error', message: 'Time must be HH:mm' }
+                    : { type: 'idle', message: '' });
             }
             return;
         }
 
         if (isCurrent) setSlotStatus({ type: 'checking', message: 'Checking availability...' });
 
-        try {
-            const { data: { user } } = await supabase.auth.getUser();
-            if (!user || !isCurrent) {
-                if (!user && isCurrent) setSlotStatus({ type: 'error', message: 'Session expired. Please log in again.' });
-                return;
+
+        const findNextAvailableSlot = (baseStart, duration, dayData, existingApts, bufferData) => {
+            const { hours, breaks } = dayData;
+
+            // If explicitly deactivated, no slots available today
+            if (hours?.is_active === false) {
+                console.log('Suggestion failed: Provider is explicitly closed today');
+                return null;
             }
 
-            const [y, m, d] = formData.date.split('-').map(Number);
-            const dayOfWeek = new Date(y, m - 1, d).getDay();
+            // Determine search limit (End of shift or end of day)
+            let searchLimit;
+            if (hours?.end_time) {
+                const [hE, mE] = hours.end_time.split(':').map(Number);
+                searchLimit = new Date(baseStart);
+                searchLimit.setHours(hE, mE, 0, 0);
+            } else {
+                // Default to end of current day if no hours defined
+                searchLimit = new Date(baseStart);
+                searchLimit.setHours(23, 59, 59, 999);
+            }
+
+            // Don't search more than 12 hours ahead
+            const maxSearch = new Date(baseStart.getTime() + 12 * 60 * 60 * 1000);
+            if (searchLimit > maxSearch) searchLimit = maxSearch;
+
+            console.log(`Searching for ${duration}m slot (+${bufferData?.minutes || 0}m buffer) between ${format(baseStart, 'HH:mm')} and ${format(searchLimit, 'HH:mm')}...`);
+
+            let candidate = new Date(baseStart.getTime());
+            const now = new Date();
+            const bufferMs = (bufferData?.enabled ? bufferData.minutes : 0) * 60000;
+
+            while (candidate < searchLimit) {
+                candidate = new Date(candidate.getTime() + 5 * 60000); // Step by 5 min
+                const cStart = candidate;
+                const cEnd = new Date(cStart.getTime() + duration * 60000);
+                const cEndWithBuffer = new Date(cEnd.getTime() + bufferMs);
+
+                if (cStart < now) continue;
+                if (cEndWithBuffer > searchLimit) break;
+
+                // Check Breaks
+                let onBreak = false;
+                for (const brk of breaks || []) {
+                    const [bH, bM] = brk.start_time.split(':').map(Number);
+                    const bS = new Date(cStart); bS.setHours(bH, bM, 0, 0);
+                    const bE = new Date(bS.getTime() + brk.duration_minutes * 60000);
+                    if (cStart < bE && cEnd > bS) { onBreak = true; break; }
+                }
+                if (onBreak) continue;
+
+                // Check Appointments
+                let overlapping = false;
+                for (const apt of existingApts) {
+                    const aS = new Date(apt.scheduled_start);
+                    // Standard overlap check with "inflated" existing appointment
+                    // AND "inflated" candidate appointment
+                    const aptDurationWithBuffer = apt.duration_minutes + (bufferData?.enabled ? bufferData.minutes : 0);
+                    const aE_effective = new Date(aS.getTime() + aptDurationWithBuffer * 60000);
+
+                    const myEndBuffered = new Date(cEnd.getTime() + bufferMs);
+
+                    if (cStart < aE_effective && myEndBuffered > aS) { overlapping = true; break; }
+                }
+                if (overlapping) continue;
+
+                console.log(`✅ Found available slot: ${format(cStart, 'HH:mm')}`);
+                return format(cStart, 'HH:mm');
+            }
+            console.log('❌ No free slots found in the remaining time today.');
+            return null;
+        };
+
+        try {
+            if (!user || !isCurrent) return;
 
             const [startHour, startMin] = formData.time.split(':').map(Number);
             const slotStart = new Date(formData.date);
             slotStart.setHours(startHour, startMin, 0, 0);
             const slotEnd = new Date(slotStart.getTime() + formData.duration * 60000);
 
-            // 1. Check Working Hours
-            const { data: hours, error: hoursError } = await supabase
-                .from('working_hours')
-                .select('*')
-                .eq('profile_id', user.id)
-                .eq('day_of_week', dayOfWeek)
-                .maybeSingle();
-
-            if (hoursError) throw hoursError;
-            if (!isCurrent) return;
-
-            if (hours) {
-                if (hours.is_active === false) {
-                    setSlotStatus({ type: 'error', message: 'You are marked as CLOSED on this day' });
-                    return;
-                }
-
-                if (hours.start_time && hours.end_time) {
-                    const [hStart, mStart] = hours.start_time.split(':').map(Number);
-                    const [hEnd, mEnd] = hours.end_time.split(':').map(Number);
-                    const workStart = new Date(formData.date);
-                    workStart.setHours(hStart, mStart, 0, 0);
-                    const workEnd = new Date(formData.date);
-                    workEnd.setHours(hEnd, mEnd, 0, 0);
-
-                    if (slotStart < workStart || slotEnd > workEnd) {
-                        setSlotStatus({ type: 'error', message: `Outside shift hours (${hours.start_time.slice(0, 5)} - ${hours.end_time.slice(0, 5)})` });
-                        return;
-                    }
-                }
-            }
-
-            // 2. Check Breaks
-            const { data: breaks, error: breaksError } = await supabase
-                .from('breaks')
-                .select('*')
-                .eq('profile_id', user.id)
-                .eq('day_of_week', dayOfWeek);
-
-            if (breaksError) throw breaksError;
-            if (!isCurrent) return;
-
-            if (breaks && breaks.length > 0) {
-                for (const brk of breaks) {
-                    const [bH, bM] = brk.start_time.split(':').map(Number);
-                    const bStart = new Date(formData.date);
-                    bStart.setHours(bH, bM, 0, 0);
-                    const bEnd = new Date(bStart.getTime() + brk.duration_minutes * 60000);
-
-                    if (slotStart < bEnd && slotEnd > bStart) {
-                        setSlotStatus({ type: 'error', message: `Conflict with break: ${brk.label}` });
-                        return;
-                    }
-                }
-            }
-
-            // 3. Check Existing Appointments
+            // Fetch existing appointments first so we have them for the suggestion logic
             let query = supabase
                 .from('appointments')
                 .select('scheduled_start, duration_minutes')
@@ -151,28 +193,69 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
                 .gte('scheduled_start', `${formData.date}T00:00:00`)
                 .lte('scheduled_start', `${formData.date}T23:59:59`);
 
-            if (editData) {
+            if (editData?.id) {
                 query = query.neq('id', editData.id);
             }
 
             const { data: existing, error: aptError } = await query;
-
             if (aptError) throw aptError;
             if (!isCurrent) return;
 
-            if (existing && existing.length > 0) {
-                for (const apt of existing) {
-                    const aStart = new Date(apt.scheduled_start);
-                    const aEnd = new Date(aStart.getTime() + apt.duration_minutes * 60000);
+            // Define a helper to set error with suggestion
+            const setErrorWithSuggestion = (msg) => {
+                const suggestion = findNextAvailableSlot(slotStart, formData.duration, providerData, existing || []);
+                setSlotStatus({ type: 'error', message: msg, suggestion });
+            };
 
-                    if (slotStart < aEnd && slotEnd > aStart) {
-                        setSlotStatus({ type: 'error', message: 'Slot overlapping with existing appointment' });
+            // 0. Past Time Check (Instant)
+            if (slotStart < new Date()) {
+                setErrorWithSuggestion('This time slot has already passed');
+                return;
+            }
+
+            // 1. Check working hours (Using cached data)
+            const { hours } = providerData;
+            if (hours) {
+                if (hours.is_active === false) {
+                    setSlotStatus({ type: 'error', message: 'You are marked as CLOSED', suggestion: null });
+                    return;
+                }
+                if (hours.start_time && hours.end_time) {
+                    const [hS, mS] = hours.start_time.split(':').map(Number);
+                    const [hE, mE] = hours.end_time.split(':').map(Number);
+                    const workS = new Date(formData.date); workS.setHours(hS, mS, 0, 0);
+                    const workE = new Date(formData.date); workE.setHours(hE, mE, 0, 0);
+                    if (slotStart < workS || slotEnd > workE) {
+                        setErrorWithSuggestion(`Outside shift (${hours.start_time.slice(0, 5)}-${hours.end_time.slice(0, 5)})`);
                         return;
                     }
                 }
             }
 
-            setSlotStatus({ type: 'success', message: 'Time slot is available' });
+            // 2. Check Breaks (Using cached data)
+            for (const brk of providerData.breaks) {
+                const [bH, bM] = brk.start_time.split(':').map(Number);
+                const bS = new Date(formData.date); bS.setHours(bH, bM, 0, 0);
+                const bE = new Date(bS.getTime() + brk.duration_minutes * 60000);
+                if (slotStart < bE && slotEnd > bS) {
+                    setErrorWithSuggestion(`Conflict: ${brk.label}`);
+                    return;
+                }
+            }
+
+            // 3. Check Appointments
+            if (existing && existing.length > 0) {
+                for (const apt of existing) {
+                    const aS = new Date(apt.scheduled_start);
+                    const aE = new Date(aS.getTime() + apt.duration_minutes * 60000);
+                    if (slotStart < aE && slotEnd > aS) {
+                        setErrorWithSuggestion('Slot already booked');
+                        return;
+                    }
+                }
+            }
+
+            setSlotStatus({ type: 'success', message: 'Time slot is available', suggestion: null });
         } catch (err) {
             console.error("Conflict check failed:", err);
             if (isCurrent) setSlotStatus({ type: 'error', message: 'Connection issue. Could not verify availability.' });
@@ -379,15 +462,26 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
                                             initial={{ opacity: 0, height: 0 }}
                                             animate={{ opacity: 1, height: 'auto' }}
                                             exit={{ opacity: 0, height: 0 }}
-                                            className={`flex items-center gap-2 p-3 rounded-xl border text-xs font-bold ${slotStatus.type === 'error' ? 'bg-red-500/10 border-red-500/20 text-red-400' :
+                                            className={`flex items-center gap-3 p-3 rounded-xl border text-xs font-bold ${slotStatus.type === 'error' ? 'bg-red-500/10 border-red-500/20 text-red-400' :
                                                 slotStatus.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' :
                                                     'bg-slate-800/50 border-white/5 text-slate-400'
                                                 }`}
                                         >
                                             {slotStatus.type === 'checking' && <Loader2 className="w-3 h-3 animate-spin" />}
-                                            {slotStatus.type === 'error' && <AlertTriangle className="w-3 h-3" />}
-                                            {slotStatus.type === 'success' && <CheckCircle2 className="w-3 h-3" />}
-                                            {slotStatus.message}
+                                            {slotStatus.type === 'error' && <AlertTriangle className="w-3 h-3 shrink-0" />}
+                                            {slotStatus.type === 'success' && <CheckCircle2 className="w-3 h-3 shrink-0" />}
+
+                                            <span className="flex-grow">{slotStatus.message}</span>
+                                            {slotStatus.suggestion && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setFormData({ ...formData, time: slotStatus.suggestion })}
+                                                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border transition-all animate-pulse hover:animate-none bg-orange-500/20 border-orange-500/30 text-orange-400 hover:bg-orange-500/40 active:scale-95"
+                                                >
+                                                    <Clock size={12} strokeWidth={3} />
+                                                    <span className="whitespace-nowrap font-black">Use {slotStatus.suggestion}</span>
+                                                </button>
+                                            )}
                                         </motion.div>
                                     )}
                                 </AnimatePresence>

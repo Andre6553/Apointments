@@ -243,12 +243,9 @@ const Dashboard = () => {
                             }}
                             notification={selectedNotification}
                             onComplete={() => {
-                                // Refresh appointments if on dashboard tab
-                                if (activeTab === 'appointments') {
-                                    // This is tricky as we don't have direct access to AppointmentList's refresh
-                                    // But Supabase Realtime in AppointmentList (if implemented) or just a manual refresh would work.
-                                    window.location.reload(); // Simple nuclear option for now to ensure data consistency
-                                }
+                                // Realtime subscriptions in AppointmentList and DailyTimeline will handle the update
+                                setSelectedNotification(null);
+                                setIsResponseModalOpen(false);
                             }}
                         />
                     )}
