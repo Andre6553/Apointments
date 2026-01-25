@@ -55,7 +55,12 @@ const EditClientModal = ({ isOpen, onClose, client, onUpdate }) => {
 
         setTestLoading(true)
         try {
-            const response = await fetch('http://localhost:3001/send-whatsapp', {
+            // Use local proxy in development, specific API route in production
+            const endpoint = window.location.hostname === 'localhost'
+                ? 'http://localhost:3001/send-whatsapp'
+                : '/api/send-whatsapp';
+
+            const response = await fetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
