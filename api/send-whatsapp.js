@@ -1,3 +1,5 @@
+import twilio from 'twilio';
+
 export default async function handler(req, res) {
     // Enable CORS
     res.setHeader('Access-Control-Allow-Credentials', true)
@@ -27,7 +29,7 @@ export default async function handler(req, res) {
     }
 
     try {
-        const client = require('twilio')(accountSid, authToken);
+        const client = twilio(accountSid, authToken);
 
         const result = await client.messages.create({
             body: message,
