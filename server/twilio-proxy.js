@@ -11,13 +11,20 @@ const rootDir = path.resolve(path.dirname(__filename), '..');
 const loadEnv = () => {
     try {
         const envPath = path.join(rootDir, '.env');
+        if (!fs.existsSync(envPath)) return process.env;
         const envFile = fs.readFileSync(envPath, 'utf8');
-        const env = {};
+        const env = { ...process.env };
         envFile.split('\n').forEach(line => {
-            const firstEq = line.indexOf('=');
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith('#')) return;
+            const firstEq = trimmed.indexOf('=');
             if (firstEq === -1) return;
-            const key = line.substring(0, firstEq).trim();
-            const val = line.substring(firstEq + 1).trim();
+            const key = trimmed.substring(0, firstEq).trim();
+            let val = trimmed.substring(firstEq + 1).trim();
+            // Remove surround quotes if present
+            if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+                val = val.substring(1, val.length - 1);
+            }
             if (key && val) env[key] = val;
         });
         return env;

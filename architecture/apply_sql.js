@@ -50,6 +50,7 @@ async function applySql(filePath) {
         }
 
         console.log('✅ SQL applied successfully');
+        if (data) console.log('Result:', JSON.stringify(data, null, 2));
     } catch (err) {
         console.error('❌ Failed to apply SQL:', err.message);
         process.exit(1);

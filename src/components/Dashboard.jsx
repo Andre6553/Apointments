@@ -12,6 +12,8 @@ import NotificationCenter from './NotificationCenter';
 import TransferResponseModal from './TransferResponseModal';
 import ProfileSettings from './ProfileSettings';
 import ErrorBoundary from './ErrorBoundary';
+import { useWorkloadAlerts } from '../hooks/useWorkloadAlerts';
+import { checkActiveOverruns } from '../lib/delayEngine';
 import logo from '../assets/logo.png';
 import {
     Users,
@@ -37,10 +39,21 @@ const Dashboard = () => {
     const [currentTime, setCurrentTime] = useState(new Date());
     const [selectedNotification, setSelectedNotification] = useState(null);
     const [isResponseModalOpen, setIsResponseModalOpen] = useState(false);
+    const { count: alertCount } = useWorkloadAlerts();
 
     useEffect(() => {
         const timer = setInterval(() => setCurrentTime(new Date()), 1000);
-        return () => clearInterval(timer);
+
+        // Proactive Heartbeat: Check for session overruns every 60 seconds
+        const overrunMonitor = setInterval(() => {
+            console.log('[Dashboard] Heartbeat: Checking for proactive overruns...');
+            checkActiveOverruns();
+        }, 60000);
+
+        return () => {
+            clearInterval(timer);
+            clearInterval(overrunMonitor);
+        };
     }, []);
 
     const tabs = [
@@ -204,8 +217,28 @@ const Dashboard = () => {
                         >
                             <div className="mb-10 flex flex-col sm:flex-row sm:items-end justify-between gap-4">
                                 <div>
-                                    <h1 className="text-4xl font-heading font-bold text-white tracking-tight mb-2">
+                                    <h1 className="text-4xl font-heading font-bold text-white tracking-tight mb-2 flex items-center gap-4">
                                         {activeTabData?.label}
+                                        {activeTab === 'appointments' && alertCount > 0 && (
+                                            <motion.div
+                                                initial={{ scale: 0.8, opacity: 0 }}
+                                                animate={{
+                                                    scale: [1, 1.2, 1],
+                                                    opacity: 1,
+                                                }}
+                                                transition={{
+                                                    duration: 1.5,
+                                                    repeat: Infinity,
+                                                    ease: "easeInOut"
+                                                }}
+                                                className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-red-500/20 border border-red-500/30 text-red-500 cursor-pointer"
+                                                onClick={() => setActiveTab('balancer')}
+                                                title={`${alertCount} Delayed Appointments`}
+                                            >
+                                                <AlertTriangle size={20} className="stroke-[3]" />
+                                                <span className="text-xs font-black uppercase tracking-tighter hidden sm:inline">{alertCount} Alerts</span>
+                                            </motion.div>
+                                        )}
                                     </h1>
                                     <p className="text-slate-400 text-sm max-w-md">
                                         Manage your {activeTabData?.label?.toLowerCase() || 'dashboard'} seamlessly with real-time updates.

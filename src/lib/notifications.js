@@ -12,27 +12,32 @@ export const sendWhatsApp = async (phone, message) => {
     console.log(`Message: "${message}"`);
 
     try {
-        // We still attempt to call the real Supabase function if it exists.
-        // BUT only in production mode. In simulation mode, we avoid the call to prevent 406 errors.
-        if (isSim) {
-            console.log(`[WhatsApp Simulation] Skipped real function call.`);
-            return { success: true, simulated: true };
+        // Fallback for testing: Call the local proxy if simulation mode is "test-real" or if Edge Function fails
+        const useProxy = isSim || window.location.hostname === 'localhost';
+
+        if (useProxy) {
+            console.log(`[WhatsApp] Attempting local proxy send to ${targetPhone}...`);
+            const proxyRes = await fetch('http://localhost:3001/send-whatsapp', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ to: targetPhone, message })
+            });
+
+            if (proxyRes.ok) {
+                console.log('[WhatsApp] Sent via local proxy successfully');
+                return { success: true, via: 'proxy' };
+            }
         }
 
+        // Production / Edge Function path
         const { data, error } = await supabase.functions.invoke('send-whatsapp', {
             body: { to: targetPhone, message }
         })
 
-        if (error) {
-            console.warn('[WhatsApp] Function call failed (Normal if not deployed):', error.message);
-            return { success: false, error: error.message };
-        }
-
+        if (error) throw error;
         return { success: true, data };
     } catch (err) {
-        console.error('[WhatsApp] Error:', err);
-        // Simulation fallback - always "succeed" visually
-        if (isSim) return { success: true, simulated: true };
+        console.error('[WhatsApp] Send failed:', err);
         return { success: false, error: err.message };
     }
 }

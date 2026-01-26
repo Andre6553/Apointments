@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { format, isSameDay } from 'date-fns';
 import { useAuth } from '../hooks/useAuth';
 import AddAppointmentModal from './AddAppointmentModal';
-import { Edit2, Play, Square, AlertCircle, Clock, ArrowRight, Plus, Timer, Calendar as CalendarIcon, Loader2, CheckCircle2, Trash2 } from 'lucide-react';
+import { Edit2, Play, Square, AlertCircle, Clock, ArrowRight, Plus, Timer, Calendar as CalendarIcon, Loader2, CheckCircle2, Trash2, Sparkles } from 'lucide-react';
 import TransferModal from './TransferModal';
 import CancelAppointmentModal from './CancelAppointmentModal';
 import { calculateAndApplyDelay } from '../lib/delayEngine';
@@ -20,6 +20,13 @@ const AppointmentList = () => {
     const [editData, setEditData] = useState(null);
     const [selectedApt, setSelectedApt] = useState(null);
     const [selectedCancelApt, setSelectedCancelApt] = useState(null);
+
+    const [now, setNow] = useState(new Date());
+
+    useEffect(() => {
+        const timer = setInterval(() => setNow(new Date()), 10000); // Update every 10s for performance
+        return () => clearInterval(timer);
+    }, []);
 
     const fetchAppointments = async (silent = false, useOptimistic = false) => {
         if (useOptimistic) {
@@ -85,11 +92,22 @@ const AppointmentList = () => {
     };
 
     const endAppointment = async (id) => {
+        const endTime = new Date().toISOString();
         const { error } = await supabase
             .from('appointments')
-            .update({ actual_end: new Date().toISOString(), status: 'completed' })
+            .update({ actual_end: endTime, status: 'completed' })
             .eq('id', id);
-        if (!error) fetchAppointments();
+
+        if (!error) {
+            try {
+                // Proactively reassess the schedule upon completion
+                await calculateAndApplyDelay(id, endTime, 'end');
+            } catch (err) {
+                console.warn('[EndSession] Delay recalculation failed:', err);
+            } finally {
+                fetchAppointments();
+            }
+        }
     };
 
     const SessionTimer = ({ startTime, duration }) => {
@@ -269,26 +287,38 @@ const AppointmentList = () => {
                                     })()}
 
                                     <div className="p-6 flex flex-col md:flex-row md:items-center gap-6 md:gap-8">
-                                        {/* Time Block */}
-                                        <div className="flex items-center gap-6 min-w-[140px]">
-                                            <div className={`
-                                            w-20 h-20 rounded-2xl flex flex-col items-center justify-center border transition-all duration-300 relative overflow-hidden
-                                            ${apt.status === 'active'
-                                                    ? 'bg-gradient-to-br from-primary to-indigo-600 border-primary/50 text-white shadow-lg'
-                                                    : 'bg-surface border-white/5 text-slate-400 group-hover:border-white/10 group-hover:bg-surface/80'}
-                                        `}>
-                                                <span className="text-[10px] font-bold uppercase tracking-widest opacity-60 mb-0.5">Start</span>
-                                                <span className="text-2xl font-heading font-bold tracking-tight">{format(new Date(apt.scheduled_start), 'HH:mm')}</span>
+                                        {/* Time & Provider Column */}
+                                        <div className="flex flex-col items-center gap-4 min-w-[120px]">
+                                            {(() => {
+                                                const isOverdue = apt.status === 'pending' && now > new Date(apt.scheduled_start);
+                                                return (
+                                                    <div className={`
+                                                        w-20 h-20 rounded-2xl flex flex-col items-center justify-center border transition-all duration-300 relative overflow-hidden
+                                                        ${apt.status === 'active'
+                                                            ? 'bg-gradient-to-br from-primary to-indigo-600 border-primary/50 text-white shadow-lg'
+                                                            : isOverdue
+                                                                ? 'bg-red-500/10 border-red-500/40 text-red-500 animate-pulse'
+                                                                : 'bg-surface border-white/5 text-slate-400 group-hover:border-white/10 group-hover:bg-surface/80'}
+                                                    `}>
+                                                        <span className="text-[10px] font-bold uppercase tracking-widest opacity-60 mb-0.5">Start</span>
+                                                        <span className="text-2xl font-heading font-bold tracking-tight">{format(new Date(apt.scheduled_start), 'HH:mm')}</span>
+
+                                                        {isOverdue && (
+                                                            <div className="absolute inset-0 bg-red-500/5 animate-pulse pointer-events-none" />
+                                                        )}
+                                                    </div>
+                                                );
+                                            })()}
+
+                                            <div className="hidden md:block text-[9px] font-black text-slate-500 bg-white/5 px-2 py-1 rounded-lg border border-white/10 uppercase tracking-[0.1em] text-center w-full truncate max-w-[110px]">
+                                                {apt.provider?.full_name || 'Unassigned'}
                                             </div>
 
-                                            <div className="md:hidden">
+                                            <div className="md:hidden text-center">
                                                 <h4 className="font-heading font-bold text-white text-xl">
                                                     {apt.client?.first_name} {apt.client?.last_name}
                                                 </h4>
-                                                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-1">
-                                                    By {apt.provider?.full_name || 'Unassigned'}
-                                                </p>
-                                                <div className="flex items-center gap-2 mt-2">
+                                                <div className="flex items-center justify-center gap-2 mt-2">
                                                     <span className={`text-[10px] font-bold uppercase tracking-widest px-2.5 py-1 rounded-lg border ${apt.status === 'completed' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' :
                                                         apt.status === 'active' ? 'bg-primary/10 text-primary border-primary/20' :
                                                             'bg-slate-800 text-slate-500 border-slate-700'
@@ -300,14 +330,11 @@ const AppointmentList = () => {
                                         </div>
 
                                         {/* Main Info */}
-                                        <div className="hidden md:block flex-grow space-y-2">
+                                        <div className="hidden md:block flex-grow space-y-4">
                                             <div className="flex items-center gap-4">
-                                                <h4 className="font-heading font-bold text-2xl text-white group-hover:text-primary/90 transition-colors">
+                                                <h4 className="font-heading font-bold text-2xl text-white group-hover:text-primary transition-colors">
                                                     {apt.client?.first_name} {apt.client?.last_name}
                                                 </h4>
-                                                <span className="text-[10px] font-bold text-slate-500 bg-white/5 px-2 py-0.5 rounded border border-white/5 uppercase tracking-widest">
-                                                    {apt.provider?.full_name || 'Unassigned'}
-                                                </span>
                                                 {apt.delay_minutes > 0 && (
                                                     <span className="bg-red-500/10 text-red-400 text-[10px] font-bold px-2 py-0.5 rounded-full border border-red-500/20 flex items-center gap-1">
                                                         <AlertCircle size={12} className="stroke-[3]" /> +{apt.delay_minutes}m Delay
@@ -315,21 +342,30 @@ const AppointmentList = () => {
                                                 )}
                                             </div>
 
-                                            <div className="flex items-center gap-6 text-sm text-slate-400 font-medium">
-                                                <span className="flex items-center gap-2 px-3 py-1 rounded-lg bg-surface/50 border border-white/5">
-                                                    <Timer size={14} className="text-primary" /> {apt.duration_minutes} min session
-                                                </span>
-                                                <span className="flex items-center gap-2">
-                                                    <ArrowRight size={14} className="text-slate-600" />
-                                                    Ends {format(new Date(new Date(apt.scheduled_start).getTime() + (apt.duration_minutes + (apt.delay_minutes || 0)) * 60000), 'HH:mm')}
-                                                </span>
-                                            </div>
+                                            <div className="space-y-3">
+                                                <div className="flex flex-col gap-2">
+                                                    <div className="flex items-center gap-2 text-[11px] font-bold text-primary uppercase tracking-wider bg-primary/5 border border-primary/10 px-3 py-1.5 rounded-xl w-fit">
+                                                        <Sparkles size={12} /> {apt.treatment_name || 'Standard Session'}
+                                                    </div>
 
-                                            {apt.notes && (
-                                                <p className="text-xs text-slate-500 italic line-clamp-1 border-l-2 border-slate-700 pl-3">
-                                                    {apt.notes}
-                                                </p>
-                                            )}
+                                                    <div className="flex items-center gap-4 text-xs text-slate-400 font-medium ml-1">
+                                                        <span className="flex items-center gap-2 opacity-60 text-[10px] uppercase font-black tracking-widest">
+                                                            Duration: <span className="text-white">{apt.duration_minutes} min</span>
+                                                        </span>
+                                                        <div className="h-1 w-1 bg-white/10 rounded-full" />
+                                                        <span className="flex items-center gap-2 text-primary font-bold">
+                                                            <ArrowRight size={14} className="opacity-40" />
+                                                            Ends {format(new Date(new Date(apt.scheduled_start).getTime() + (apt.duration_minutes + (apt.delay_minutes || 0)) * 60000), 'HH:mm')}
+                                                        </span>
+                                                    </div>
+                                                </div>
+
+                                                {apt.notes && (
+                                                    <p className="text-xs text-slate-500 italic line-clamp-1 border-l-2 border-primary/30 pl-3 py-0.5 bg-white/[0.01]">
+                                                        {apt.notes}
+                                                    </p>
+                                                )}
+                                            </div>
                                         </div>
 
                                         {/* Actions */}

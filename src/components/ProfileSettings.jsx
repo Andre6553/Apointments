@@ -1,21 +1,21 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../hooks/useAuth'
-import { User, Save, Check, Loader2, Trash2, Edit2, XCircle, Shield, ShieldOff } from 'lucide-react'
+import { User, Save, Check, Loader2, Trash2, Edit2, XCircle, Shield, ShieldOff, AlertTriangle, Sparkles } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
 const ProfileSettings = () => {
     const { user, profile, fetchProfile, updateProfile } = useAuth()
     const [fullName, setFullName] = useState('')
     const [whatsapp, setWhatsapp] = useState('')
-    const [currency, setCurrency] = useState('$')
+    const [currencySymbol, setCurrencySymbol] = useState('$')
+    const [acceptsTransfers, setAcceptsTransfers] = useState(true)
     const [loading, setLoading] = useState(false)
-    const [saving, setSaving] = useState(false)
-    const [togglingProtection, setTogglingProtection] = useState(false)
-    const [treatments, setTreatments] = useState([])
     const [isSubmitting, setIsSubmitting] = useState(false)
     const [isFetchingTreatments, setIsFetchingTreatments] = useState(false)
+    const [togglingProtection, setTogglingProtection] = useState(false)
     const [status, setStatus] = useState(null) // 'saved' | 'error'
+    const [treatments, setTreatments] = useState([])
 
     const [newTreatment, setNewTreatment] = useState({ name: '', duration: 30, cost: 0 })
     const [editingId, setEditingId] = useState(null)
@@ -132,6 +132,17 @@ const ProfileSettings = () => {
             setTreatments(treatments.filter(t => t.id !== id))
         } catch (err) {
             console.error('Error deleting treatment:', err)
+        }
+    }
+
+    const toggleProtection = async () => {
+        setTogglingProtection(true)
+        try {
+            await updateProfile({ report_protection_enabled: !profile?.report_protection_enabled })
+        } catch (error) {
+            console.error('Toggle failed:', error)
+        } finally {
+            setTogglingProtection(false)
         }
     }
 
