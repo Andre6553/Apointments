@@ -41,7 +41,8 @@ const Reports = () => {
                 .order('scheduled_start', { ascending: false })
 
             // If not admin, only show own data
-            if (profile?.role !== 'Admin' && profile?.full_name !== 'Andre') {
+            // (RLS handles business isolation, this just focuses the view)
+            if (profile?.role?.toLowerCase() !== 'admin') {
                 query = query.eq('assigned_profile_id', user.id)
             }
 

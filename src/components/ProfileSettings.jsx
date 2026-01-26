@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../hooks/useAuth'
-import { User, Save, Check, Loader2, Trash2, Edit2, XCircle, Shield, ShieldOff, AlertTriangle, Sparkles } from 'lucide-react'
+import { User, Save, Check, Loader2, Trash2, Edit2, XCircle, Shield, ShieldOff, AlertTriangle, Sparkles, Building2, LogOut } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
 const ProfileSettings = () => {
@@ -20,6 +20,7 @@ const ProfileSettings = () => {
     const [newTreatment, setNewTreatment] = useState({ name: '', duration: 30, cost: 0 })
     const [editingId, setEditingId] = useState(null)
     const [editValues, setEditValues] = useState({ name: '', duration: 30, cost: 0 })
+    const [isLeavingOrg, setIsLeavingOrg] = useState(false)
 
     useEffect(() => {
         if (profile) {
@@ -46,6 +47,36 @@ const ProfileSettings = () => {
             console.error('Error fetching treatments:', err)
         } finally {
             setIsFetchingTreatments(false)
+        }
+    }
+
+    const handleLeaveOrganization = async () => {
+        if (!profile?.business_id) return
+
+        // Safety: Owners cannot leave their own business through this simple button
+        if (profile.business?.owner_id === user.id) {
+            alert("As the Business Owner, you cannot leave the organization. Please contact support or manage ownership in Organization settings.")
+            return
+        }
+
+        if (!confirm(`Are you sure you want to leave "${profile.business?.name}"? You will lose access to team data immediately.`)) return
+
+        setIsLeavingOrg(true)
+        try {
+            const { error } = await supabase
+                .from('profiles')
+                .update({ business_id: null })
+                .eq('id', user.id)
+
+            if (error) throw error
+            await fetchProfile(user.id)
+            setStatus('saved')
+            setTimeout(() => setStatus(null), 3000)
+        } catch (err) {
+            console.error('Error leaving organization:', err)
+            setStatus('error')
+        } finally {
+            setIsLeavingOrg(false)
         }
     }
 
@@ -425,6 +456,48 @@ const ProfileSettings = () => {
                     </div>
                 </div>
             </div>
+
+
+            {profile?.business_id && (
+                <div className="glass-card p-8 border-white/5 space-y-6">
+                    <div className="flex items-center gap-4">
+                        <div className="p-3 rounded-2xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                            <Building2 size={24} />
+                        </div>
+                        <div>
+                            <h4 className="font-bold text-white">Organization Membership</h4>
+                            <p className="text-xs text-slate-500">Currently linked to {profile.business?.name}</p>
+                        </div>
+                    </div>
+
+                    <div className="p-6 rounded-2xl bg-amber-500/5 border border-amber-500/10 space-y-4">
+                        <div className="flex gap-3">
+                            <AlertTriangle className="text-amber-500 shrink-0" size={18} />
+                            <div className="space-y-1">
+                                <p className="text-sm font-bold text-amber-500">Resignation Notice</p>
+                                <p className="text-xs text-slate-400 leading-relaxed">
+                                    Leaving this organization will remove your access to the shared dashboard,
+                                    team schedule, and the business client list. Your profile will return to
+                                    individual status.
+                                </p>
+                            </div>
+                        </div>
+
+                        <button
+                            onClick={handleLeaveOrganization}
+                            disabled={isLeavingOrg}
+                            className="w-full h-12 rounded-xl border border-white/10 hover:bg-rose-500/10 hover:border-rose-500/30 text-slate-400 hover:text-rose-400 font-bold text-sm flex items-center justify-center gap-2 transition-all group"
+                        >
+                            {isLeavingOrg ? (
+                                <Loader2 size={18} className="animate-spin" />
+                            ) : (
+                                <LogOut size={18} className="group-hover:-translate-x-1 transition-transform" />
+                            )}
+                            Leave Organization
+                        </button>
+                    </div>
+                </div>
+            )}
 
             <div className="glass-card p-6 border-white/5 bg-white/[0.02]">
                 <div className="flex items-center gap-4 text-slate-500">

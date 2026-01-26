@@ -116,7 +116,7 @@ export const AuthProvider = ({ children }) => {
         // 2. Fetch Data
         const { data, error } = await supabase
             .from('profiles')
-            .select('*')
+            .select('*, business:businesses!profiles_business_id_fkey(name, owner_id)')
             .eq('id', userId)
             .single()
 

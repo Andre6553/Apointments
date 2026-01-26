@@ -34,7 +34,8 @@ const AppointmentList = () => {
             if (cached) setAppointments(cached);
         }
         if (!silent) setLoading(true);
-        const { data, error } = await supabase
+
+        let query = supabase
             .from('appointments')
             .select(`
                 *,
@@ -45,6 +46,13 @@ const AppointmentList = () => {
             .or(`status.eq.active,status.eq.pending`)
             .order('scheduled_start', { ascending: true });
 
+        // Defense in Depth: Explicit filter despite RLS
+        if (profile?.role?.toLowerCase() !== 'admin') {
+            query = query.eq('assigned_profile_id', user?.id);
+        }
+
+        const { data, error } = await query;
+
         if (data) {
             setAppointments(data);
             setCache(CACHE_KEYS.APPOINTMENTS, data);
@@ -53,17 +61,22 @@ const AppointmentList = () => {
     };
 
     useEffect(() => {
-        if (!user) return;
+        if (!user || !profile) return;
         fetchAppointments();
 
-        const channel = supabase.channel('list-updates')
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'appointments' }, () => fetchAppointments(true))
+        const channel = supabase.channel(`list-updates-${user.id}`)
+            .on('postgres_changes', {
+                event: '*',
+                schema: 'public',
+                table: 'appointments',
+                filter: profile?.role?.toLowerCase() !== 'admin' ? `assigned_profile_id=eq.${user.id}` : undefined
+            }, () => fetchAppointments(true))
             .subscribe();
 
         return () => {
             supabase.removeChannel(channel);
         };
-    }, [user]);
+    }, [user, profile]);
 
     const startAppointment = async (id) => {
         const startTime = new Date().toISOString();

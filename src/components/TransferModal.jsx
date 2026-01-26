@@ -2,10 +2,12 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useAvailability } from '../hooks/useAvailability'
+import { useAuth } from '../hooks/useAuth'
 import { X, User, Clock, ArrowRight, Loader2, CheckCircle2, AlertTriangle, Calendar } from 'lucide-react'
 import { format, parseISO, isWithinInterval } from 'date-fns'
 
 const TransferModal = ({ isOpen, onClose, appointment, onComplete }) => {
+    const { profile } = useAuth()
     const [providers, setProviders] = useState([])
     const [selectedProvider, setSelectedProvider] = useState(null)
     const [availability, setAvailability] = useState({ status: 'idle', slots: [] })
@@ -29,13 +31,15 @@ const TransferModal = ({ isOpen, onClose, appointment, onComplete }) => {
     const fetchProviders = async () => {
         setLoading(true)
         try {
-            const { data: { user } } = await supabase.auth.getUser()
+            if (!profile?.business_id) return
+
             const { data, error } = await supabase
                 .from('profiles')
                 .select('*')
-                .neq('id', user.id)
+                .neq('id', profile.id)
+                .eq('business_id', profile.business_id)
                 .eq('accepts_transfers', true)
-                .order('full_name') // Better UX
+                .order('full_name')
 
             if (error) throw error
             setProviders(data || [])

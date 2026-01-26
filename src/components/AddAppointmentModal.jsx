@@ -7,7 +7,7 @@ import { useAuth } from '../hooks/useAuth';
 import { getCache, setCache, CACHE_KEYS } from '../lib/cache';
 
 const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) => {
-    const { user } = useAuth();
+    const { user, profile } = useAuth();
     const [clients, setClients] = useState([]);
     const [formData, setFormData] = useState({
         clientId: '',
@@ -388,9 +388,17 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
 
     const fetchClients = async () => {
         setFetchingClients(true);
-        const { data } = await supabase.from('clients').select('*').order('first_name');
-        if (data) setClients(data);
-        setFetchingClients(false);
+        try {
+            let query = supabase.from('clients').select('*').order('first_name');
+
+            const { data, error } = await query;
+            if (error) throw error;
+            if (data) setClients(data);
+        } catch (err) {
+            console.error('Error fetching clients:', err);
+        } finally {
+            setFetchingClients(false);
+        }
     };
 
     const fetchTreatments = async () => {

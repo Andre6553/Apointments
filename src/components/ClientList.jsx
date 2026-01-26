@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { Search, Plus, Trash2, Phone, Mail, User, AlertCircle, Loader2, X, Edit2, MessageCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useAuth } from '../hooks/useAuth';
 import EditClientModal from './EditClientModal';
 
 const ClientList = () => {
@@ -14,17 +15,24 @@ const ClientList = () => {
     const [editingClient, setEditingClient] = useState(null);
     const [isEditOpen, setIsEditOpen] = useState(false);
 
+    const { profile } = useAuth();
+
     const fetchClients = async () => {
         setLoading(true);
-        const { data: { user } } = await supabase.auth.getUser();
-        const { data, error } = await supabase
-            .from('clients')
-            .select('*')
-            .eq('owner_id', user.id)
-            .order('created_at', { ascending: false });
+        try {
+            let query = supabase
+                .from('clients')
+                .select('*')
+                .order('created_at', { ascending: false });
 
-        if (data) setClients(data);
-        setLoading(false);
+            const { data, error } = await query;
+            if (error) throw error;
+            setClients(data || []);
+        } catch (err) {
+            console.error('Error fetching clients:', err);
+        } finally {
+            setLoading(false);
+        }
     };
 
     useEffect(() => {

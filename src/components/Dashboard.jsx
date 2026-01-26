@@ -11,6 +11,7 @@ import Reports from './Reports';
 import NotificationCenter from './NotificationCenter';
 import TransferResponseModal from './TransferResponseModal';
 import ProfileSettings from './ProfileSettings';
+import OrganizationSettings from './OrganizationSettings';
 import ErrorBoundary from './ErrorBoundary';
 import { useWorkloadAlerts } from '../hooks/useWorkloadAlerts';
 import { checkActiveOverruns } from '../lib/delayEngine';
@@ -62,9 +63,11 @@ const Dashboard = () => {
         { id: 'schedule', label: 'Schedule', icon: Clock, color: 'text-orange-400' },
         { id: 'balancer', label: 'Workload', icon: Scale, color: 'text-purple-400' },
         { id: 'reports', label: 'Reports', icon: FileText, color: 'text-blue-400' },
+        { id: 'organization', label: 'Organization', icon: Sparkles, color: 'text-rose-400', adminOnly: true },
         { id: 'profile', label: 'Profile', icon: User, color: 'text-emerald-400' },
     ];
 
+    const filteredTabs = tabs.filter(t => !t.adminOnly || profile?.role?.toLowerCase() === 'admin');
     const activeTabData = tabs.find(t => t.id === activeTab) || tabs[0];
 
     const renderActiveComponent = () => {
@@ -83,6 +86,7 @@ const Dashboard = () => {
             schedule: <ScheduleSettings />,
             balancer: <WorkloadBalancer />,
             reports: <Reports />,
+            organization: <OrganizationSettings />,
             profile: <ProfileSettings />
         };
 
@@ -141,9 +145,16 @@ const Dashboard = () => {
                     </div>
                 </div>
 
-                <div className="space-y-2 flex-grow">
+                <div className="space-y-4 mb-auto">
+                    {profile?.business?.name && (
+                        <div className="bg-gradient-to-br from-primary/10 to-transparent p-4 rounded-2xl border border-primary/20 mb-6">
+                            <p className="text-[10px] font-bold text-primary uppercase tracking-widest mb-1">Organization</p>
+                            <h2 className="text-lg font-bold text-white leading-tight font-heading">{profile.business.name}</h2>
+                        </div>
+                    )}
+
                     <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-4 px-4">Menu</p>
-                    {tabs.map((tab) => (
+                    {filteredTabs.map((tab) => (
                         <button
                             key={tab.id}
                             onClick={() => { setActiveTab(tab.id); setIsSidebarOpen(false); }}

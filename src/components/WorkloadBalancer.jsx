@@ -120,7 +120,7 @@ const WorkloadBalancer = () => {
                 </div>
             </div>
 
-            {profile?.role === 'admin' && (
+            {profile?.role?.toLowerCase() === 'admin' && (
                 <div className="flex bg-slate-800/40 p-1 rounded-2xl border border-white/5 w-fit">
                     <button
                         onClick={() => setGlobalView(false)}
