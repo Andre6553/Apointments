@@ -12,6 +12,7 @@ import NotificationCenter from './NotificationCenter';
 import TransferResponseModal from './TransferResponseModal';
 import ProfileSettings from './ProfileSettings';
 import ErrorBoundary from './ErrorBoundary';
+import logo from '../assets/logo.png';
 import {
     Users,
     Calendar,
@@ -84,8 +85,8 @@ const Dashboard = () => {
             {/* Mobile Header */}
             <header className="md:hidden bg-surface/80 backdrop-blur-md border-b border-white/5 p-4 flex justify-between items-center sticky top-0 z-50">
                 <div className="flex items-center gap-2">
-                    <div className="p-2 rounded-xl bg-primary/20 border border-primary/20">
-                        <LayoutDashboard size={18} className="text-primary" />
+                    <div className="p-1 rounded-lg bg-primary/20 border border-primary/20">
+                        <img src={logo} alt="Logo" className="w-8 h-8 rounded-md object-contain" />
                     </div>
                     <span className="font-heading font-bold text-lg text-white">Tracker</span>
                 </div>
@@ -114,9 +115,9 @@ const Dashboard = () => {
             `}>
                 <div className="hidden md:flex items-center gap-4 mb-12 px-2">
                     <div className="relative group">
-                        <div className="absolute inset-0 bg-primary blur-xl rounded-full opacity-25 group-hover:opacity-50 transition-opacity"></div>
-                        <div className="relative p-3.5 rounded-2xl bg-gradient-to-br from-primary to-indigo-600 shadow-xl shadow-primary/20 text-white">
-                            <LayoutDashboard size={24} />
+                        <div className="absolute inset-0 bg-primary blur-2xl rounded-full opacity-30 group-hover:opacity-60 transition-opacity"></div>
+                        <div className="relative p-1 rounded-2xl bg-gradient-to-br from-white/10 to-white/5 shadow-2xl border border-white/10 overflow-hidden">
+                            <img src={logo} alt="Logo" className="w-14 h-14 rounded-xl object-contain shadow-2xl" />
                         </div>
                     </div>
                     <div>

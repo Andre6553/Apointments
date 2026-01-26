@@ -1,48 +1,51 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
-import { FileText, Download, Users, History, TrendingUp, Clock, AlertTriangle, CheckCircle2, Loader2, Calendar } from 'lucide-react'
+import { FileText, Download, Users, History, TrendingUp, Clock, AlertTriangle, CheckCircle2, Loader2, Calendar, ArrowRight, Shield, ShieldOff, Lock } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { jsPDF } from 'jspdf'
-import 'jspdf-autotable'
+import autoTable from 'jspdf-autotable'
 import { format } from 'date-fns'
 import { useAuth } from '../hooks/useAuth'
+import ReportPasswordScreen from './ReportPasswordScreen'
 
 const Reports = () => {
-    const { user, profile } = useAuth()
+    const { user, profile, updateProfile } = useAuth()
     const [history, setHistory] = useState([])
     const [loading, setLoading] = useState(true)
-    const [stats, setStats] = useState({ total: 0, onTime: 0, delayed: 0 })
+    const [generating, setGenerating] = useState(false)
+    const [stats, setStats] = useState({ total: 0, onTime: 0, delayed: 0, revenue: 0 })
+    const [isVerified, setIsVerified] = useState(false)
+    const [togglingProtection, setTogglingProtection] = useState(false)
+
+    // Default to current month
+    const [dateRange, setDateRange] = useState({
+        start: format(new Date(new Date().getFullYear(), new Date().getMonth(), 1), 'yyyy-MM-dd'),
+        end: format(new Date(), 'yyyy-MM-dd')
+    })
 
     const fetchHistory = async () => {
         setLoading(true)
         try {
-            // Mock data fallback
-            const mockHistory = [
-                { id: 1, scheduled_start: new Date().toISOString(), client: { first_name: 'Alice', last_name: 'Smith' }, provider: { full_name: 'Dr. John Doe' }, status: 'completed', delay_minutes: 0, shifted_from_id: null },
-                { id: 2, scheduled_start: new Date(Date.now() - 86400000).toISOString(), client: { first_name: 'Bob', last_name: 'Jones' }, provider: { full_name: 'Sarah Connor' }, status: 'completed', delay_minutes: 15, shifted_from_id: 'p2' },
-                { id: 3, scheduled_start: new Date(Date.now() - 172800000).toISOString(), client: { first_name: 'Charlie', last_name: 'Brown' }, provider: { full_name: 'Dr. Emily White' }, status: 'cancelled', delay_minutes: 0, shifted_from_id: null },
-                { id: 4, scheduled_start: new Date(Date.now() - 259200000).toISOString(), client: { first_name: 'David', last_name: 'Wilson' }, provider: { full_name: 'Nurse Ratched' }, status: 'completed', delay_minutes: 5, shifted_from_id: null }
-            ]
-
             const { data: { user } } = await supabase.auth.getUser()
+            if (!user) return
 
-            if (!user) {
-                console.warn('Auth check failed - using mock data for reports')
-                setHistory(mockHistory)
-                calculateStats(mockHistory)
-                setLoading(false)
-                return
-            }
-
-            const { data, error } = await supabase
+            let query = supabase
                 .from('appointments')
                 .select(`
-            *,
-            client:clients(first_name, last_name, phone),
-            provider:profiles!appointments_assigned_profile_id_fkey(full_name)
-          `)
+                    *,
+                    client:clients(first_name, last_name, phone),
+                    provider:profiles!appointments_assigned_profile_id_fkey(full_name)
+                `)
+                .gte('scheduled_start', `${dateRange.start}T00:00:00`)
+                .lte('scheduled_start', `${dateRange.end}T23:59:59`)
                 .order('scheduled_start', { ascending: false })
 
+            // If not admin, only show own data
+            if (profile?.role !== 'Admin' && profile?.full_name !== 'Andre') {
+                query = query.eq('assigned_profile_id', user.id)
+            }
+
+            const { data, error } = await query
             if (error) throw error
 
             if (data) {
@@ -51,15 +54,6 @@ const Reports = () => {
             }
         } catch (error) {
             console.error('Error fetching reports:', error)
-            // Fallback to mock on error
-            setHistory([
-                { id: 1, scheduled_start: new Date().toISOString(), client: { first_name: 'Alice (Offline)', last_name: 'Smith' }, provider: { full_name: 'Dr. John Doe' }, status: 'completed', delay_minutes: 0, shifted_from_id: null },
-                { id: 2, scheduled_start: new Date(Date.now() - 86400000).toISOString(), client: { first_name: 'Bob (Offline)', last_name: 'Jones' }, provider: { full_name: 'Sarah Connor' }, status: 'completed', delay_minutes: 15, shifted_from_id: 'p2' }
-            ])
-            calculateStats([
-                { status: 'completed', delay_minutes: 0 },
-                { status: 'completed', delay_minutes: 15 }
-            ])
         } finally {
             setLoading(false)
         }
@@ -69,73 +63,211 @@ const Reports = () => {
         const total = data.length
         const delayed = data.filter(a => a.delay_minutes > 5).length
         const onTime = total - delayed
-        setStats({ total, onTime, delayed })
+        const revenue = data
+            .filter(a => a.status === 'completed' || a.status === 'active')
+            .reduce((sum, a) => sum + (parseFloat(a.cost) || 0), 0)
+        setStats({ total, onTime, delayed, revenue })
     }
 
     useEffect(() => {
         fetchHistory()
-    }, [])
+    }, [dateRange])
 
-    const generatePDF = (data, title) => {
-        const doc = new jsPDF()
+    const generatePDF = async (data, reportTitle) => {
+        setGenerating(true)
+        try {
+            const doc = new jsPDF()
+            const totalWidth = doc.internal.pageSize.getWidth()
 
-        doc.setFontSize(20)
-        doc.text(title, 14, 22)
-        doc.setFontSize(11)
-        doc.setTextColor(100)
-        doc.text(`Generated on: ${format(new Date(), 'yyyy-MM-dd HH:mm')}`, 14, 30)
+            // 1. Professional Header
+            doc.setFillColor(30, 41, 59) // Slate-800
+            doc.rect(0, 0, totalWidth, 50, 'F')
 
-        const tableData = data.map(apt => [
-            format(new Date(apt.scheduled_start), 'MMM dd, HH:mm'),
-            `${apt.client?.first_name} ${apt.client?.last_name}`,
-            apt.provider?.full_name,
-            apt.status,
-            apt.delay_minutes > 0 ? `+${apt.delay_minutes}m` : 'On Time',
-            apt.cancellation_reason || (apt.shifted_from_id ? 'Shifted' : '-')
-        ])
+            doc.setTextColor(255, 255, 255)
+            doc.setFontSize(24)
+            doc.setFont('helvetica', 'bold')
+            doc.text("CLINIC PERFORMANCE REPORT", 14, 25)
 
-        doc.autoTable({
-            startY: 40,
-            head: [['Date', 'Client', 'Provider', 'Status', 'Delay', 'Reason/Notes']],
-            body: tableData,
-            theme: 'striped',
-            headStyles: { fillStyle: '#6366f1' }
-        })
+            doc.setFontSize(10)
+            doc.setFont('helvetica', 'normal')
+            doc.text(`DATE RANGE: ${format(new Date(dateRange.start), 'MMM dd, yyyy')} - ${format(new Date(dateRange.end), 'MMM dd, yyyy')}`, 14, 35)
+            doc.text(`GENERATED BY: ${profile?.full_name || 'System'}`, 14, 42)
 
-        doc.save(`${title.replace(/\s+/g, '_')}_${format(new Date(), 'yyyyMMdd')}.pdf`)
+            // 2. Summary Stats Boxes
+            const delayedCount = data.filter(a => a.delay_minutes > 5).length
+            const onTimeCount = data.length - delayedCount
+            const onTimeRate = data.length > 0 ? Math.round((onTimeCount / data.length) * 100) : 100
+            const totalRevenue = data
+                .filter(a => a.status === 'completed' || a.status === 'active')
+                .reduce((sum, a) => sum + (parseFloat(a.cost) || 0), 0)
+
+            doc.setTextColor(30, 41, 59)
+            doc.setFontSize(12)
+            doc.text("PERFORMANCE SUMMARY", 14, 65)
+
+            // Simple boxes
+            doc.setDrawColor(226, 232, 240)
+            doc.rect(14, 70, 42, 25) // Total
+            doc.rect(60, 70, 42, 25) // On Time
+            doc.rect(106, 70, 42, 25) // Rate
+            doc.rect(152, 70, 44, 25) // Revenue
+
+            doc.setFontSize(7)
+            doc.text("TOTAL SESSIONS", 18, 77)
+            doc.text("ON-TIME SESSIONS", 64, 77)
+            doc.text("ON-TIME RATE", 110, 77)
+            doc.text("TOTAL REVENUE", 156, 77)
+
+            doc.setFontSize(12)
+            doc.text(String(data.length), 18, 88)
+            doc.text(String(onTimeCount), 64, 88)
+            doc.setTextColor(onTimeRate > 80 ? 16 : 244, onTimeRate > 80 ? 185 : 63, onTimeRate > 80 ? 129 : 94)
+            doc.text(`${onTimeRate}%`, 110, 88)
+            doc.setTextColor(16, 185, 129)
+            doc.text(`${profile?.currency_symbol || '$'}${totalRevenue.toFixed(2)}`, 156, 88)
+
+            doc.setTextColor(30, 41, 59)
+
+            // 3. Activity Table
+            const tableData = data.map(apt => [
+                format(new Date(apt.scheduled_start), 'MMM dd, HH:mm'),
+                `${apt.client?.first_name} ${apt.client?.last_name}`,
+                apt.provider?.full_name,
+                apt.treatment_name || '-',
+                `${profile?.currency_symbol || '$'}${apt.cost || 0}`,
+                apt.status.toUpperCase(),
+                apt.delay_minutes > 0 ? `+${apt.delay_minutes}m` : 'On Time'
+            ])
+
+            autoTable(doc, {
+                startY: 105,
+                head: [['Date/Time', 'Client', 'Provider', 'Treatment', 'Cost', 'Status', 'Delay']],
+                body: tableData,
+                theme: 'grid',
+                headStyles: {
+                    fillColor: [99, 102, 241], // Indigo-500
+                    textColor: 255,
+                    fontSize: 9,
+                    fontStyle: 'bold'
+                },
+                styles: { fontSize: 8, cellPadding: 3 },
+                alternateRowStyles: { fillColor: [248, 250, 252] }, // Slate-50
+                margin: { left: 14, right: 14 }
+            })
+
+            // 4. Footer
+            const pageCount = doc.internal.getNumberOfPages()
+            for (let i = 1; i <= pageCount; i++) {
+                doc.setPage(i)
+                doc.setFontSize(8)
+                doc.setTextColor(148, 163, 184)
+                doc.text(`Page ${i} of ${pageCount}`, totalWidth / 2, doc.internal.pageSize.getHeight() - 10, { align: 'center' })
+            }
+
+            doc.save(`Clinic_Report_${dateRange.start}_to_${dateRange.end}.pdf`)
+        } catch (err) {
+            console.error('PDF Generation failed:', err)
+            alert('Failed to generate PDF. Please try again.')
+        } finally {
+            setGenerating(false)
+        }
     }
 
     const exportMyReport = () => {
         const myData = history.filter(h => h.assigned_profile_id === user?.id)
-        generatePDF(myData, `My Performance Report - ${profile?.full_name || 'User'}`)
+        generatePDF(myData, `My Performance Report`)
     }
 
     const exportGlobalReport = () => {
         if (profile?.role !== 'Admin' && profile?.full_name !== 'Andre') {
-            alert('You do not have permission to view the Global Report.')
+            alert('Admin access required.')
             return
         }
         generatePDF(history, 'Global Activity Report')
     }
 
+    const toggleProtection = async () => {
+        setTogglingProtection(true)
+        try {
+            await updateProfile({ report_protection_enabled: !profile?.report_protection_enabled })
+        } catch (error) {
+            console.error('Toggle failed:', error)
+        } finally {
+            setTogglingProtection(false)
+        }
+    }
+
+    if (profile?.report_protection_enabled && !isVerified) {
+        return <ReportPasswordScreen onVerified={() => setIsVerified(true)} />
+    }
+
     return (
         <div className="space-y-10">
             <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-6">
-                <div>
-                    <h2 className="text-3xl font-heading font-bold text-white tracking-tight">Analytics & History</h2>
-                    <p className="text-slate-500 mt-1 font-medium">Performance metrics and activity logs</p>
+                <div className="flex items-center gap-4">
+                    <div className="w-14 h-14 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary shadow-lg shadow-primary/5">
+                        <TrendingUp size={28} />
+                    </div>
+                    <div>
+                        <h2 className="text-3xl font-heading font-bold text-white tracking-tight">Analytics & History</h2>
+                        <div className="flex items-center gap-3 mt-1">
+                            <p className="text-slate-500 font-medium">Performance metrics and activity logs</p>
+                            <div className="h-4 w-[1px] bg-white/10" />
+                            <button
+                                onClick={toggleProtection}
+                                disabled={togglingProtection}
+                                className={`flex items-center gap-2 px-3 py-1 rounded-lg border transition-all text-[10px] font-black uppercase tracking-widest ${profile?.report_protection_enabled ?
+                                    'bg-indigo-500/10 border-indigo-500/20 text-indigo-400 hover:bg-indigo-500/20' :
+                                    'bg-slate-800 border-white/5 text-slate-500 hover:text-white'
+                                    }`}
+                            >
+                                {togglingProtection ? <Loader2 size={10} className="animate-spin" /> : (profile?.report_protection_enabled ? <Shield size={10} /> : <ShieldOff size={10} />)}
+                                {profile?.report_protection_enabled ? 'Protection: ON' : 'Remember Me: ON'}
+                            </button>
+                        </div>
+                    </div>
                 </div>
-                <div className="flex gap-3 w-full md:w-auto">
+                <div className="flex flex-wrap gap-3 w-full md:w-auto">
+                    {/* Date Filters */}
+                    <div className="flex items-center gap-2 p-1.5 rounded-xl bg-slate-900 border border-white/10 shadow-inner">
+                        <div className="flex items-center gap-2 px-3 py-1.5 bg-white/5 rounded-lg border border-white/5 group">
+                            <Calendar size={14} className="text-primary" />
+                            <input
+                                type="date"
+                                value={dateRange.start}
+                                onChange={(e) => setDateRange(prev => ({ ...prev, start: e.target.value }))}
+                                className="bg-transparent text-xs font-bold text-slate-100 border-0 focus:ring-0 p-0 w-[110px] [color-scheme:dark]"
+                                style={{ colorScheme: 'dark' }}
+                            />
+                        </div>
+                        <div className="text-slate-600">
+                            <ArrowRight size={14} />
+                        </div>
+                        <div className="flex items-center gap-2 px-3 py-1.5 bg-white/5 rounded-lg border border-white/5 group">
+                            <Calendar size={14} className="text-primary" />
+                            <input
+                                type="date"
+                                value={dateRange.end}
+                                onChange={(e) => setDateRange(prev => ({ ...prev, end: e.target.value }))}
+                                className="bg-transparent text-xs font-bold text-slate-100 border-0 focus:ring-0 p-0 w-[110px] [color-scheme:dark]"
+                                style={{ colorScheme: 'dark' }}
+                            />
+                        </div>
+                    </div>
+
                     <button
                         onClick={exportMyReport}
-                        className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-white px-5 py-3 rounded-xl transition-all border border-white/5 font-bold text-sm shadow-lg hover:shadow-xl"
+                        disabled={generating}
+                        className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-white px-5 py-3 rounded-xl transition-all border border-white/5 font-bold text-sm shadow-lg disabled:opacity-50"
                     >
-                        <Download size={18} /> My Report
+                        {generating ? <Loader2 size={18} className="animate-spin" /> : <Download size={18} />}
+                        {generating ? 'Drafting...' : 'My Report'}
                     </button>
                     {(profile?.role === 'Admin' || profile?.full_name === 'Andre') && (
                         <button
                             onClick={exportGlobalReport}
-                            className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-primary hover:bg-indigo-600 text-white px-5 py-3 rounded-xl transition-all shadow-lg shadow-primary/20 hover:shadow-primary/40 font-bold text-sm"
+                            disabled={generating}
+                            className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-primary hover:bg-indigo-600 text-white px-5 py-3 rounded-xl transition-all shadow-lg shadow-primary/20 hover:shadow-primary/40 font-bold text-sm disabled:opacity-50"
                         >
                             <Users size={18} /> Global Report
                         </button>
@@ -144,23 +276,32 @@ const Reports = () => {
             </div>
 
             {/* Stats Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                 <div className="glass-card p-6 flex items-center gap-4">
                     <div className="w-12 h-12 rounded-xl bg-blue-500/10 flex items-center justify-center text-blue-400 border border-blue-500/20">
                         <TrendingUp size={24} />
                     </div>
                     <div>
-                        <p className="text-slate-500 text-xs font-bold uppercase tracking-wider">Total Sessions</p>
-                        <h3 className="text-2xl font-bold text-white">{stats.total}</h3>
+                        <p className="text-slate-500 text-[10px] font-bold uppercase tracking-wider">Total Sessions</p>
+                        <h3 className="text-xl font-bold text-white">{stats.total}</h3>
+                    </div>
+                </div>
+                <div className="glass-card p-6 flex items-center gap-4 border-emerald-500/10">
+                    <div className="w-12 h-12 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-400 border border-emerald-500/20">
+                        <div className="text-lg font-black">{profile?.currency_symbol || '$'}</div>
+                    </div>
+                    <div>
+                        <p className="text-slate-500 text-[10px] font-bold uppercase tracking-wider">Revenue</p>
+                        <h3 className="text-xl font-bold text-white">{stats.revenue.toFixed(2)}</h3>
                     </div>
                 </div>
                 <div className="glass-card p-6 flex items-center gap-4">
-                    <div className="w-12 h-12 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-400 border border-emerald-500/20">
+                    <div className="w-12 h-12 rounded-xl bg-indigo-500/10 flex items-center justify-center text-indigo-400 border border-indigo-500/20">
                         <CheckCircle2 size={24} />
                     </div>
                     <div>
-                        <p className="text-slate-500 text-xs font-bold uppercase tracking-wider">On Time</p>
-                        <h3 className="text-2xl font-bold text-white">{stats.onTime}</h3>
+                        <p className="text-slate-500 text-[10px] font-bold uppercase tracking-wider">On Time</p>
+                        <h3 className="text-xl font-bold text-white">{stats.onTime}</h3>
                     </div>
                 </div>
                 <div className="glass-card p-6 flex items-center gap-4">
@@ -168,8 +309,8 @@ const Reports = () => {
                         <AlertTriangle size={24} />
                     </div>
                     <div>
-                        <p className="text-slate-500 text-xs font-bold uppercase tracking-wider">Delayed (&gt;5m)</p>
-                        <h3 className="text-2xl font-bold text-white">{stats.delayed}</h3>
+                        <p className="text-slate-500 text-[10px] font-bold uppercase tracking-wider">Delayed</p>
+                        <h3 className="text-xl font-bold text-white">{stats.delayed}</h3>
                     </div>
                 </div>
             </div>
@@ -181,7 +322,7 @@ const Reports = () => {
             >
                 <div className="p-6 border-b border-white/5 bg-white/[0.02] flex items-center gap-3">
                     <History size={20} className="text-primary" />
-                    <h3 className="font-bold text-lg text-white">Recent Activity Log</h3>
+                    <h3 className="font-bold text-lg text-white">Activity Log ({format(new Date(dateRange.start), 'MMM dd')} - {format(new Date(dateRange.end), 'MMM dd')})</h3>
                 </div>
 
                 <div className="overflow-x-auto">
@@ -190,7 +331,8 @@ const Reports = () => {
                             <tr>
                                 <th className="px-6 py-4 font-bold">Date</th>
                                 <th className="px-6 py-4 font-bold">Client</th>
-                                <th className="px-6 py-4 font-bold">Provider</th>
+                                <th className="px-6 py-4 font-bold">Treatment</th>
+                                <th className="px-6 py-4 font-bold">Cost</th>
                                 <th className="px-6 py-4 font-bold">Status</th>
                                 <th className="px-6 py-4 font-bold">Delay/Reason</th>
                             </tr>
@@ -199,7 +341,7 @@ const Reports = () => {
                             {loading ? (
                                 <tr><td colSpan="5" className="px-6 py-12 text-center text-slate-500 italic flex justify-center items-center gap-2"><Loader2 className="animate-spin" /> gathering history...</td></tr>
                             ) : history.length === 0 ? (
-                                <tr><td colSpan="5" className="px-6 py-12 text-center text-slate-500 italic">No history found yet.</td></tr>
+                                <tr><td colSpan="5" className="px-6 py-12 text-center text-slate-500 italic">No history found for this range.</td></tr>
                             ) : history.map(apt => (
                                 <tr key={apt.id} className="hover:bg-white/5 transition-colors group">
                                     <td className="px-6 py-4 text-sm font-medium text-slate-300">
@@ -209,7 +351,8 @@ const Reports = () => {
                                         </div>
                                     </td>
                                     <td className="px-6 py-4 text-sm font-bold text-white">{apt.client?.first_name} {apt.client?.last_name}</td>
-                                    <td className="px-6 py-4 text-sm text-slate-400">{apt.provider?.full_name}</td>
+                                    <td className="px-6 py-4 text-sm text-slate-400 font-medium">{apt.treatment_name || '-'}</td>
+                                    <td className="px-6 py-4 text-sm font-bold text-emerald-400">{profile?.currency_symbol || '$'}{apt.cost || 0}</td>
                                     <td className="px-6 py-4">
                                         <span className={`text-[10px] px-2.5 py-1 rounded-full uppercase font-bold tracking-widest border ${apt.status === 'completed' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' :
                                             apt.status === 'active' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' :

@@ -3,6 +3,8 @@ import { supabase } from '../lib/supabase';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Mail, Lock, User, Briefcase, ChevronRight, LogIn, UserPlus, Sparkles } from 'lucide-react';
 
+import logo from '../assets/logo.png';
+
 const Auth = () => {
     const [loading, setLoading] = useState(false);
     const [email, setEmail] = useState('');
@@ -50,7 +52,7 @@ const Auth = () => {
         <div className="relative min-h-screen w-full flex items-center justify-center p-4 overflow-hidden">
             {/* Background Decorative Elements */}
             <div className="absolute top-[-20%] left-[-10%] w-[50%] h-[50%] bg-primary/20 rounded-full blur-[120px] mix-blend-screen" />
-            <div className="absolute bottom-[-20%] right-[-10%] w-[50%] h-[50%] bg-secondary/10 rounded-full blur-[120px] mix-blend-screen" />
+            <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-secondary/10 rounded-full blur-[120px] mix-blend-screen" />
 
             <motion.div
                 initial={{ opacity: 0, y: 20 }}
@@ -61,10 +63,12 @@ const Auth = () => {
                     <motion.div
                         initial={{ scale: 0.8 }}
                         animate={{ scale: 1 }}
-                        className="relative inline-block p-4 rounded-3xl bg-gradient-to-br from-primary to-indigo-600 shadow-2xl shadow-primary/30 mb-6 group"
+                        className="relative inline-block mb-6 group"
                     >
-                        <User className="w-8 h-8 text-white relative z-10" />
-                        <div className="absolute inset-0 bg-white/20 blur-lg rounded-3xl opacity-0 group-hover:opacity-100 transition-opacity" />
+                        <div className="absolute inset-0 bg-primary blur-3xl rounded-full opacity-30 group-hover:opacity-60 transition-opacity" />
+                        <div className="relative p-1 rounded-[2.5rem] bg-gradient-to-br from-white/10 to-transparent border border-white/20 shadow-2xl overflow-hidden backdrop-blur-md">
+                            <img src={logo} alt="Logo" className="w-24 h-24 object-contain rounded-[2rem]" />
+                        </div>
                     </motion.div>
                     <h1 className="text-4xl font-heading font-extrabold tracking-tight text-white mb-2">
                         Appointment <span className="bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">Tracker</span>

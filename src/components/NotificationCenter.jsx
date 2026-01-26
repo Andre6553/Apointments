@@ -6,18 +6,25 @@ import { formatDistanceToNow } from 'date-fns'
 
 const NotificationCenter = ({ onOpenNotification }) => {
     const [isOpen, setIsOpen] = useState(false)
-    const { notifications, unreadCount, markAsRead, deleteNotification, loading } = useNotifications()
+    const [isConfirmingClear, setIsConfirmingClear] = useState(false)
+    const { notifications, unreadCount, markAsRead, deleteNotification, clearAllNotifications, loading } = useNotifications()
     const dropdownRef = useRef(null)
 
     useEffect(() => {
         const handleClickOutside = (event) => {
             if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
                 setIsOpen(false)
+                setIsConfirmingClear(false)
             }
         }
         document.addEventListener('mousedown', handleClickOutside)
         return () => document.removeEventListener('mousedown', handleClickOutside)
     }, [])
+
+    const handleClearAll = async () => {
+        await clearAllNotifications()
+        setIsConfirmingClear(false)
+    }
 
     const getIcon = (type) => {
         switch (type) {
@@ -31,7 +38,10 @@ const NotificationCenter = ({ onOpenNotification }) => {
     return (
         <div className="relative" ref={dropdownRef}>
             <button
-                onClick={() => setIsOpen(!isOpen)}
+                onClick={() => {
+                    setIsOpen(!isOpen)
+                    if (isOpen) setIsConfirmingClear(false)
+                }}
                 className={`p-3 rounded-2xl relative transition-all duration-300 ${isOpen ? 'bg-primary/20 text-white' : 'bg-surface/50 text-slate-400 hover:text-white hover:bg-white/5 border border-white/5'
                     }`}
             >
@@ -130,10 +140,33 @@ const NotificationCenter = ({ onOpenNotification }) => {
                         </div>
 
                         {notifications.length > 0 && (
-                            <div className="p-4 bg-white/[0.02] border-t border-white/5 text-center">
-                                <button className="text-[10px] font-black text-slate-500 uppercase tracking-widest hover:text-white transition-colors">
-                                    Clear all notifications
-                                </button>
+                            <div className="p-4 bg-white/[0.02] border-t border-white/5 text-center transition-all duration-300">
+                                {isConfirmingClear ? (
+                                    <div className="flex flex-col items-center gap-3 py-1">
+                                        <p className="text-[10px] font-bold text-rose-400 uppercase tracking-widest">Delete all notifications?</p>
+                                        <div className="flex gap-4">
+                                            <button
+                                                onClick={handleClearAll}
+                                                className="text-[10px] font-black text-white bg-rose-500 px-4 py-2 rounded-lg hover:bg-rose-600 transition-colors uppercase tracking-widest shadow-lg shadow-rose-500/20"
+                                            >
+                                                Yes, clear all
+                                            </button>
+                                            <button
+                                                onClick={() => setIsConfirmingClear(false)}
+                                                className="text-[10px] font-black text-slate-400 bg-white/5 px-4 py-2 rounded-lg hover:bg-white/10 transition-colors uppercase tracking-widest border border-white/5"
+                                            >
+                                                No, keep them
+                                            </button>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <button
+                                        onClick={() => setIsConfirmingClear(true)}
+                                        className="text-[10px] font-black text-slate-500 uppercase tracking-widest hover:text-white transition-colors py-2"
+                                    >
+                                        Clear all notifications
+                                    </button>
+                                )}
                             </div>
                         )}
                     </motion.div>

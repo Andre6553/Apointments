@@ -14,8 +14,13 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
         date: format(new Date(), 'yyyy-MM-dd'),
         time: '09:00',
         duration: 30,
-        notes: ''
+        notes: '',
+        treatmentId: '',
+        treatmentName: '',
+        cost: 0
     });
+    const [treatments, setTreatments] = useState([]);
+    const [fetchingTreatments, setFetchingTreatments] = useState(false);
     const [loading, setLoading] = useState(false);
     const [fetchingClients, setFetchingClients] = useState(false);
     const [slotStatus, setSlotStatus] = useState({ type: 'idle', message: '', suggestion: null });
@@ -27,6 +32,7 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
     useEffect(() => {
         if (isOpen) {
             fetchClients();
+            fetchTreatments();
             setSuggestedSlots([]);
             if (editData) {
                 setFormData({
@@ -34,7 +40,10 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
                     date: format(new Date(editData.scheduled_start), 'yyyy-MM-dd'),
                     time: format(new Date(editData.scheduled_start), 'HH:mm'),
                     duration: editData.duration_minutes,
-                    notes: editData.notes || ''
+                    notes: editData.notes || '',
+                    treatmentId: '', // snapshots stored in flat fields for edits
+                    treatmentName: editData.treatment_name || '',
+                    cost: editData.cost || 0
                 });
             } else {
                 setFormData({
@@ -42,7 +51,10 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
                     date: format(new Date(), 'yyyy-MM-dd'),
                     time: '09:00',
                     duration: 30,
-                    notes: ''
+                    notes: '',
+                    treatmentId: '',
+                    treatmentName: '',
+                    cost: 0
                 });
             }
         }
@@ -381,6 +393,41 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
         setFetchingClients(false);
     };
 
+    const fetchTreatments = async () => {
+        if (!user?.id) return;
+        setFetchingTreatments(true);
+        try {
+            const { data } = await supabase
+                .from('treatments')
+                .select('*')
+                .eq('profile_id', user.id)
+                .order('name');
+            if (data) setTreatments(data);
+        } catch (err) {
+            console.error('Error fetching treatments:', err);
+        } finally {
+            setFetchingTreatments(false);
+        }
+    };
+
+    const handleTreatmentChange = (treatmentId) => {
+        if (!treatmentId) {
+            setFormData({ ...formData, treatmentId: '', treatmentName: '', cost: 0 });
+            return;
+        }
+
+        const selected = treatments.find(t => t.id === treatmentId);
+        if (selected) {
+            setFormData({
+                ...formData,
+                treatmentId: selected.id,
+                treatmentName: selected.name,
+                duration: selected.duration_minutes,
+                cost: selected.cost
+            });
+        }
+    };
+
     const handleSubmit = async (e) => {
         e.preventDefault();
         if (slotStatus.type === 'error') {
@@ -402,6 +449,8 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
                 scheduled_start: scheduledStart,
                 duration_minutes: parseInt(formData.duration),
                 notes: formData.notes,
+                treatment_name: formData.treatmentName,
+                cost: formData.cost,
                 status: editData ? editData.status : 'pending'
             };
 
@@ -459,9 +508,9 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
                         initial={{ opacity: 0, scale: 0.95, y: 20 }}
                         animate={{ opacity: 1, scale: 1, y: 0 }}
                         exit={{ opacity: 0, scale: 0.95, y: 20 }}
-                        className="relative w-full max-w-xl glass-card border-white/10 shadow-2xl overflow-hidden my-8"
+                        className="relative w-full max-w-xl glass-card border-white/10 shadow-2xl overflow-hidden my-8 flex flex-col max-h-[90vh]"
                     >
-                        <div className="p-6 border-b border-white/5 flex justify-between items-center bg-white/[0.02]">
+                        <div className="p-6 border-b border-white/5 flex justify-between items-center bg-white/[0.02] shrink-0">
                             <div className="flex items-center gap-3">
                                 <div className="p-2.5 rounded-xl bg-primary/10 border border-primary/20">
                                     <Calendar className="text-primary" size={20} />
@@ -474,7 +523,6 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
                                 </div>
                             </div>
 
-                            {/* Action Buttons in Red Box Area */}
                             <div className="flex items-center gap-2">
                                 <button
                                     type="button"
@@ -495,172 +543,194 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
                             </div>
                         </div>
 
-                        <form onSubmit={handleSubmit} className="p-8 space-y-6">
-                            <div className="space-y-1">
-                                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Select Client</label>
-                                <div className="relative group">
-                                    <User size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-primary transition-colors" />
-                                    <select
-                                        className="glass-input w-full pl-12 h-14"
-                                        value={formData.clientId}
-                                        onChange={e => setFormData({ ...formData, clientId: e.target.value })}
-                                        required
-                                    >
-                                        <option value="" className="bg-slate-900">Choose from directory...</option>
-                                        {clients.map(c => (
-                                            <option key={c.id} value={c.id} className="bg-slate-900">{c.first_name} {c.last_name}</option>
-                                        ))}
-                                    </select>
-                                    {fetchingClients && <Loader2 className="absolute right-10 top-1/2 -translate-y-1/2 animate-spin text-primary" size={16} />}
-                                </div>
-                            </div>
-
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <form onSubmit={handleSubmit} className="flex flex-col flex-grow overflow-hidden">
+                            <div className="p-8 space-y-6 overflow-y-auto flex-grow scrollbar-thin scrollbar-thumb-white/10 hover:scrollbar-thumb-white/20">
                                 <div className="space-y-1">
-                                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Target Date</label>
+                                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Select Client</label>
                                     <div className="relative group">
-                                        <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-primary transition-colors" size={18} />
-                                        <input
-                                            type="date"
+                                        <User size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-primary transition-colors" />
+                                        <select
                                             className="glass-input w-full pl-12 h-14"
-                                            value={formData.date}
-                                            onChange={e => setFormData({ ...formData, date: e.target.value })}
+                                            value={formData.clientId}
+                                            onChange={e => setFormData({ ...formData, clientId: e.target.value })}
                                             required
-                                        />
-                                    </div>
-                                </div>
-                                <div className="space-y-1">
-                                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Start Time (24H: e.g. 14:30)</label>
-                                    <div className="relative group">
-                                        <Clock className={`absolute left-4 top-1/2 -translate-y-1/2 transition-colors ${!/^([01]\d|2[0-3]):?([0-5]\d)$/.test(formData.time) ? 'text-red-400' : 'text-slate-500'}`} size={18} />
-                                        <input
-                                            type="text"
-                                            placeholder="HH:mm"
-                                            className={`glass-input w-full pl-12 h-14 ${!/^([01]\d|2[0-3]):[0-5]\d$/.test(formData.time) && formData.time ? 'border-red-500/50 text-red-400' : ''}`}
-                                            value={formData.time}
-                                            maxLength={5}
-                                            onChange={e => {
-                                                let val = e.target.value.replace(/[^\d:]/g, '');
-                                                if (val.length === 2 && !val.includes(':') && e.nativeEvent.inputType !== 'deleteContentBackward') {
-                                                    val += ':';
-                                                }
-                                                setFormData({ ...formData, time: val });
-                                            }}
-                                            onBlur={() => {
-                                                if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(formData.time) && formData.time) {
-                                                    setSlotStatus({ type: 'error', message: 'Invalid 24H format. Use HH:mm (e.g. 09:15 or 14:30)' });
-                                                }
-                                            }}
-                                            required
-                                        />
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <div className="space-y-1">
-                                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Duration (min)</label>
-                                    <div className="relative group">
-                                        <Timer className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-primary transition-colors" size={18} />
-                                        <input
-                                            type="number"
-                                            step="15"
-                                            className="glass-input w-full pl-12 h-14"
-                                            value={formData.duration}
-                                            onChange={e => setFormData({ ...formData, duration: e.target.value })}
-                                            required
-                                        />
-                                    </div>
-                                </div>
-                                <div className="space-y-1">
-                                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Notes</label>
-                                    <div className="relative group">
-                                        <MessageCircle className="absolute left-4 top-4 text-slate-500 group-focus-within:text-primary transition-colors" size={18} />
-                                        <textarea
-                                            className="glass-input w-full pl-12 h-14 resize-none"
-                                            placeholder="Service details..."
-                                            value={formData.notes}
-                                            onChange={e => setFormData({ ...formData, notes: e.target.value })}
-                                        />
-                                    </div>
-                                </div>
-                            </div>
-
-                            {/* Suggested Slots */}
-                            <AnimatePresence>
-                                {suggestedSlots.length > 0 && (
-                                    <motion.div
-                                        initial={{ opacity: 0, y: -10 }}
-                                        animate={{ opacity: 1, y: 0 }}
-                                        exit={{ opacity: 0, y: -10 }}
-                                        className="space-y-3"
-                                    >
-                                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Suggested Available Spots</label>
-                                        <div className="flex flex-wrap gap-2">
-                                            {suggestedSlots.map((slot, idx) => (
-                                                <button
-                                                    key={idx}
-                                                    type="button"
-                                                    onClick={() => {
-                                                        setFormData({ ...formData, date: slot.date, time: slot.time });
-                                                        setSuggestedSlots([]);
-                                                    }}
-                                                    className="px-4 py-2 rounded-xl bg-primary/10 border border-primary/20 text-primary hover:bg-primary hover:text-white transition-all text-xs font-bold flex flex-col items-center"
-                                                >
-                                                    <span className="text-[8px] opacity-60 uppercase">{format(new Date(slot.date), 'EEE, MMM do')}</span>
-                                                    <span>{slot.time}</span>
-                                                </button>
-                                            ))}
-                                        </div>
-                                    </motion.div>
-                                )}
-                            </AnimatePresence>
-
-                            <div className="pt-2">
-                                <AnimatePresence mode="wait">
-                                    {slotStatus.type !== 'idle' && (
-                                        <motion.div
-                                            initial={{ opacity: 0, height: 0 }}
-                                            animate={{ opacity: 1, height: 'auto' }}
-                                            exit={{ opacity: 0, height: 0 }}
-                                            className={`flex items-center gap-3 p-3 rounded-xl border text-xs font-bold ${slotStatus.type === 'error' ? 'bg-red-500/10 border-red-500/20 text-red-400' :
-                                                slotStatus.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' :
-                                                    'bg-slate-800/50 border-white/5 text-slate-400'
-                                                }`}
                                         >
-                                            {slotStatus.type === 'checking' && <Loader2 className="w-3 h-3 animate-spin" />}
-                                            {slotStatus.type === 'error' && <AlertTriangle className="w-3 h-3 shrink-0" />}
-                                            {slotStatus.type === 'success' && <CheckCircle2 className="w-3 h-3 shrink-0" />}
+                                            <option value="" className="bg-slate-900">Choose from directory...</option>
+                                            {clients.map(c => (
+                                                <option key={c.id} value={c.id} className="bg-slate-900">{c.first_name} {c.last_name}</option>
+                                            ))}
+                                        </select>
+                                        {fetchingClients && <Loader2 className="absolute right-10 top-1/2 -translate-y-1/2 animate-spin text-primary" size={16} />}
+                                    </div>
+                                </div>
 
-                                            <span className="flex-grow">{slotStatus.message}</span>
-                                            {slotStatus.suggestion && (
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setFormData({ ...formData, time: slotStatus.suggestion })}
-                                                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border transition-all animate-pulse hover:animate-none bg-orange-500/20 border-orange-500/30 text-orange-400 hover:bg-orange-500/40 active:scale-95"
-                                                >
-                                                    <Clock size={12} strokeWidth={3} />
-                                                    <span className="whitespace-nowrap font-black">Use {slotStatus.suggestion}</span>
-                                                </button>
-                                            )}
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                    <div className="space-y-1">
+                                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Target Date</label>
+                                        <div className="relative group">
+                                            <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-primary transition-colors" size={18} />
+                                            <input
+                                                type="date"
+                                                className="glass-input w-full pl-12 h-14"
+                                                value={formData.date}
+                                                onChange={e => setFormData({ ...formData, date: e.target.value })}
+                                                required
+                                            />
+                                        </div>
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Start Time (24H: e.g. 14:30)</label>
+                                        <div className="relative group">
+                                            <Clock className={`absolute left-4 top-1/2 -translate-y-1/2 transition-colors ${!/^([01]\d|2[0-3]):?([0-5]\d)$/.test(formData.time) ? 'text-red-400' : 'text-slate-500'}`} size={18} />
+                                            <input
+                                                type="text"
+                                                placeholder="HH:mm"
+                                                className={`glass-input w-full pl-12 h-14 ${!/^([01]\d|2[0-3]):[0-5]\d$/.test(formData.time) && formData.time ? 'border-red-500/50 text-red-400' : ''}`}
+                                                value={formData.time}
+                                                maxLength={5}
+                                                onChange={e => {
+                                                    let val = e.target.value.replace(/[^\d:]/g, '');
+                                                    if (val.length === 2 && !val.includes(':') && e.nativeEvent.inputType !== 'deleteContentBackward') {
+                                                        val += ':';
+                                                    }
+                                                    setFormData({ ...formData, time: val });
+                                                }}
+                                                onBlur={() => {
+                                                    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(formData.time) && formData.time) {
+                                                        setSlotStatus({ type: 'error', message: 'Invalid 24H format. Use HH:mm (e.g. 09:15 or 14:30)' });
+                                                    }
+                                                }}
+                                                required
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="space-y-1">
+                                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Treatment / Service</label>
+                                    <div className="relative group">
+                                        <Timer size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-primary transition-colors" />
+                                        <select
+                                            className="glass-input w-full pl-12 h-14"
+                                            value={formData.treatmentId}
+                                            onChange={e => handleTreatmentChange(e.target.value)}
+                                        >
+                                            <option value="" className="bg-slate-900">Custom / Select Service...</option>
+                                            {treatments.map(t => (
+                                                <option key={t.id} value={t.id} className="bg-slate-900">{t.name} ({t.duration_minutes}m)</option>
+                                            ))}
+                                        </select>
+                                        {fetchingTreatments && <Loader2 className="absolute right-10 top-1/2 -translate-y-1/2 animate-spin text-primary" size={16} />}
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                    <div className="space-y-1">
+                                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Duration (min)</label>
+                                        <div className="relative group">
+                                            <Timer className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-primary transition-colors" size={18} />
+                                            <input
+                                                type="number"
+                                                step="15"
+                                                className="glass-input w-full pl-12 h-14 font-bold"
+                                                value={formData.duration}
+                                                onChange={e => setFormData({ ...formData, duration: e.target.value })}
+                                                required
+                                            />
+                                        </div>
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Session Notes</label>
+                                        <div className="relative group">
+                                            <MessageCircle className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-primary transition-colors" size={18} />
+                                            <input
+                                                className="glass-input w-full pl-12 h-14"
+                                                placeholder="Details..."
+                                                value={formData.notes}
+                                                onChange={e => setFormData({ ...formData, notes: e.target.value })}
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Suggested Slots */}
+                                <AnimatePresence>
+                                    {suggestedSlots.length > 0 && (
+                                        <motion.div
+                                            initial={{ opacity: 0, y: -10 }}
+                                            animate={{ opacity: 1, y: 0 }}
+                                            exit={{ opacity: 0, y: -10 }}
+                                            className="space-y-3"
+                                        >
+                                            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Suggested Available Spots</label>
+                                            <div className="flex flex-wrap gap-2">
+                                                {suggestedSlots.map((slot, idx) => (
+                                                    <button
+                                                        key={idx}
+                                                        type="button"
+                                                        onClick={() => {
+                                                            setFormData({ ...formData, date: slot.date, time: slot.time });
+                                                            setSuggestedSlots([]);
+                                                        }}
+                                                        className="px-4 py-2 rounded-xl bg-primary/10 border border-primary/20 text-primary hover:bg-primary hover:text-white transition-all text-xs font-bold flex flex-col items-center"
+                                                    >
+                                                        <span className="text-[8px] opacity-60 uppercase">{format(new Date(slot.date), 'EEE, MMM do')}</span>
+                                                        <span>{slot.time}</span>
+                                                    </button>
+                                                ))}
+                                            </div>
                                         </motion.div>
                                     )}
                                 </AnimatePresence>
+
+                                <div className="pt-2">
+                                    <AnimatePresence mode="wait">
+                                        {slotStatus.type !== 'idle' && (
+                                            <motion.div
+                                                initial={{ opacity: 0, height: 0 }}
+                                                animate={{ opacity: 1, height: 'auto' }}
+                                                exit={{ opacity: 0, height: 0 }}
+                                                className={`flex items-center gap-3 p-3 rounded-xl border text-xs font-bold ${slotStatus.type === 'error' ? 'bg-red-500/10 border-red-500/20 text-red-400' :
+                                                    slotStatus.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' :
+                                                        'bg-slate-800/50 border-white/5 text-slate-400'
+                                                    }`}
+                                            >
+                                                {slotStatus.type === 'checking' && <Loader2 className="w-3 h-3 animate-spin" />}
+                                                {slotStatus.type === 'error' && <AlertTriangle className="w-3 h-3 shrink-0" />}
+                                                {slotStatus.type === 'success' && <CheckCircle2 className="w-3 h-3 shrink-0" />}
+
+                                                <span className="flex-grow">{slotStatus.message}</span>
+                                                {slotStatus.suggestion && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setFormData({ ...formData, time: slotStatus.suggestion })}
+                                                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border transition-all animate-pulse hover:animate-none bg-orange-500/20 border-orange-500/30 text-orange-400 hover:bg-orange-500/40 active:scale-95"
+                                                    >
+                                                        <Clock size={12} strokeWidth={3} />
+                                                        <span className="whitespace-nowrap font-black">Use {slotStatus.suggestion}</span>
+                                                    </button>
+                                                )}
+                                            </motion.div>
+                                        )}
+                                    </AnimatePresence>
+                                </div>
                             </div>
 
-                            <button
-                                disabled={loading || slotStatus.type === 'error' || slotStatus.type === 'checking'}
-                                className="w-full bg-primary hover:bg-indigo-600 text-white p-4 rounded-xl font-bold shadow-lg shadow-primary/20 active:scale-[0.98] transition-all flex items-center justify-center gap-3 mt-4 disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                                {loading ? (
-                                    <Loader2 className="animate-spin w-5 h-5" />
-                                ) : (
-                                    <>
-                                        <span>{editData ? 'Update Appointment' : 'Confirm Booking Slot'}</span>
-                                        <ArrowRight size={18} />
-                                    </>
-                                )}
-                            </button>
+                            <div className="p-8 pt-4 border-t border-white/5 shrink-0 bg-white/[0.01]">
+                                <button
+                                    disabled={loading || slotStatus.type === 'error' || slotStatus.type === 'checking'}
+                                    className="w-full bg-primary hover:bg-indigo-600 text-white p-4 rounded-xl font-bold shadow-lg shadow-primary/20 active:scale-[0.98] transition-all flex items-center justify-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    {loading ? (
+                                        <Loader2 className="animate-spin w-5 h-5" />
+                                    ) : (
+                                        <>
+                                            <span>{editData ? 'Update Appointment' : 'Confirm Booking Slot'}</span>
+                                            <ArrowRight size={18} />
+                                        </>
+                                    )}
+                                </button>
+                            </div>
                         </form>
                     </motion.div>
                 </div>

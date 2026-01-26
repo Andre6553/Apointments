@@ -123,6 +123,16 @@ export const AuthProvider = ({ children }) => {
         if (data) setProfile(data)
     }
 
+    const updateProfile = async (updates) => {
+        if (!user) return
+        const { error } = await supabase
+            .from('profiles')
+            .update(updates)
+            .eq('id', user.id)
+        if (error) throw error
+        setProfile(prev => ({ ...prev, ...updates }))
+    }
+
     const signOut = async () => {
         if (user) {
             await supabase.from('profiles').update({ is_online: false }).eq('id', user.id)
@@ -130,8 +140,17 @@ export const AuthProvider = ({ children }) => {
         return supabase.auth.signOut()
     }
 
+    const verifyPassword = async (password) => {
+        if (!user?.email) return false
+        const { error } = await supabase.auth.signInWithPassword({
+            email: user.email,
+            password
+        })
+        return !error
+    }
+
     return (
-        <AuthContext.Provider value={{ user, profile, loading, connectionError, signOut, fetchProfile }}>
+        <AuthContext.Provider value={{ user, profile, loading, connectionError, signOut, fetchProfile, updateProfile, verifyPassword }}>
             {children}
         </AuthContext.Provider>
     )
