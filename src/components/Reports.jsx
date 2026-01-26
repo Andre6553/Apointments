@@ -91,12 +91,12 @@ const Reports = () => {
             apt.provider?.full_name,
             apt.status,
             apt.delay_minutes > 0 ? `+${apt.delay_minutes}m` : 'On Time',
-            apt.shifted_from_id ? 'Yes' : 'No'
+            apt.cancellation_reason || (apt.shifted_from_id ? 'Shifted' : '-')
         ])
 
         doc.autoTable({
             startY: 40,
-            head: [['Date', 'Client', 'Provider', 'Status', 'Delay', 'Shifted']],
+            head: [['Date', 'Client', 'Provider', 'Status', 'Delay', 'Reason/Notes']],
             body: tableData,
             theme: 'striped',
             headStyles: { fillStyle: '#6366f1' }
@@ -192,7 +192,7 @@ const Reports = () => {
                                 <th className="px-6 py-4 font-bold">Client</th>
                                 <th className="px-6 py-4 font-bold">Provider</th>
                                 <th className="px-6 py-4 font-bold">Status</th>
-                                <th className="px-6 py-4 font-bold">Delay</th>
+                                <th className="px-6 py-4 font-bold">Delay/Reason</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-white/5">
@@ -214,18 +214,24 @@ const Reports = () => {
                                         <span className={`text-[10px] px-2.5 py-1 rounded-full uppercase font-bold tracking-widest border ${apt.status === 'completed' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' :
                                             apt.status === 'active' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' :
                                                 apt.status === 'cancelled' ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' :
-                                                    'bg-slate-500/10 text-slate-400 border-slate-500/20'
+                                                    apt.status === 'noshow' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' :
+                                                        apt.status === 'shifted' ? 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20' :
+                                                            'bg-slate-500/10 text-slate-400 border-slate-500/20'
                                             }`}>
                                             {apt.status}
                                         </span>
                                     </td>
                                     <td className="px-6 py-4 text-sm">
-                                        {apt.delay_minutes > 5 ? (
-                                            <span className="text-rose-400 font-bold flex items-center gap-1"><AlertTriangle size={12} /> +{apt.delay_minutes}m</span>
-                                        ) : apt.delay_minutes > 0 ? (
-                                            <span className="text-amber-400 font-medium h-[24px] flex items-center">+{apt.delay_minutes}m</span>
+                                        {apt.status === 'completed' || apt.status === 'active' ? (
+                                            apt.delay_minutes > 5 ? (
+                                                <span className="text-rose-400 font-bold flex items-center gap-1"><AlertTriangle size={12} /> +{apt.delay_minutes}m</span>
+                                            ) : apt.delay_minutes > 0 ? (
+                                                <span className="text-amber-400 font-medium h-[24px] flex items-center">+{apt.delay_minutes}m</span>
+                                            ) : (
+                                                <span className="text-emerald-500 font-medium flex items-center gap-1"><CheckCircle2 size={12} /> On Time</span>
+                                            )
                                         ) : (
-                                            <span className="text-emerald-500 font-medium flex items-center gap-1"><CheckCircle2 size={12} /> On Time</span>
+                                            <span className="text-slate-500 italic text-xs">{apt.cancellation_reason || 'No reason provided'}</span>
                                         )}
                                     </td>
                                 </tr>

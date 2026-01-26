@@ -13,15 +13,18 @@ export const sendWhatsApp = async (phone, message) => {
 
     try {
         // We still attempt to call the real Supabase function if it exists.
-        // This allows the user to test their real Twilio/function logic in simulation mode.
+        // BUT only in production mode. In simulation mode, we avoid the call to prevent 406 errors.
+        if (isSim) {
+            console.log(`[WhatsApp Simulation] Skipped real function call.`);
+            return { success: true, simulated: true };
+        }
+
         const { data, error } = await supabase.functions.invoke('send-whatsapp', {
             body: { to: targetPhone, message }
         })
 
         if (error) {
             console.warn('[WhatsApp] Function call failed (Normal if not deployed):', error.message);
-            // In simulation mode, we consider a "console send" a success for demo purposes
-            if (isSim) return { success: true, simulated: true };
             return { success: false, error: error.message };
         }
 

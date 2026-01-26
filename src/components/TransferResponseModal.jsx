@@ -108,6 +108,14 @@ const TransferResponseModal = ({ isOpen, onClose, notification, onComplete }) =>
 
             if (reqError) throw reqError
 
+            // 2.5 Resolve all other pending transfers for this appointment
+            await supabase
+                .from('transfer_requests')
+                .update({ status: 'rejected' })
+                .eq('appointment_id', appointment.id)
+                .eq('status', 'pending')
+                .neq('id', request.id);
+
             // 3. Notify Sender
             await supabase.from('notifications').insert({
                 user_id: request.sender_id,

@@ -3,9 +3,10 @@ import { supabase } from '../lib/supabase'
 import { useAuth } from '../hooks/useAuth'
 import { format, startOfDay, endOfDay, addMinutes, isWithinInterval, parseISO, isSameDay } from 'date-fns'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Edit2, Clock, Coffee, User, Calendar as CalendarIcon, Loader2, Moon, AlertTriangle, ArrowRight } from 'lucide-react'
+import { Edit2, Clock, Coffee, User, Calendar as CalendarIcon, Loader2, Moon, AlertTriangle, ArrowRight, Trash2 } from 'lucide-react'
 import AddAppointmentModal from './AddAppointmentModal'
 import TransferModal from './TransferModal'
+import CancelAppointmentModal from './CancelAppointmentModal'
 import { getCache, setCache, CACHE_KEYS } from '../lib/cache'
 
 const DailyTimeline = ({ selectedDate = new Date() }) => {
@@ -18,8 +19,10 @@ const DailyTimeline = ({ selectedDate = new Date() }) => {
     const [now, setNow] = useState(new Date())
     const [selectedApt, setSelectedApt] = useState(null)
     const [isTransferOpen, setIsTransferOpen] = useState(false)
+    const [isCancelOpen, setIsCancelOpen] = useState(false)
     const [isEditOpen, setIsEditOpen] = useState(false)
     const [editData, setEditData] = useState(null)
+    const [selectedCancelApt, setSelectedCancelApt] = useState(null)
 
     useEffect(() => {
         const timer = setInterval(() => setNow(new Date()), 60000)
@@ -53,7 +56,7 @@ const DailyTimeline = ({ selectedDate = new Date() }) => {
                     client:clients(first_name, last_name),
                     provider:profiles!appointments_assigned_profile_id_fkey(full_name)
                 `)
-                .neq('status', 'cancelled')
+                .in('status', ['pending', 'active', 'completed'])
                 .gte('scheduled_start', `${dateStr}T00:00:00`)
                 .lte('scheduled_start', `${dateStr}T23:59:59`)
 
@@ -322,6 +325,18 @@ const DailyTimeline = ({ selectedDate = new Date() }) => {
                                             >
                                                 <ArrowRight size={10} />
                                             </button>
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    const aptData = rawAppointments.find(a => a.id === event.id);
+                                                    setSelectedCancelApt(aptData);
+                                                    setIsCancelOpen(true);
+                                                }}
+                                                className="p-1.5 rounded-lg bg-white/10 opacity-0 group-hover:opacity-100 transition-all hover:bg-red-500 hover:text-white"
+                                                title="Cancel"
+                                            >
+                                                <Trash2 size={10} />
+                                            </button>
                                         </div>
                                     )}
                                 </motion.div>
@@ -348,6 +363,15 @@ const DailyTimeline = ({ selectedDate = new Date() }) => {
                         onClose={() => { setIsTransferOpen(false); setSelectedApt(null); }}
                         appointment={selectedApt}
                         onComplete={() => fetchData(true)}
+                    />
+                )}
+
+                {selectedCancelApt && (
+                    <CancelAppointmentModal
+                        isOpen={isCancelOpen}
+                        onClose={() => { setIsCancelOpen(false); setSelectedCancelApt(null); }}
+                        appointment={selectedCancelApt}
+                        onRefresh={() => fetchData(true)}
                     />
                 )}
 

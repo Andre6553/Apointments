@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { X, Calendar, Clock, User, MessageCircle, ArrowRight, Loader2, Timer, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { format } from 'date-fns';
+import { format, isSameDay } from 'date-fns';
 import { useAuth } from '../hooks/useAuth';
 import { getCache, setCache, CACHE_KEYS } from '../lib/cache';
 
@@ -21,10 +21,13 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
     const [slotStatus, setSlotStatus] = useState({ type: 'idle', message: '', suggestion: null });
     const [providerData, setProviderData] = useState({ hours: null, breaks: [] });
     const [isFetchingProviderBase, setIsFetchingProviderBase] = useState(false);
+    const [suggestedSlots, setSuggestedSlots] = useState([]);
+    const [searchingSlots, setSearchingSlots] = useState(false);
 
     useEffect(() => {
         if (isOpen) {
             fetchClients();
+            setSuggestedSlots([]);
             if (editData) {
                 setFormData({
                     clientId: editData.client_id,
@@ -50,6 +53,115 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
             fetchProviderBaseData();
         }
     }, [isOpen, user?.id, formData.date]);
+
+    const findSlotsForDate = async (targetDate, startTimeStr, duration, existingApts = null) => {
+        const [y, m, d] = targetDate.split('-').map(Number);
+        const dayOfWeek = new Date(y, m - 1, d).getDay();
+
+        const [hoursRes, breaksRes] = await Promise.all([
+            supabase.from('working_hours').select('*').eq('profile_id', user.id).eq('day_of_week', dayOfWeek).maybeSingle(),
+            supabase.from('breaks').select('*').eq('profile_id', user.id).eq('day_of_week', dayOfWeek)
+        ]);
+
+        const hours = hoursRes.data;
+        const breaks = breaksRes.data || [];
+
+        if (!hours || hours.is_active === false) return [];
+
+        let dayApts = existingApts;
+        if (!dayApts) {
+            const { data } = await supabase
+                .from('appointments')
+                .select('scheduled_start, duration_minutes')
+                .eq('assigned_profile_id', user.id)
+                .in('status', ['pending', 'active', 'completed'])
+                .gte('scheduled_start', `${targetDate}T00:00:00`)
+                .lte('scheduled_start', `${targetDate}T23:59:59`);
+            dayApts = data || [];
+        }
+
+        const slots = [];
+        const [hS, mS] = hours.start_time.split(':').map(Number);
+        const [hE, mE] = hours.end_time.split(':').map(Number);
+
+        let searchStart = new Date(y, m - 1, d, hS, mS);
+        const searchLimit = new Date(y, m - 1, d, hE, mE);
+        const now = new Date();
+
+        if (isSameDay(searchStart, now)) {
+            const currentPlusBuffer = new Date(now.getTime() + 15 * 60000); // 15m from now
+            if (currentPlusBuffer > searchStart) {
+                searchStart = currentPlusBuffer;
+            }
+        }
+
+        if (startTimeStr) {
+            const [h, m] = startTimeStr.split(':').map(Number);
+            const requestedStart = new Date(y, m - 1, d, h, m);
+            if (requestedStart > searchStart) searchStart = requestedStart;
+        }
+
+        let candidate = new Date(Math.ceil(searchStart.getTime() / (5 * 60000)) * (5 * 60000));
+
+        while (candidate.getTime() + duration * 60000 <= searchLimit.getTime()) {
+            const cStart = candidate;
+            const cEnd = new Date(cStart.getTime() + duration * 60000);
+
+            let onBreak = false;
+            for (const brk of breaks) {
+                const [bh, bm] = brk.start_time.split(':').map(Number);
+                const bS = new Date(y, m - 1, d, bh, bm);
+                const bE = new Date(bS.getTime() + brk.duration_minutes * 60000);
+                if (cStart < bE && cEnd > bS) { onBreak = true; candidate = bE; break; }
+            }
+            if (onBreak) continue;
+
+            let overlapping = false;
+            for (const apt of dayApts) {
+                const aS = new Date(apt.scheduled_start);
+                const aE = new Date(aS.getTime() + apt.duration_minutes * 60000);
+                if (cStart < aE && cEnd > aS) { overlapping = true; candidate = aE; break; }
+            }
+            if (overlapping) continue;
+
+            slots.push({
+                date: targetDate,
+                time: format(cStart, 'HH:mm'),
+                label: format(cStart, 'HH:mm')
+            });
+
+            if (slots.length >= 5) break;
+            candidate = new Date(candidate.getTime() + 15 * 60000);
+        }
+
+        return slots;
+    };
+
+    const handleFindSoonest = async () => {
+        setSearchingSlots(true);
+        setSuggestedSlots([]);
+        try {
+            let found = [];
+            let checkDate = new Date();
+
+            for (let i = 0; i < 7; i++) {
+                const dateStr = format(checkDate, 'yyyy-MM-dd');
+                const daySlots = await findSlotsForDate(dateStr, null, formData.duration);
+                found = [...found, ...daySlots];
+                if (found.length >= 5) break;
+                checkDate.setDate(checkDate.getDate() + 1);
+            }
+
+            setSuggestedSlots(found.slice(0, 5));
+            if (found.length === 0) {
+                alert('No available slots found in the next 7 days.');
+            }
+        } catch (err) {
+            console.error('Find soonest failed:', err);
+        } finally {
+            setSearchingSlots(false);
+        }
+    };
 
     const fetchProviderBaseData = async () => {
         if (!user?.id || !formData.date) return;
@@ -189,7 +301,7 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
                 .from('appointments')
                 .select('scheduled_start, duration_minutes')
                 .eq('assigned_profile_id', user.id)
-                .neq('status', 'cancelled')
+                .in('status', ['pending', 'active', 'completed'])
                 .gte('scheduled_start', `${formData.date}T00:00:00`)
                 .lte('scheduled_start', `${formData.date}T23:59:59`);
 
@@ -361,7 +473,26 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
                                     </p>
                                 </div>
                             </div>
-                            <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-xl transition-all"><X size={20} className="text-slate-500" /></button>
+
+                            {/* Action Buttons in Red Box Area */}
+                            <div className="flex items-center gap-2">
+                                <button
+                                    type="button"
+                                    onClick={handleFindSoonest}
+                                    disabled={searchingSlots || loading}
+                                    className="px-4 py-2 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border border-indigo-500/20 rounded-xl text-xs font-bold transition-all flex items-center gap-2"
+                                >
+                                    {searchingSlots ? <Loader2 size={14} className="animate-spin" /> : <Clock size={14} />}
+                                    {searchingSlots ? 'Searching...' : 'Find Soonest'}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={onClose}
+                                    className="p-2 hover:bg-white/10 rounded-xl transition-all"
+                                >
+                                    <X size={20} className="text-slate-500" />
+                                </button>
+                            </div>
                         </div>
 
                         <form onSubmit={handleSubmit} className="p-8 space-y-6">
@@ -454,6 +585,36 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
                                     </div>
                                 </div>
                             </div>
+
+                            {/* Suggested Slots */}
+                            <AnimatePresence>
+                                {suggestedSlots.length > 0 && (
+                                    <motion.div
+                                        initial={{ opacity: 0, y: -10 }}
+                                        animate={{ opacity: 1, y: 0 }}
+                                        exit={{ opacity: 0, y: -10 }}
+                                        className="space-y-3"
+                                    >
+                                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Suggested Available Spots</label>
+                                        <div className="flex flex-wrap gap-2">
+                                            {suggestedSlots.map((slot, idx) => (
+                                                <button
+                                                    key={idx}
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setFormData({ ...formData, date: slot.date, time: slot.time });
+                                                        setSuggestedSlots([]);
+                                                    }}
+                                                    className="px-4 py-2 rounded-xl bg-primary/10 border border-primary/20 text-primary hover:bg-primary hover:text-white transition-all text-xs font-bold flex flex-col items-center"
+                                                >
+                                                    <span className="text-[8px] opacity-60 uppercase">{format(new Date(slot.date), 'EEE, MMM do')}</span>
+                                                    <span>{slot.time}</span>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </motion.div>
+                                )}
+                            </AnimatePresence>
 
                             <div className="pt-2">
                                 <AnimatePresence mode="wait">
