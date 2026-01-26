@@ -59,7 +59,7 @@ const NotificationCenter = ({ onOpenNotification }) => {
                         initial={{ opacity: 0, y: 10, scale: 0.95 }}
                         animate={{ opacity: 1, y: 0, scale: 1 }}
                         exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                        className="absolute right-0 mt-4 w-96 glass-card p-0 overflow-hidden z-[100] shadow-2xl shadow-black/50 border border-white/10"
+                        className="fixed md:absolute left-4 right-4 md:left-auto md:right-0 mt-4 md:w-96 glass-card p-0 overflow-hidden z-[100] shadow-2xl shadow-black/50 border border-white/10"
                     >
                         <div className="p-5 border-b border-white/5 bg-white/[0.02] flex items-center justify-between">
                             <div>
