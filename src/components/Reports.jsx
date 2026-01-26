@@ -227,90 +227,93 @@ const Reports = () => {
                         </div>
                     </div>
                 </div>
-                <div className="flex flex-wrap gap-3 w-full md:w-auto">
+                <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
                     {/* Date Filters */}
-                    <div className="flex items-center gap-2 p-1.5 rounded-xl bg-slate-900 border border-white/10 shadow-inner">
-                        <div className="flex items-center gap-2 px-3 py-1.5 bg-white/5 rounded-lg border border-white/5 group">
+                    <div className="flex items-center gap-1.5 p-1 rounded-xl bg-slate-900 border border-white/10 shadow-inner w-full sm:w-auto">
+                        <div className="flex-1 sm:flex-none flex items-center gap-2 px-3 py-2 bg-white/5 rounded-lg border border-white/5 group min-w-[130px]">
                             <Calendar size={14} className="text-primary" />
                             <input
                                 type="date"
                                 value={dateRange.start}
                                 onChange={(e) => setDateRange(prev => ({ ...prev, start: e.target.value }))}
-                                className="bg-transparent text-xs font-bold text-slate-100 border-0 focus:ring-0 p-0 w-[110px] [color-scheme:dark]"
+                                className="bg-transparent text-xs font-bold text-slate-100 border-0 focus:ring-0 p-0 w-full [color-scheme:dark]"
                                 style={{ colorScheme: 'dark' }}
                             />
                         </div>
-                        <div className="text-slate-600">
+                        <div className="text-slate-600 hidden sm:block">
                             <ArrowRight size={14} />
                         </div>
-                        <div className="flex items-center gap-2 px-3 py-1.5 bg-white/5 rounded-lg border border-white/5 group">
+                        <div className="flex-1 sm:flex-none flex items-center gap-2 px-3 py-2 bg-white/5 rounded-lg border border-white/5 group min-w-[130px]">
                             <Calendar size={14} className="text-primary" />
                             <input
                                 type="date"
                                 value={dateRange.end}
                                 onChange={(e) => setDateRange(prev => ({ ...prev, end: e.target.value }))}
-                                className="bg-transparent text-xs font-bold text-slate-100 border-0 focus:ring-0 p-0 w-[110px] [color-scheme:dark]"
+                                className="bg-transparent text-xs font-bold text-slate-100 border-0 focus:ring-0 p-0 w-full [color-scheme:dark]"
                                 style={{ colorScheme: 'dark' }}
                             />
                         </div>
                     </div>
 
-                    <button
-                        onClick={exportMyReport}
-                        disabled={generating}
-                        className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-white px-5 py-3 rounded-xl transition-all border border-white/5 font-bold text-sm shadow-lg disabled:opacity-50"
-                    >
-                        {generating ? <Loader2 size={18} className="animate-spin" /> : <Download size={18} />}
-                        {generating ? 'Drafting...' : 'My Report'}
-                    </button>
-                    {(profile?.role === 'Admin' || profile?.full_name === 'Andre') && (
+                    <div className="flex gap-2 w-full sm:w-auto">
                         <button
-                            onClick={exportGlobalReport}
+                            onClick={exportMyReport}
                             disabled={generating}
-                            className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-primary hover:bg-indigo-600 text-white px-5 py-3 rounded-xl transition-all shadow-lg shadow-primary/20 hover:shadow-primary/40 font-bold text-sm disabled:opacity-50"
+                            className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-white px-5 py-3 rounded-xl transition-all border border-white/5 font-bold text-sm shadow-lg disabled:opacity-50"
                         >
-                            <Users size={18} /> Global Report
+                            {generating ? <Loader2 size={18} className="animate-spin" /> : <Download size={18} />}
+                            <span className="truncate">{generating ? 'Drafting...' : 'My Report'}</span>
                         </button>
-                    )}
+                        {(profile?.role === 'Admin' || profile?.full_name === 'Andre') && (
+                            <button
+                                onClick={exportGlobalReport}
+                                disabled={generating}
+                                className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-primary hover:bg-indigo-600 text-white px-5 py-3 rounded-xl transition-all shadow-lg shadow-primary/20 hover:shadow-primary/40 font-bold text-sm disabled:opacity-50"
+                            >
+                                <Users size={18} />
+                                <span className="truncate">Global Report</span>
+                            </button>
+                        )}
+                    </div>
                 </div>
             </div>
 
             {/* Stats Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-                <div className="glass-card p-6 flex items-center gap-4">
-                    <div className="w-12 h-12 rounded-xl bg-blue-500/10 flex items-center justify-center text-blue-400 border border-blue-500/20">
-                        <TrendingUp size={24} />
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-6">
+                <div className="glass-card p-4 md:p-6 flex flex-col md:flex-row items-center md:items-center gap-3 md:gap-4 text-center md:text-left">
+                    <div className="w-10 h-10 md:w-12 md:h-12 rounded-xl bg-blue-500/10 flex items-center justify-center text-blue-400 border border-blue-500/20 shrink-0">
+                        <TrendingUp size={20} className="md:w-6 md:h-6" />
                     </div>
                     <div>
-                        <p className="text-slate-500 text-[10px] font-bold uppercase tracking-wider">Total Sessions</p>
-                        <h3 className="text-xl font-bold text-white">{stats.total}</h3>
+                        <p className="text-slate-500 text-[9px] md:text-[10px] font-bold uppercase tracking-wider mb-0.5">Sessions</p>
+                        <h3 className="text-lg md:text-xl font-bold text-white">{stats.total}</h3>
                     </div>
                 </div>
-                <div className="glass-card p-6 flex items-center gap-4 border-emerald-500/10">
-                    <div className="w-12 h-12 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-400 border border-emerald-500/20">
-                        <div className="text-lg font-black">{profile?.currency_symbol || '$'}</div>
+                <div className="glass-card p-4 md:p-6 flex flex-col md:flex-row items-center md:items-center gap-3 md:gap-4 text-center md:text-left border-emerald-500/10">
+                    <div className="w-10 h-10 md:w-12 md:h-12 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-400 border border-emerald-500/20 shrink-0">
+                        <div className="text-base md:text-lg font-black">{profile?.currency_symbol || '$'}</div>
                     </div>
                     <div>
-                        <p className="text-slate-500 text-[10px] font-bold uppercase tracking-wider">Revenue</p>
-                        <h3 className="text-xl font-bold text-white">{stats.revenue.toFixed(2)}</h3>
+                        <p className="text-slate-500 text-[9px] md:text-[10px] font-bold uppercase tracking-wider mb-0.5">Revenue</p>
+                        <h3 className="text-lg md:text-xl font-bold text-white">{stats.revenue.toFixed(2)}</h3>
                     </div>
                 </div>
-                <div className="glass-card p-6 flex items-center gap-4">
-                    <div className="w-12 h-12 rounded-xl bg-indigo-500/10 flex items-center justify-center text-indigo-400 border border-indigo-500/20">
-                        <CheckCircle2 size={24} />
+                <div className="glass-card p-4 md:p-6 flex flex-col md:flex-row items-center md:items-center gap-3 md:gap-4 text-center md:text-left">
+                    <div className="w-10 h-10 md:w-12 md:h-12 rounded-xl bg-indigo-500/10 flex items-center justify-center text-indigo-400 border border-indigo-500/20 shrink-0">
+                        <CheckCircle2 size={20} className="md:w-6 md:h-6" />
                     </div>
                     <div>
-                        <p className="text-slate-500 text-[10px] font-bold uppercase tracking-wider">On Time</p>
-                        <h3 className="text-xl font-bold text-white">{stats.onTime}</h3>
+                        <p className="text-slate-500 text-[9px] md:text-[10px] font-bold uppercase tracking-wider mb-0.5">On Time</p>
+                        <h3 className="text-lg md:text-xl font-bold text-white">{stats.onTime}</h3>
                     </div>
                 </div>
-                <div className="glass-card p-6 flex items-center gap-4">
-                    <div className="w-12 h-12 rounded-xl bg-rose-500/10 flex items-center justify-center text-rose-400 border border-rose-500/20">
-                        <AlertTriangle size={24} />
+                <div className="glass-card p-4 md:p-6 flex flex-col md:flex-row items-center md:items-center gap-3 md:gap-4 text-center md:text-left">
+                    <div className="w-10 h-10 md:w-12 md:h-12 rounded-xl bg-rose-500/10 flex items-center justify-center text-rose-400 border border-rose-500/20 shrink-0">
+                        <AlertTriangle size={20} className="md:w-6 md:h-6" />
                     </div>
                     <div>
-                        <p className="text-slate-500 text-[10px] font-bold uppercase tracking-wider">Delayed</p>
-                        <h3 className="text-xl font-bold text-white">{stats.delayed}</h3>
+                        <p className="text-slate-500 text-[9px] md:text-[10px] font-bold uppercase tracking-wider mb-0.5">Delayed</p>
+                        <h3 className="text-lg md:text-xl font-bold text-white">{stats.delayed}</h3>
                     </div>
                 </div>
             </div>
@@ -320,12 +323,71 @@ const Reports = () => {
                 animate={{ opacity: 1, y: 0 }}
                 className="glass-card overflow-hidden"
             >
-                <div className="p-6 border-b border-white/5 bg-white/[0.02] flex items-center gap-3">
-                    <History size={20} className="text-primary" />
-                    <h3 className="font-bold text-lg text-white">Activity Log ({format(new Date(dateRange.start), 'MMM dd')} - {format(new Date(dateRange.end), 'MMM dd')})</h3>
+                <div className="p-4 md:p-6 border-b border-white/5 bg-white/[0.02] flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                        <History size={20} className="text-primary" />
+                        <h3 className="font-bold text-base md:text-lg text-white">Activity Log</h3>
+                    </div>
+                    <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest hidden sm:block">
+                        {format(new Date(dateRange.start), 'MMM dd')} - {format(new Date(dateRange.end), 'MMM dd')}
+                    </span>
                 </div>
 
-                <div className="overflow-x-auto">
+                {/* Mobile Card List (Visible only on mobile) */}
+                <div className="md:hidden divide-y divide-white/5">
+                    {loading ? (
+                        <div className="px-6 py-12 text-center text-slate-500 italic flex justify-center items-center gap-2"><Loader2 className="animate-spin" /> gathering history...</div>
+                    ) : history.length === 0 ? (
+                        <div className="px-6 py-12 text-center text-slate-500 italic">No history found for this range.</div>
+                    ) : history.map(apt => (
+                        <div key={apt.id} className="p-4 space-y-3 active:bg-white/5 transition-colors">
+                            <div className="flex justify-between items-start">
+                                <div>
+                                    <h4 className="font-bold text-white text-sm">{apt.client?.first_name} {apt.client?.last_name}</h4>
+                                    <p className="text-[10px] text-slate-400 font-medium uppercase tracking-wider mt-0.5">{apt.treatment_name || 'No treatment'}</p>
+                                </div>
+                                <span className={`text-[9px] px-2 py-0.5 rounded-full uppercase font-black tracking-widest border ${apt.status === 'completed' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' :
+                                    apt.status === 'active' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' :
+                                        apt.status === 'cancelled' ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' :
+                                            apt.status === 'noshow' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' :
+                                                apt.status === 'shifted' ? 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20' :
+                                                    'bg-slate-500/10 text-slate-400 border-slate-500/20'
+                                    }`}>
+                                    {apt.status}
+                                </span>
+                            </div>
+
+                            <div className="flex items-center justify-between text-[11px] font-medium">
+                                <div className="flex items-center gap-4">
+                                    <div className="flex items-center gap-1.5 text-slate-400">
+                                        <Calendar size={12} />
+                                        <span>{format(new Date(apt.scheduled_start), 'MMM dd, HH:mm')}</span>
+                                    </div>
+                                    <div className="text-emerald-400 font-bold">
+                                        {profile?.currency_symbol || '$'}{apt.cost || 0}
+                                    </div>
+                                </div>
+
+                                <div className="text-right">
+                                    {apt.status === 'completed' || apt.status === 'active' ? (
+                                        apt.delay_minutes > 5 ? (
+                                            <span className="text-rose-400 font-bold flex items-center gap-1 justify-end"><AlertTriangle size={10} /> +{apt.delay_minutes}m</span>
+                                        ) : apt.delay_minutes > 0 ? (
+                                            <span className="text-amber-400 font-medium h-[24px] flex items-center justify-end">+{apt.delay_minutes}m</span>
+                                        ) : (
+                                            <span className="text-emerald-500 font-medium flex items-center gap-1 justify-end"><CheckCircle2 size={10} /> On Time</span>
+                                        )
+                                    ) : (
+                                        <span className="text-slate-500 italic text-[10px] truncate max-w-[100px] block">{apt.cancellation_reason || 'No reason'}</span>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+
+                {/* Desktop Table (Hidden on mobile) */}
+                <div className="hidden md:block overflow-x-auto">
                     <table className="w-full text-left">
                         <thead className="text-xs uppercase tracking-wider text-slate-500 bg-black/20">
                             <tr>
@@ -339,9 +401,9 @@ const Reports = () => {
                         </thead>
                         <tbody className="divide-y divide-white/5">
                             {loading ? (
-                                <tr><td colSpan="5" className="px-6 py-12 text-center text-slate-500 italic flex justify-center items-center gap-2"><Loader2 className="animate-spin" /> gathering history...</td></tr>
+                                <tr><td colSpan="6" className="px-6 py-12 text-center text-slate-500 italic flex justify-center items-center gap-2"><Loader2 className="animate-spin" /> gathering history...</td></tr>
                             ) : history.length === 0 ? (
-                                <tr><td colSpan="5" className="px-6 py-12 text-center text-slate-500 italic">No history found for this range.</td></tr>
+                                <tr><td colSpan="6" className="px-6 py-12 text-center text-slate-500 italic">No history found for this range.</td></tr>
                             ) : history.map(apt => (
                                 <tr key={apt.id} className="hover:bg-white/5 transition-colors group">
                                     <td className="px-6 py-4 text-sm font-medium text-slate-300">
