@@ -57,6 +57,18 @@ const Dashboard = () => {
         };
     }, []);
 
+    // Sync active_tab to database for Do Not Disturb (DND) logic
+    useEffect(() => {
+        if (user) {
+            supabase.from('profiles')
+                .update({ active_tab: activeTab })
+                .eq('id', user.id)
+                .then(({ error }) => {
+                    if (error) console.error('[Dashboard] Failed to sync active_tab:', error);
+                });
+        }
+    }, [activeTab, user]);
+
     const tabs = [
         { id: 'appointments', label: 'Dashboard', icon: Calendar, color: 'text-primary' },
         { id: 'clients', label: 'Clients', icon: Users, color: 'text-secondary' },

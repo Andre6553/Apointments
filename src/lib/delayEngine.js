@@ -107,6 +107,84 @@ export const calculateAndApplyDelay = async (appointmentId, actualTime, type = '
             }
         }
     }
+
+    // 5. Admin "Crisis Mode" Alert
+    // If delay is significant, notify the Admin to check the Balancer
+    if (delayMinutes >= 15) {
+        try {
+            const providerName = subsequentApts[0]?.provider?.full_name || "A provider";
+            const providerId = currentApt.assigned_profile_id;
+            await notifyAdminOfCrisis(currentApt.business_id, providerId, providerName, delayMinutes);
+        } catch (err) {
+            console.error('[DelayEngine] Admin notification failed:', err);
+        }
+    }
+}
+
+/**
+ * Notifies the Business Admin via WhatsApp about a significant delay.
+ * Includes throttling to prevent duplicate pings.
+ */
+export const notifyAdminOfCrisis = async (businessId, providerId, providerName, delayMinutes) => {
+    // 1. Check throttling for this specific provider
+    const { data: provider, error: profileErr } = await supabase
+        .from('profiles')
+        .select('last_admin_crisis_notified_at, last_notified_delay')
+        .eq('id', providerId)
+        .single();
+
+    if (profileErr) return;
+
+    const lastNotifiedAt = provider.last_admin_crisis_notified_at ? new Date(provider.last_admin_crisis_notified_at) : null;
+    const lastDelay = provider.last_notified_delay || 0;
+    const now = new Date();
+
+    const MIN_COOLDOWN = 30 * 60 * 1000; // 30 mins
+    const SIGNIFICANT_JUMP = 15; // 15 mins more than last notified
+
+    const hasCooldownExpired = !lastNotifiedAt || (now - lastNotifiedAt) > MIN_COOLDOWN;
+    const isDelaySignificantlyWorse = delayMinutes >= (lastDelay + SIGNIFICANT_JUMP);
+
+    // Only notify if enough time has passed OR if the situation has gotten much worse
+    if (!hasCooldownExpired && !isDelaySignificantlyWorse) {
+        console.log(`[CrisisMonitor] Throttling alert for ${providerName}. (Last notified: ${lastDelay}m delay, ${Math.floor((now - lastNotifiedAt) / 60000)}m ago)`);
+        return;
+    }
+
+    console.log(`[CrisisMonitor] Detecting breach for business ${businessId}. Locating Admin...`);
+
+    // 1. Find the admin(s) for this business
+    // SKIP admins who are currently viewing the 'balancer' tab (DND Mode)
+    const { data: admins, error } = await supabase
+        .from('profiles')
+        .select('whatsapp, full_name, active_tab')
+        .eq('business_id', businessId)
+        .eq('role', 'Admin')
+        .neq('active_tab', 'balancer'); // The "I am already attending to it" check
+
+    if (error || !admins?.length) {
+        console.log('[CrisisMonitor] No admins found or all admins are currently on the Balancer page (DND active).');
+        return;
+    }
+
+    // 2. Send Alert to each Admin
+    for (const admin of admins) {
+        if (!admin.whatsapp) continue;
+
+        const message = `🚨 *CRISIS ALERT*: ${providerName} is running ${delayMinutes} mins late! 📉\n\nYour dashboard has calculated re-assignment suggestions to fix this. Please open the *Workload Balancer* to approve the autopilot suggestions.\n\n- ${admin.full_name}, attend to this to keep clients happy!`;
+
+        console.log(`[CrisisMonitor] Sending WhatsApp alert to Admin: ${admin.full_name}`);
+        await sendWhatsApp(admin.whatsapp, message);
+    }
+
+    // 4. Update the provider's throttling record
+    await supabase
+        .from('profiles')
+        .update({
+            last_admin_crisis_notified_at: now.toISOString(),
+            last_notified_delay: delayMinutes
+        })
+        .eq('id', providerId);
 }
 
 /**

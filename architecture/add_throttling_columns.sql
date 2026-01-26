@@ -1,0 +1,6 @@
+-- ADD THROTTLING COLUMN FOR ADMIN ALERTS
+ALTER TABLE public.profiles 
+ADD COLUMN IF NOT EXISTS last_admin_crisis_notified_at TIMESTAMPTZ;
+
+ALTER TABLE public.profiles
+ADD COLUMN IF NOT EXISTS last_notified_delay INT DEFAULT 0;

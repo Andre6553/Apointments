@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
-import { ArrowLeftRight, UserCheck, AlertTriangle, CheckCircle2, Clock, BarChart3, Loader2, Globe, User } from 'lucide-react'
+import { ArrowLeftRight, UserCheck, AlertTriangle, CheckCircle2, Clock, BarChart3, Loader2, Globe, User, Sparkles, ChevronRight } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { sendWhatsApp } from '../lib/notifications'
 import { useAuth } from '../hooks/useAuth'
@@ -10,15 +10,16 @@ const WorkloadBalancer = () => {
     const [delayedApts, setDelayedApts] = useState([])
     const [freeProviders, setFreeProviders] = useState([])
     const [loading, setLoading] = useState(true)
-    const [globalView, setGlobalView] = useState(profile?.role === 'admin')
+    const [globalView, setGlobalView] = useState(profile?.role?.toLowerCase() === 'admin')
+    const [suggestions, setSuggestions] = useState([])
 
     const fetchData = async () => {
         setLoading(true)
         try {
-            // Fetch all pending appointments for the current view and filter by 25% duration threshold
+            // 1. Fetch delayed appointments
             let delayedQuery = supabase
                 .from('appointments')
-                .select('*, client:clients(first_name, last_name, phone), profile:profiles!appointments_assigned_profile_id_fkey(full_name)')
+                .select('*, client:clients(first_name, last_name, phone), profile:profiles!appointments_assigned_profile_id_fkey(full_name, id, is_online)')
                 .eq('status', 'pending');
 
             if (!globalView) {
@@ -28,18 +29,17 @@ const WorkloadBalancer = () => {
             const { data: allPending, error: delayedError } = await delayedQuery;
             if (delayedError) throw delayedError
 
-            // Percentage-based filter: 25% of duration, Minimum 10 mins
             const filtered = (allPending || []).filter(apt => {
                 const threshold = Math.max(10, Math.floor(apt.duration_minutes * 0.25));
                 return apt.delay_minutes > threshold;
             });
-
             setDelayedApts(filtered)
 
-            // Find free providers (Global view of help available)
+            // 2. Fetch free providers
             const { data: allProviders } = await supabase
                 .from('profiles')
                 .select('*')
+                .eq('business_id', profile?.business_id)
 
             const { data: activeApts } = await supabase
                 .from('appointments')
@@ -48,19 +48,50 @@ const WorkloadBalancer = () => {
 
             const busyIds = activeApts?.map(a => a.assigned_profile_id) || []
             const free = allProviders?.filter(p => !busyIds.includes(p.id)) || []
-
             setFreeProviders(free)
+
+            // 3. Fetch Smart Recommendations (Autopilot)
+            if (profile?.role?.toLowerCase() === 'admin' && profile?.business_id) {
+                const { getSmartReassignments } = await import('../lib/balancerLogic')
+                const smart = await getSmartReassignments(profile.business_id)
+                setSuggestions(smart)
+            }
         } catch (error) {
             console.error('Balancer Data Error:', error)
-            // Mock data fallback... (omitted for brevity in replace, but keeping real logic robust)
         } finally {
             setLoading(false)
         }
     }
 
     useEffect(() => {
-        if (user) fetchData()
-    }, [user, globalView])
+        if (user && profile) {
+            fetchData()
+
+            // Realtime Listener for Online Status (Recalculate suggestions when someone logs in/out)
+            const channel = supabase.channel('balancer-realtime')
+                .on('postgres_changes', {
+                    event: 'UPDATE',
+                    schema: 'public',
+                    table: 'profiles',
+                    filter: `business_id=eq.${profile.business_id}`
+                }, (payload) => {
+                    if (payload.new.is_online !== payload.old.is_online) {
+                        console.log('[Balancer] Online status changed, recalculating...');
+                        fetchData()
+                    }
+                })
+                .on('postgres_changes', {
+                    event: '*',
+                    schema: 'public',
+                    table: 'appointments'
+                }, () => fetchData()) // Also refresh on status changes
+                .subscribe()
+
+            return () => {
+                supabase.removeChannel(channel)
+            }
+        }
+    }, [user, profile, globalView])
 
     const shiftClient = async (aptId, newProviderId, oldProviderId) => {
         if (!confirm('Shift this client to the new provider?')) return
@@ -101,6 +132,44 @@ const WorkloadBalancer = () => {
         }
     }
 
+    const approveSuggestion = async (sug) => {
+        try {
+            const { error } = await supabase
+                .from('appointments')
+                .update({
+                    assigned_profile_id: sug.newProviderId,
+                    shifted_from_id: sug.currentProviderId,
+                    notes: 'Auto-pilot reassignment due to delay'
+                })
+                .eq('id', sug.appointmentId)
+
+            if (error) throw error
+
+            // Notify Client & New Provider
+            const bizName = "[Your Business Name]"
+            if (sug.newProviderWhatsapp) {
+                await sendWhatsApp(sug.newProviderWhatsapp, `Hi ${sug.newProviderName}, you have a new appointment shifted to you: ${sug.clientName} at ${sug.scheduledTime}.`)
+            }
+
+            // Trigger feedback
+            setSuggestions(prev => prev.filter(s => s.appointmentId !== sug.appointmentId))
+            fetchData()
+        } catch (err) {
+            console.error('Failed to approve suggestion:', err)
+            alert('Action failed. Check logs.')
+        }
+    }
+
+    const approveAllSuggestions = async () => {
+        if (!confirm(`Apply all ${suggestions.length} smart reassignments?`)) return
+        setLoading(true)
+        for (const sug of suggestions) {
+            await approveSuggestion(sug)
+        }
+        setLoading(false)
+        alert('Autopilot complete: All suggested shifts applied!')
+    }
+
     return (
         <div className="space-y-10">
             <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-6">
@@ -116,9 +185,62 @@ const WorkloadBalancer = () => {
                             </div>
                         ))}
                     </div>
-                    <span className="text-xs font-bold text-slate-400 ml-2">{freeProviders.length} Available Staff</span>
+                    <span className="text-xs font-bold text-slate-400 ml-2">{freeProviders.filter(p => p.is_online).length} Online & Free</span>
                 </div>
             </div>
+
+            {profile?.role?.toLowerCase() === 'admin' && suggestions.length > 0 && (
+                <motion.div
+                    initial={{ opacity: 0, y: -20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="glass-card border-none bg-indigo-500/10 border-indigo-500/20 p-8 rounded-[2rem] shadow-xl overflow-hidden relative group"
+                >
+                    <div className="absolute top-0 right-0 p-8 opacity-10 group-hover:scale-110 transition-transform">
+                        <Sparkles size={120} className="text-indigo-400" />
+                    </div>
+
+                    <div className="relative z-10">
+                        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-8">
+                            <div className="flex items-center gap-4">
+                                <div className="p-3 bg-indigo-500 rounded-2xl shadow-glow shadow-indigo-500/40">
+                                    <Sparkles size={24} className="text-white animate-pulse" />
+                                </div>
+                                <div>
+                                    <h3 className="text-2xl font-bold text-white tracking-tight">Smart Autopilot</h3>
+                                    <p className="text-indigo-300/80 font-medium text-sm">Found {suggestions.length} optimal re-assignments to fix delays</p>
+                                </div>
+                            </div>
+                            <button
+                                onClick={approveAllSuggestions}
+                                className="w-full md:w-auto bg-white text-indigo-600 hover:bg-indigo-50 px-8 py-3.5 rounded-2xl font-black text-sm transition-all shadow-xl active:scale-95 flex items-center justify-center gap-3 group/btn"
+                            >
+                                <CheckCircle2 size={18} />
+                                Approve All Solutions
+                                <ChevronRight size={16} className="group-hover:translate-x-1 transition-transform" />
+                            </button>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {suggestions.map(sug => (
+                                <div key={sug.appointmentId} className="bg-white/5 border border-white/10 rounded-2xl p-4 flex justify-between items-center hover:bg-white/10 transition-colors">
+                                    <div className="space-y-1">
+                                        <h4 className="font-bold text-white text-sm">{sug.clientName}</h4>
+                                        <p className="text-[10px] text-indigo-300 font-bold uppercase tracking-widest">
+                                            {sug.currentProviderName} → {sug.newProviderName}
+                                        </p>
+                                    </div>
+                                    <button
+                                        onClick={() => approveSuggestion(sug)}
+                                        className="p-2.5 bg-indigo-500/20 hover:bg-indigo-500 text-indigo-400 hover:text-white rounded-xl transition-all border border-indigo-500/30"
+                                    >
+                                        <CheckCircle2 size={16} />
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </motion.div>
+            )}
 
             {profile?.role?.toLowerCase() === 'admin' && (
                 <div className="flex bg-slate-800/40 p-1 rounded-2xl border border-white/5 w-fit">
@@ -181,7 +303,9 @@ const WorkloadBalancer = () => {
                                         <div>
                                             <h3 className="font-bold text-xl text-white">{apt.client?.first_name} {apt.client?.last_name}</h3>
                                             <p className="text-slate-400 text-sm font-medium flex items-center gap-2">
-                                                <UserCheck size={14} /> Assigned to {apt.profile?.full_name}
+                                                <UserCheck size={14} />
+                                                Assigned to {apt.profile?.full_name}
+                                                <div className={`w-1.5 h-1.5 rounded-full ${apt.profile?.is_online ? 'bg-emerald-500 shadow-[0_0_5px_rgba(16,185,129,0.5)]' : 'bg-slate-600'}`} title={apt.profile?.is_online ? 'Online' : 'Offline'} />
                                             </p>
                                         </div>
                                     </div>
@@ -200,21 +324,44 @@ const WorkloadBalancer = () => {
                                             </div>
                                         ) : freeProviders.map(provider => (
                                             provider.id !== apt.assigned_profile_id && (
-                                                <div key={provider.id} className="flex justify-between items-center p-4 rounded-xl bg-slate-800/40 hover:bg-slate-700/60 transition-all border border-white/5 group/provider">
+                                                <div key={provider.id} className={`
+                                                    flex justify-between items-center p-4 rounded-xl transition-all border group/provider
+                                                    ${provider.is_online
+                                                        ? 'bg-slate-800/40 hover:bg-slate-700/60 border-white/5'
+                                                        : 'bg-slate-900/40 border-white/5 grayscale opacity-50'}
+                                                `}>
                                                     <div className="flex items-center gap-3">
-                                                        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white text-sm font-bold shadow-lg">
-                                                            {provider.full_name.charAt(0)}
+                                                        <div className="relative">
+                                                            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white text-sm font-bold shadow-lg">
+                                                                {provider.full_name.charAt(0)}
+                                                            </div>
+                                                            <div className={`
+                                                                absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-slate-900
+                                                                ${provider.is_online ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.5)]' : 'bg-slate-600'}
+                                                            `} />
                                                         </div>
                                                         <div>
-                                                            <h4 className="font-bold text-slate-200 text-sm">{provider.full_name}</h4>
+                                                            <div className="flex items-center gap-2">
+                                                                <h4 className="font-bold text-slate-200 text-sm">{provider.full_name}</h4>
+                                                                {!provider.is_online && (
+                                                                    <span className="text-[8px] font-black uppercase tracking-widest text-slate-500 bg-white/5 px-1.5 py-0.5 rounded border border-white/5">Away</span>
+                                                                )}
+                                                            </div>
                                                             <span className="text-xs text-slate-500 font-medium">{provider.role}</span>
                                                         </div>
                                                     </div>
                                                     <button
                                                         onClick={() => shiftClient(apt.id, provider.id, apt.assigned_profile_id)}
-                                                        className="bg-primary hover:bg-indigo-500 text-white text-xs px-4 py-2.5 rounded-lg font-bold flex items-center gap-2 transition-all shadow-lg shadow-primary/20 active:scale-95 opacity-0 group-hover/provider:opacity-100 translate-x-2 group-hover/provider:translate-x-0"
+                                                        disabled={!provider.is_online}
+                                                        className={`
+                                                            text-xs px-4 py-2.5 rounded-lg font-bold flex items-center gap-2 transition-all active:scale-95
+                                                            ${provider.is_online
+                                                                ? 'bg-primary hover:bg-indigo-500 text-white shadow-lg shadow-primary/20 opacity-0 group-hover/provider:opacity-100 translate-x-2 group-hover/provider:translate-x-0'
+                                                                : 'bg-slate-800 text-slate-600 cursor-not-allowed'}
+                                                        `}
                                                     >
-                                                        <ArrowLeftRight size={14} /> Assign
+                                                        <ArrowLeftRight size={14} />
+                                                        {provider.is_online ? 'Assign' : 'Offline'}
                                                     </button>
                                                 </div>
                                             )
