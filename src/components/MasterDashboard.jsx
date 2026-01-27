@@ -120,9 +120,9 @@ const MasterDashboard = () => {
                 return acc + amount;
             }, 0) || 0;
 
-            const activeSubs = orgData?.filter(o =>
-                o.subscriptions?.some(s => s.status === 'active' && s.tier !== 'trial')
-            ).length;
+            const activeSubs = orgData?.reduce((acc, o) =>
+                acc + (o.subscriptions?.filter(s => s.status === 'active' && s.tier !== 'trial').length || 0),
+                0);
 
             const totalOrgs = orgData?.length || 0;
             const convRate = totalOrgs > 0 ? Math.round((activeSubs / totalOrgs) * 100) : 0;
