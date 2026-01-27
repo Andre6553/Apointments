@@ -153,7 +153,8 @@ const SubscriptionPage = () => {
         form.method = 'POST';
         form.action = baseUrl;
 
-        const fields = {
+        // 1. Construct Raw Payload (Filter out ANY empty/null values)
+        const rawFields = {
             merchant_id: mId,
             merchant_key: mKey,
             return_url: returnUrl,
@@ -168,27 +169,39 @@ const SubscriptionPage = () => {
             custom_str2: user?.id,
         };
 
-        // Generate Signature
-        const passphrase = import.meta.env.VITE_PAYFAST_PASSPHRASE || 'OmniBibleApp1';
-        let signatureString = '';
-        const keys = Object.keys(fields).sort();
-
-        const params = [];
-        keys.forEach(key => {
-            const val = String(fields[key]).trim();
-            if (val !== '') {
-                params.push(`${key}=${encodeURIComponent(val).replace(/%20/g, '+')}`);
+        // Remove undefined/null/empty strings from the actual payload to be signed AND submitted
+        const fields = {};
+        Object.keys(rawFields).forEach(key => {
+            if (rawFields[key] !== undefined && rawFields[key] !== null && rawFields[key] !== '') {
+                fields[key] = String(rawFields[key]).trim();
             }
         });
 
-        signatureString = params.join('&');
+        // 2. Generate Signature
+        // PayFast requires sorting keys alphabetically
+        const keys = Object.keys(fields).sort();
+        const params = [];
+
+        keys.forEach(key => {
+            // Encode: percent-encoding, but spaces must be '+'
+            const encodedKey = key;
+            const encodedVal = encodeURIComponent(fields[key]).replace(/%20/g, '+');
+            params.push(`${encodedKey}=${encodedVal}`);
+        });
+
+        let signatureString = params.join('&');
+
+        // Append Passphrase if it exists
+        const passphrase = import.meta.env.VITE_PAYFAST_PASSPHRASE || 'OmniBibleApp1';
         if (passphrase) {
             signatureString += `&passphrase=${encodeURIComponent(passphrase.trim()).replace(/%20/g, '+')}`;
         }
 
+        // console.log('Signature String:', signatureString); // Intentionally commented out for production
         const signature = CryptoJS.MD5(signatureString).toString();
         fields.signature = signature;
 
+        // 3. Submit Form
         Object.entries(fields).forEach(([key, value]) => {
             const input = document.createElement('input');
             input.type = 'hidden';
