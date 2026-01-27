@@ -12,8 +12,9 @@ import { getCache, setCache, CACHE_KEYS } from '../lib/cache';
 
 const AppointmentList = () => {
     const { user, profile } = useAuth();
-    const [appointments, setAppointments] = useState(() => getCache(CACHE_KEYS.APPOINTMENTS) || []);
-    const [loading, setLoading] = useState(!getCache(CACHE_KEYS.APPOINTMENTS));
+    const [viewDate, setViewDate] = useState(new Date()); // Current view buffer
+    const [appointments, setAppointments] = useState([]);
+    const [loading, setLoading] = useState(true);
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [isTransferOpen, setIsTransferOpen] = useState(false);
     const [isCancelOpen, setIsCancelOpen] = useState(false);
@@ -24,16 +25,34 @@ const AppointmentList = () => {
     const [now, setNow] = useState(new Date());
 
     useEffect(() => {
-        const timer = setInterval(() => setNow(new Date()), 10000); // Update every 10s for performance
+        const timer = setInterval(() => setNow(new Date()), 10000);
         return () => clearInterval(timer);
     }, []);
 
-    const fetchAppointments = async (silent = false, useOptimistic = false) => {
-        if (useOptimistic) {
-            const cached = getCache(CACHE_KEYS.APPOINTMENTS);
-            if (cached) setAppointments(cached);
-        }
+    const getWeekRange = (date) => {
+        const start = new Date(date);
+        start.setHours(0, 0, 0, 0);
+        // Adjust to Monday (if 0 (Sun), go back 6, else go back day-1)
+        const day = start.getDay();
+        const diff = start.getDate() - day + (day === 0 ? -6 : 1);
+        start.setDate(diff);
+
+        const end = new Date(start);
+        end.setDate(start.getDate() + 6);
+        end.setHours(23, 59, 59, 999);
+
+        return { start, end };
+    };
+
+    const fetchAppointments = async (silent = false) => {
         if (!silent) setLoading(true);
+
+        const { start, end } = getWeekRange(viewDate);
+        const cacheKey = `${CACHE_KEYS.APPOINTMENTS}_${start.toISOString().split('T')[0]}`;
+
+        // Optimistic load for this week
+        const cached = getCache(cacheKey);
+        if (cached && !silent) setAppointments(cached);
 
         let query = supabase
             .from('appointments')
@@ -44,9 +63,10 @@ const AppointmentList = () => {
                 transfer_requests(id, status, receiver_id, sender_id)
             `)
             .or(`status.eq.active,status.eq.pending`)
+            .gte('scheduled_start', start.toISOString())
+            .lte('scheduled_start', end.toISOString())
             .order('scheduled_start', { ascending: true });
 
-        // Defense in Depth: Explicit filter despite RLS
         if (profile?.role?.toLowerCase() !== 'admin') {
             query = query.eq('assigned_profile_id', user?.id);
         }
@@ -55,7 +75,7 @@ const AppointmentList = () => {
 
         if (data) {
             setAppointments(data);
-            setCache(CACHE_KEYS.APPOINTMENTS, data);
+            setCache(cacheKey, data);
         }
         setLoading(false);
     };
@@ -70,13 +90,23 @@ const AppointmentList = () => {
                 schema: 'public',
                 table: 'appointments',
                 filter: profile?.role?.toLowerCase() !== 'admin' ? `assigned_profile_id=eq.${user.id}` : undefined
-            }, () => fetchAppointments(true))
+            }, async (payload) => {
+                // Only refetch if the change is RELEVANT to the current view
+                // Ideally we'd check payload.new.scheduled_start vs viewDate, but for safety we just refresh
+                fetchAppointments(true);
+            })
             .subscribe();
 
         return () => {
             supabase.removeChannel(channel);
         };
-    }, [user, profile]);
+    }, [user, profile, viewDate]); // Re-fetch when viewDate changes
+
+    const navigateWeek = (direction) => {
+        const newDate = new Date(viewDate);
+        newDate.setDate(viewDate.getDate() + (direction * 7));
+        setViewDate(newDate);
+    };
 
     const startAppointment = async (id) => {
         const startTime = new Date().toISOString();
@@ -176,20 +206,42 @@ const AppointmentList = () => {
     return (
         <div className="space-y-8">
             {/* Actions Bar */}
-            <div className="flex flex-col sm:flex-row justify-between items-end gap-4">
-                <div className="flex items-center gap-2">
-                    <div className="h-8 w-1 bg-gradient-to-b from-primary to-transparent rounded-full" />
-                    <h3 className="text-xl font-heading font-bold text-white">Upcoming Sessions</h3>
-                </div>
-                <button
-                    onClick={() => setIsModalOpen(true)}
-                    className="w-full sm:w-auto bg-primary hover:bg-indigo-600 text-white px-6 py-3 rounded-xl font-bold transition-all shadow-lg shadow-primary/20 hover:shadow-primary/40 active:scale-95 flex items-center justify-center gap-2 text-sm group"
-                >
-                    <div className="bg-white/20 p-1 rounded-lg group-hover:scale-110 transition-transform">
-                        <Plus size={16} />
+            {/* Actions Bar */}
+            <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-6">
+                {/* Week Navigator */}
+                <div className="flex items-center gap-4 w-full md:w-auto bg-surface/50 p-1.5 rounded-2xl border border-white/5">
+                    <button
+                        onClick={() => navigateWeek(-1)}
+                        className="p-3 hover:bg-white/10 rounded-xl text-slate-400 hover:text-white transition-colors"
+                    >
+                        <ArrowRight size={20} className="rotate-180" />
+                    </button>
+                    <div className="flex flex-col items-center flex-1 px-4">
+                        <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Current View</span>
+                        <div className="flex items-center gap-2 font-heading font-bold text-white whitespace-nowrap">
+                            <CalendarIcon size={16} className="text-primary" />
+                            {format(getWeekRange(viewDate).start, 'MMM d')} - {format(getWeekRange(viewDate).end, 'MMM d, yyyy')}
+                        </div>
                     </div>
-                    New Appointment
-                </button>
+                    <button
+                        onClick={() => navigateWeek(1)}
+                        className="p-3 hover:bg-white/10 rounded-xl text-slate-400 hover:text-white transition-colors"
+                    >
+                        <ArrowRight size={20} />
+                    </button>
+                </div>
+
+                <div className="flex items-center gap-4 w-full md:w-auto">
+                    <button
+                        onClick={() => setIsModalOpen(true)}
+                        className="w-full sm:w-auto bg-primary hover:bg-indigo-600 text-white px-6 py-4 rounded-xl font-bold transition-all shadow-lg shadow-primary/20 hover:shadow-primary/40 active:scale-95 flex items-center justify-center gap-2 text-sm group"
+                    >
+                        <div className="bg-white/20 p-1 rounded-lg group-hover:scale-110 transition-transform">
+                            <Plus size={16} />
+                        </div>
+                        New Appointment
+                    </button>
+                </div>
             </div>
 
             <AddAppointmentModal
