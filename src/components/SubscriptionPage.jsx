@@ -91,38 +91,40 @@ const SubscriptionPage = () => {
     const isExpired = !isTrial && daysLeft <= 0;
     const canRenew = isTrial || daysLeft <= 2;
 
-    const [pricing, setPricing] = useState({
-        Admin: { monthly: 5, yearly: 55 },
-        Provider: { monthly: 3, yearly: 33 }
-    });
+    const [pricing, setPricing] = useState(null);  // Start as null to show loading state
 
     useEffect(() => {
         const fetchPricing = async () => {
-            console.log('[SubscriptionPage] Fetching pricing from app_settings...');
             const { data, error } = await supabase
                 .from('app_settings')
                 .select('*')
                 .in('key', ['pricing_admin', 'pricing_provider']);
 
-            console.log('[SubscriptionPage] Pricing fetch result:', { data, error });
-
-            if (data && !error) {
-                const newPricing = { ...pricing };
+            if (data && !error && data.length > 0) {
+                const newPricing = {
+                    Admin: { monthly: 5, yearly: 55 },
+                    Provider: { monthly: 3, yearly: 33 }
+                };
                 data.forEach(item => {
-                    console.log('[SubscriptionPage] Processing:', item.key, item.value);
                     if (item.key === 'pricing_admin') newPricing.Admin = item.value;
                     if (item.key === 'pricing_provider') newPricing.Provider = item.value;
                 });
-                console.log('[SubscriptionPage] New pricing state:', newPricing);
                 setPricing(newPricing);
+            } else {
+                // Fallback to defaults if no data
+                setPricing({
+                    Admin: { monthly: 5, yearly: 55 },
+                    Provider: { monthly: 3, yearly: 33 }
+                });
             }
         };
         fetchPricing();
     }, []);
 
     const role = profile?.role === 'Admin' ? 'Admin' : 'Provider';
-    const monthlyPrice = pricing[role].monthly;
-    const yearlyPrice = pricing[role].yearly;
+    const monthlyPrice = pricing?.[role]?.monthly ?? 0;
+    const yearlyPrice = pricing?.[role]?.yearly ?? 0;
+    const pricingLoaded = pricing !== null;
 
     const formatCurrency = (amount) => {
         if (isSA) {
@@ -319,7 +321,11 @@ const SubscriptionPage = () => {
                             <p className="text-slate-400 text-sm">Flexible month-to-month access</p>
                         </div>
                         <div className="text-right">
-                            <span className="text-3xl font-black text-white">{formatCurrency(monthlyPrice)}</span>
+                            {pricingLoaded ? (
+                                <span className="text-3xl font-black text-white">{formatCurrency(monthlyPrice)}</span>
+                            ) : (
+                                <span className="text-3xl font-black text-slate-600 animate-pulse">Loading...</span>
+                            )}
                             <span className="text-slate-500 text-sm ml-1">/mo</span>
                         </div>
                     </div>
@@ -371,7 +377,11 @@ const SubscriptionPage = () => {
                             <p className="text-slate-400 text-sm">Best value for organizations</p>
                         </div>
                         <div className="text-right">
-                            <span className="text-3xl font-black text-white">{formatCurrency(yearlyPrice)}</span>
+                            {pricingLoaded ? (
+                                <span className="text-3xl font-black text-white">{formatCurrency(yearlyPrice)}</span>
+                            ) : (
+                                <span className="text-3xl font-black text-slate-600 animate-pulse">Loading...</span>
+                            )}
                             <span className="text-slate-500 text-sm ml-1">/yr</span>
                         </div>
                     </div>
