@@ -143,61 +143,71 @@ const SubscriptionPage = () => {
         const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
         const notifyUrl = `${supabaseUrl}/functions/v1/payfast-webhook`;
 
-        // Build payment data object
-        const paymentData = {
-            merchant_id: merchantId,
-            merchant_key: merchantKey,
-            return_url: returnUrl,
-            cancel_url: cancelUrl,
-            notify_url: notifyUrl,
-            name_first: profile?.full_name?.split(' ')[0] || 'User',
-            email_address: user?.email,
-            m_payment_id: `sub_${Date.now()}`,
-            amount: isSA ? zarAmount : amount.toFixed(2),
-            item_name: itemName,
-            custom_str1: profile?.business_id || '',
-            custom_str2: user?.id || '',
-        };
+        // Build payment data in EXACT ORDER as per PayFast docs
+        // Order: Merchant Details -> Customer Details -> Transaction Details
+        const paymentDataOrdered = [
+            ['merchant_id', merchantId],
+            ['merchant_key', merchantKey],
+            ['return_url', returnUrl],
+            ['cancel_url', cancelUrl],
+            ['notify_url', notifyUrl],
+            ['name_first', profile?.full_name?.split(' ')[0] || 'User'],
+            ['email_address', user?.email],
+            ['m_payment_id', `sub_${Date.now()}`],
+            ['amount', isSA ? zarAmount : amount.toFixed(2)],
+            ['item_name', itemName],
+            ['custom_str1', profile?.business_id || ''],
+            ['custom_str2', user?.id || ''],
+        ];
 
-        // Filter out empty values and create sorted keys for signature
-        const filteredData = {};
-        Object.keys(paymentData).forEach(key => {
-            if (paymentData[key] !== undefined && paymentData[key] !== null && paymentData[key] !== '') {
-                filteredData[key] = String(paymentData[key]).trim();
+        // Filter out empty values and build signature string
+        const filteredData = [];
+        let signatureString = '';
+
+        paymentDataOrdered.forEach(([key, value]) => {
+            if (value !== undefined && value !== null && value !== '') {
+                const trimmedValue = String(value).trim();
+                filteredData.push([key, trimmedValue]);
+
+                // URL encode for signature (uppercase hex, spaces as +)
+                const encodedVal = encodeURIComponent(trimmedValue).replace(/%20/g, '+');
+                if (signatureString.length > 0) signatureString += '&';
+                signatureString += `${key}=${encodedVal}`;
             }
         });
 
-        // Generate signature string (alphabetically sorted)
-        const sortedKeys = Object.keys(filteredData).sort();
-        let signatureString = '';
-        sortedKeys.forEach(key => {
-            const encodedVal = encodeURIComponent(filteredData[key]).replace(/%20/g, '+');
-            if (signatureString.length > 0) signatureString += '&';
-            signatureString += `${key}=${encodedVal}`;
-        });
-
-        // Append passphrase and generate MD5 hash
+        // Append passphrase
         const fullSignatureString = signatureString + `&passphrase=${encodeURIComponent(passphrase.trim()).replace(/%20/g, '+')}`;
 
-        // Use dynamic import for crypto-js since we removed the static import
+        console.log('[SubscriptionPage] Signature string:', signatureString);
+        console.log('[SubscriptionPage] Full signature string (with passphrase):', fullSignatureString);
+
+        // Use dynamic import for crypto-js
         import('crypto-js').then(CryptoJS => {
             const signature = CryptoJS.default.MD5(fullSignatureString).toString();
-            filteredData.signature = signature;
 
-            console.log('[SubscriptionPage] Redirecting to PayFast with:', { merchantId, amount: filteredData.amount, itemName });
+            console.log('[SubscriptionPage] Generated signature:', signature);
+            console.log('[SubscriptionPage] Payment data:', filteredData);
 
             // Build form and submit to PayFast
             const form = document.createElement('form');
             form.method = 'POST';
             form.action = 'https://www.payfast.co.za/eng/process';
 
-            Object.entries(filteredData).forEach(([key, value]) => {
+            filteredData.forEach(([key, value]) => {
                 const input = document.createElement('input');
                 input.type = 'hidden';
                 input.name = key;
                 input.value = value;
                 form.appendChild(input);
             });
+
+            // Add signature
+            const sigInput = document.createElement('input');
+            sigInput.type = 'hidden';
+            sigInput.name = 'signature';
+            sigInput.value = signature;
+            form.appendChild(sigInput);
 
             document.body.appendChild(form);
             form.submit();
