@@ -3,6 +3,8 @@ import https from 'https';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { createClient } from '@supabase/supabase-js';
+import { format, addMinutes, subMinutes } from 'date-fns';
 
 // Simple ENV loader
 const __filename = fileURLToPath(import.meta.url);
@@ -39,11 +41,117 @@ const ACCOUNT_SID = env.VITE_TWILIO_ACCOUNT_SID || env.TWILIO_ACCOUNT_SID;
 const AUTH_TOKEN = env.VITE_TWILIO_AUTH_TOKEN || env.TWILIO_AUTH_TOKEN;
 const FROM_NUMBER = env.VITE_TWILIO_WHATSAPP_FROM || env.TWILIO_WHATSAPP_FROM;
 
+// Init Supabase for Cron Jobs
+const supabaseUrl = env.VITE_SUPABASE_URL || env.SUPABASE_URL;
+const supabaseKey = env.SUPABASE_SERVICE_ROLE_KEY || env.VITE_SUPABASE_SERVICE_ROLE_KEY || env.VITE_SUPABASE_ANON_KEY;
+const supabase = createClient(supabaseUrl, supabaseKey);
+
 console.log('--- Twilio Proxy Config ---');
 console.log(`SID: ${ACCOUNT_SID ? ACCOUNT_SID.slice(0, 4) + '...' + ACCOUNT_SID.slice(-4) : 'MISSING'}`);
 console.log(`Token: ${AUTH_TOKEN ? AUTH_TOKEN.slice(0, 4) + '...' + AUTH_TOKEN.slice(-4) : 'MISSING'}`);
 console.log(`From: ${FROM_NUMBER}`);
 console.log('---------------------------');
+
+// --- Helper to Send Template Message ---
+const sendTemplateMessage = async (to, date, time) => {
+    return new Promise((resolve, reject) => {
+        try {
+            const message = `Your appointment is coming up on ${date} at ${time}`;
+            // NOTE: This body strictly matches the Sandbox 'Appointment Reminder' template.
+            // If using a Live number, you must create a template with body: "Your appointment is coming up on {{1}} at {{2}}"
+            // and submit it for approval.
+
+            const postData = new URLSearchParams({
+                'To': to.startsWith('whatsapp:') ? to : `whatsapp:${to}`,
+                'From': FROM_NUMBER,
+                'Body': message
+            }).toString();
+
+            const req = https.request({
+                hostname: 'api.twilio.com',
+                path: `/2010-04-01/Accounts/${ACCOUNT_SID}/Messages.json`,
+                method: 'POST',
+                headers: {
+                    'Authorization': 'Basic ' + Buffer.from(`${ACCOUNT_SID}:${AUTH_TOKEN}`).toString('base64'),
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Content-Length': postData.length
+                }
+            }, (res) => {
+                let data = '';
+                res.on('data', chunk => data += chunk);
+                res.on('end', () => {
+                    if (res.statusCode >= 200 && res.statusCode < 300) resolve(true);
+                    else {
+                        console.error('Twilio Error:', data);
+                        resolve(false);
+                    }
+                });
+            });
+
+            req.on('error', (e) => {
+                console.error('Twilio Network Error:', e);
+                resolve(false);
+            });
+            req.write(postData);
+            req.end();
+        } catch (e) {
+            console.error('Send Template Ex:', e);
+            resolve(false);
+        }
+    });
+};
+
+// --- CRON: Check Reminders every 60s ---
+const checkReminders = async () => {
+    try {
+        const now = new Date();
+        const startPath = addMinutes(now, 25).toISOString(); // Look ahead 25 mins
+        const endPath = addMinutes(now, 35).toISOString();   // Look ahead 35 mins (window of 10m)
+
+        const { data: apts, error } = await supabase
+            .from('appointments')
+            .select(`
+                id, scheduled_start, 
+                client:clients(first_name, phone, whatsapp_opt_in),
+                notifications_sent
+            `)
+            .eq('status', 'pending')
+            .is('reminder_sent', false) // Only unsent reminders
+            .eq('notifications_sent', 0) // Only if NO delay notification sent
+            .gte('scheduled_start', startPath)
+            .lte('scheduled_start', endPath);
+
+        if (error) {
+            console.error('Reminder Check Error:', error);
+            return;
+        }
+
+        if (apts && apts.length > 0) {
+            console.log(`[ReminderCron] Found ${apts.length} appointments due for reminder.`);
+
+            for (const apt of apts) {
+                if (!apt.client?.phone || !apt.client?.whatsapp_opt_in) continue;
+
+                // Format for Template
+                const dateStr = format(new Date(apt.scheduled_start), 'MMM do');
+                const timeStr = format(new Date(apt.scheduled_start), 'HH:mm');
+
+                const sent = await sendTemplateMessage(apt.client.phone, dateStr, timeStr);
+
+                if (sent) {
+                    console.log(`[ReminderCron] Sent reminder to ${apt.client.first_name}`);
+                    await supabase.from('appointments').update({ reminder_sent: true }).eq('id', apt.id);
+                }
+            }
+        }
+    } catch (e) {
+        console.error('Reminder Loop Ex:', e);
+    }
+};
+
+// Start the Loop
+setInterval(checkReminders, 60000);
+checkReminders(); // Run once immediately on start
 
 const server = http.createServer((req, res) => {
     // CORS
@@ -114,4 +222,5 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
     console.log(`Twilio Proxy running on http://localhost:${PORT}`);
     console.log(`Using Account: ${ACCOUNT_SID?.slice(0, 6)}...`);
+    console.log('⏰ Reminder Cron: ACTIVE (Checks every 60s)');
 });
