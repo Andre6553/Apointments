@@ -9,22 +9,6 @@ const SubscriptionPage = () => {
     const [loading, setLoading] = useState(false);
     const [verifying, setVerifying] = useState(false);
     const [paymentStatus, setPaymentStatus] = useState(null);
-    const [scriptLoaded, setScriptLoaded] = useState(false);
-
-    // Inject PayFast Script
-    useEffect(() => {
-        const script = document.createElement('script');
-        script.src = 'https://www.payfast.co.za/onsite/engine.js';
-        script.async = true;
-        script.onload = () => setScriptLoaded(true);
-        document.body.appendChild(script);
-        return () => {
-            // Optional: Don't remove immediately to avoid re-loading on re-renders, or do check
-            if (document.body.contains(script)) {
-                // document.body.removeChild(script); 
-            }
-        };
-    }, []);
 
     // Variables for pricing and display
     const isSA = Intl.DateTimeFormat().resolvedOptions().timeZone === 'Africa/Johannesburg';
@@ -142,76 +126,86 @@ const SubscriptionPage = () => {
         return `$ ${amount.toFixed(2)}`;
     };
 
-    const handlePayment = async (tier) => {
+    const handlePayment = (tier) => {
         setLoading(true);
         const amount = tier === 'monthly' ? monthlyPrice : yearlyPrice;
         const zarAmount = (amount * exchangeRate).toFixed(2);
         const itemName = `${role} ${tier === 'monthly' ? 'Monthly' : 'Yearly'} Subscription`;
 
-        // Redirect URL logic
+        // PayFast Live Credentials
+        const merchantId = '11945617';
+        const merchantKey = '9anvup217hdck';
+        const passphrase = import.meta.env.VITE_PAYFAST_PASSPHRASE || 'OmniBibleApp1';
+
+        // URLs
         const returnUrl = `${window.location.origin}/?payment=success`;
         const cancelUrl = `${window.location.origin}/?payment=cancelled`;
         const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
         const notifyUrl = `${supabaseUrl}/functions/v1/payfast-webhook`;
 
-        // Payment payload
+        // Build payment data object
         const paymentData = {
-            amount: isSA ? zarAmount : amount.toFixed(2),
-            item_name: itemName,
-            email_address: user?.email,
-            name_first: profile?.full_name?.split(' ')[0] || 'User',
-            m_payment_id: `sub_${Date.now()}`,
-            custom_str1: profile?.business_id,
-            custom_str2: user?.id,
+            merchant_id: merchantId,
+            merchant_key: merchantKey,
             return_url: returnUrl,
             cancel_url: cancelUrl,
             notify_url: notifyUrl,
+            name_first: profile?.full_name?.split(' ')[0] || 'User',
+            email_address: user?.email,
+            m_payment_id: `sub_${Date.now()}`,
+            amount: isSA ? zarAmount : amount.toFixed(2),
+            item_name: itemName,
+            custom_str1: profile?.business_id || '',
+            custom_str2: user?.id || '',
         };
 
-        console.log('[SubscriptionPage] Requesting PayFast payment UUID...');
+        // Filter out empty values and create sorted keys for signature
+        const filteredData = {};
+        Object.keys(paymentData).forEach(key => {
+            if (paymentData[key] !== undefined && paymentData[key] !== null && paymentData[key] !== '') {
+                filteredData[key] = String(paymentData[key]).trim();
+            }
+        });
 
-        try {
-            // Step 1: Call Edge Function to get UUID from PayFast
-            const response = await fetch(`${supabaseUrl}/functions/v1/payfast-generate-payment`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(paymentData),
+        // Generate signature string (alphabetically sorted)
+        const sortedKeys = Object.keys(filteredData).sort();
+        let signatureString = '';
+        sortedKeys.forEach(key => {
+            const encodedVal = encodeURIComponent(filteredData[key]).replace(/%20/g, '+');
+            if (signatureString.length > 0) signatureString += '&';
+            signatureString += `${key}=${encodedVal}`;
+        });
+
+        // Append passphrase and generate MD5 hash
+        const fullSignatureString = signatureString + `&passphrase=${encodeURIComponent(passphrase.trim()).replace(/%20/g, '+')}`;
+
+        // Use dynamic import for crypto-js since we removed the static import
+        import('crypto-js').then(CryptoJS => {
+            const signature = CryptoJS.default.MD5(fullSignatureString).toString();
+            filteredData.signature = signature;
+
+            console.log('[SubscriptionPage] Redirecting to PayFast with:', { merchantId, amount: filteredData.amount, itemName });
+
+            // Build form and submit to PayFast
+            const form = document.createElement('form');
+            form.method = 'POST';
+            form.action = 'https://www.payfast.co.za/eng/process';
+
+            Object.entries(filteredData).forEach(([key, value]) => {
+                const input = document.createElement('input');
+                input.type = 'hidden';
+                input.name = key;
+                input.value = value;
+                form.appendChild(input);
             });
 
-            const result = await response.json();
-
-            if (!response.ok || !result.uuid) {
-                console.error('[SubscriptionPage] Failed to get payment UUID:', result);
-                alert('Payment initialization failed. Please try again.');
-                setLoading(false);
-                return;
-            }
-
-            console.log('[SubscriptionPage] Got UUID:', result.uuid);
-
-            // Step 2: Trigger On-Site Payment with UUID
-            if (window.payfast_do_onsite_payment) {
-                window.payfast_do_onsite_payment({ uuid: result.uuid }, (paymentResult) => {
-                    if (paymentResult === true) {
-                        // Transaction completed - Handled by return_url usually, but fallback here
-                        window.location.href = returnUrl;
-                    } else {
-                        // Transaction failed/cancelled
-                        setLoading(false);
-                    }
-                });
-            } else {
-                console.error('PayFast OnSite payment script not loaded');
-                setLoading(false);
-                alert('Payment system is initializing, please try again in a moment.');
-            }
-        } catch (error) {
-            console.error('[SubscriptionPage] Payment error:', error);
-            alert('An error occurred. Please try again.');
+            document.body.appendChild(form);
+            form.submit();
+        }).catch(err => {
+            console.error('[SubscriptionPage] Failed to load crypto module:', err);
+            alert('Payment system error. Please try again.');
             setLoading(false);
-        }
+        });
     };
 
     if (verifying) {

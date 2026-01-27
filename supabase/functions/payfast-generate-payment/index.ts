@@ -225,12 +225,15 @@ serve(async (req: Request) => {
         // Add signature to payment data
         paymentData.signature = signature
 
-        console.log('[payfast-generate-payment] Sending to PayFast:', { merchantId, item_name, amount })
+        console.log('[payfast-generate-payment] Full payload:', JSON.stringify(paymentData))
+        console.log('[payfast-generate-payment] Signature string (without passphrase):', signatureString.split('&passphrase=')[0])
 
         // POST to PayFast OnSite endpoint
         const formBody = Object.entries(paymentData)
             .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
             .join('&')
+
+        console.log('[payfast-generate-payment] Form body:', formBody)
 
         const response = await fetch('https://www.payfast.co.za/onsite/process', {
             method: 'POST',
@@ -241,7 +244,8 @@ serve(async (req: Request) => {
         })
 
         const responseText = await response.text()
-        console.log('[payfast-generate-payment] PayFast response:', response.status, responseText)
+        console.log('[payfast-generate-payment] PayFast response status:', response.status)
+        console.log('[payfast-generate-payment] PayFast response body:', responseText.substring(0, 500))
 
         if (!response.ok) {
             return new Response(JSON.stringify({
