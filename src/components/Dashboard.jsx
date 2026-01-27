@@ -30,8 +30,11 @@ import {
     Sparkles,
     Settings,
     User,
-    AlertTriangle
+    AlertTriangle,
+    CreditCard
 } from 'lucide-react';
+import SubscriptionPage from './SubscriptionPage';
+import MasterDashboard from './MasterDashboard';
 
 const Dashboard = () => {
     const { user, profile, signOut } = useAuth();
@@ -69,6 +72,19 @@ const Dashboard = () => {
         }
     }, [activeTab, user]);
 
+    // Handle payment redirect routing
+    useEffect(() => {
+        const query = new URLSearchParams(window.location.search);
+        if (query.get('payment')) {
+            setActiveTab('subscription');
+        }
+    }, []);
+
+    const subscription = profile?.subscription;
+    const expiresAt = subscription?.expires_at ? new Date(subscription.expires_at) : null;
+    const daysLeft = expiresAt ? Math.ceil((expiresAt.getTime() - Date.now()) / (1000 * 60 * 60 * 24)) : 0;
+    const isExpired = daysLeft <= 0 && subscription?.tier !== 'trial';
+
     const tabs = [
         { id: 'appointments', label: 'Dashboard', icon: Calendar, color: 'text-primary' },
         { id: 'clients', label: 'Clients', icon: Users, color: 'text-secondary' },
@@ -76,13 +92,46 @@ const Dashboard = () => {
         { id: 'balancer', label: 'Workload', icon: Scale, color: 'text-purple-400' },
         { id: 'reports', label: 'Reports', icon: FileText, color: 'text-blue-400' },
         { id: 'organization', label: 'Organization', icon: Sparkles, color: 'text-rose-400', adminOnly: true },
+        { id: 'subscription', label: 'Subscription', icon: CreditCard, color: 'text-emerald-400' },
         { id: 'profile', label: 'Profile', icon: User, color: 'text-emerald-400' },
     ];
 
-    const filteredTabs = tabs.filter(t => !t.adminOnly || profile?.role?.toLowerCase() === 'admin');
+    const filteredTabs = tabs.filter(t => {
+        // MasterAdmin gets a clean, unique view
+        if (profile?.role === 'MasterAdmin') {
+            return ['appointments', 'profile'].includes(t.id);
+        }
+
+        if (t.adminOnly && profile?.role?.toLowerCase() !== 'admin') return false;
+        // If expired, only allow Subscription and Profile
+        if (isExpired && !['subscription', 'profile'].includes(t.id)) return false;
+        return true;
+    }).map(t => {
+        // Rename 'Dashboard' to 'Master Console' for MasterAdmin
+        if (profile?.role === 'MasterAdmin' && t.id === 'appointments') {
+            return { ...t, label: 'Master Console', icon: LayoutDashboard };
+        }
+        return t;
+    });
+
     const activeTabData = tabs.find(t => t.id === activeTab) || tabs[0];
 
+    // Force subscription tab if expired
+    useEffect(() => {
+        if (isExpired && activeTab !== 'subscription' && activeTab !== 'profile') {
+            setActiveTab('subscription');
+        }
+    }, [isExpired, activeTab]);
+
     const renderActiveComponent = () => {
+        if (profile?.role === 'MasterAdmin') {
+            return <MasterDashboard />;
+        }
+
+        if (isExpired && activeTab !== 'subscription' && activeTab !== 'profile') {
+            return <SubscriptionPage />;
+        }
+
         const components = {
             appointments: (
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
@@ -99,7 +148,8 @@ const Dashboard = () => {
             balancer: <WorkloadBalancer />,
             reports: <Reports />,
             organization: <OrganizationSettings />,
-            profile: <ProfileSettings />
+            profile: <ProfileSettings />,
+            subscription: <SubscriptionPage />
         };
 
         return (
@@ -117,7 +167,7 @@ const Dashboard = () => {
                     <div className="p-1 rounded-lg bg-primary/20 border border-primary/20">
                         <img src={logo} alt="Logo" className="w-8 h-8 rounded-md object-contain" />
                     </div>
-                    <span className="font-heading font-bold text-lg text-white">Tracker</span>
+                    <span className="font-heading font-bold text-lg text-white">Apointment Tracker</span>
                 </div>
                 <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-2 text-slate-400 hover:text-white hover:bg-white/5 rounded-xl transition-all">
                     {isSidebarOpen ? <X size={24} /> : <Menu size={24} />}
@@ -139,7 +189,7 @@ const Dashboard = () => {
 
             {/* Sidebar */}
             <nav className={`
-                fixed inset-y-0 left-0 w-80 glass-card rounded-l-none border-y-0 border-l-0 p-6 flex flex-col z-50 transition-transform duration-300 md:relative md:translate-x-0
+                fixed inset-y-0 left-0 w-80 glass-card rounded-l-none border-y-0 border-l-0 p-6 flex flex-col z-50 transition-transform duration-300 md:relative md:translate-x-0 overflow-y-auto scrollbar-hide
                 ${isSidebarOpen ? 'translate-x-0 border-r border-white/10' : '-translate-x-full md:translate-x-0 md:border-r md:border-white/5'}
             `}>
                 <div className="hidden md:flex items-center gap-4 mb-12 px-2">
@@ -150,7 +200,7 @@ const Dashboard = () => {
                         </div>
                     </div>
                     <div>
-                        <h2 className="font-heading font-bold text-2xl text-white tracking-tight leading-none">Tracker</h2>
+                        <h2 className="font-heading font-bold text-2xl text-white tracking-tight leading-none text-wrap max-w-[150px]">Apointment Tracker</h2>
                         <span className="text-[10px] text-primary font-bold uppercase tracking-[0.2em] relative top-1 flex items-center gap-1">
                             <Sparkles size={10} /> Pro
                         </span>
@@ -166,6 +216,22 @@ const Dashboard = () => {
                     )}
 
                     <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-4 px-4">Menu</p>
+
+                    {/* Subscription Status Pill */}
+                    {subscription && (
+                        <div className={`mx-4 mb-6 p-3 rounded-2xl border flex items-center justify-between transition-all ${daysLeft > 3 ? 'bg-primary/10 border-primary/20' : 'bg-red-500/10 border-red-500/20'}`}>
+                            <div>
+                                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-tight leading-none mb-1">
+                                    {subscription.tier === 'trial' ? 'Trial Period' : 'Subscription'}
+                                </p>
+                                <p className={`text-xs font-bold ${daysLeft > 3 ? 'text-white' : 'text-red-400'}`}>
+                                    {daysLeft} days left
+                                </p>
+                            </div>
+                            <Clock size={16} className={daysLeft > 3 ? 'text-primary' : 'text-red-400 animate-pulse'} />
+                        </div>
+                    )}
+
                     {filteredTabs.map((tab) => (
                         <button
                             key={tab.id}

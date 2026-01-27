@@ -256,8 +256,8 @@ const DailyTimeline = ({ selectedDate = new Date() }) => {
                                     animate={{ opacity: 1, x: 0 }}
                                     className={`absolute left-2 right-2 rounded-xl border p-2 flex flex-col shadow-lg transition-transform hover:scale-[1.01] cursor-pointer group
                                     ${event.type === 'appointment'
-                                            ? 'bg-indigo-500/10 border-indigo-500/30 text-indigo-400'
-                                            : 'bg-orange-500/10 border-orange-500/30 text-orange-400'
+                                            ? 'bg-indigo-500/20 border-indigo-500/30 text-white'
+                                            : 'bg-orange-600/20 border-orange-500/30 text-white'
                                         }`}
                                     style={{
                                         top: `${getPosition(event.start)}%`,
@@ -282,18 +282,18 @@ const DailyTimeline = ({ selectedDate = new Date() }) => {
                                     {/* Buffer Block Indicator */}
                                     {event.type === 'appointment' && bufferSettings.enabled && bufferSettings.duration > 0 && (
                                         <div
-                                            className="absolute left-0 right-0 border-t border-dashed border-white/20 bg-slate-500/10 -z-10 flex items-center justify-center"
+                                            className="absolute left-0 right-0 border-t border-dashed border-emerald-500/30 bg-emerald-500/10 -z-10 flex items-center justify-center backdrop-blur-[1px]"
                                             style={{
                                                 top: '100%',
                                                 height: `${(bufferSettings.duration / event.duration) * 100}%`
                                             }}
                                         >
-                                            <span className="text-[7px] font-mono text-slate-500 opacity-70 rotate-90 md:rotate-0">+Buffer</span>
+                                            <span className="text-[7px] font-bold text-emerald-500/80 uppercase tracking-tighter">+{bufferSettings.duration}m Buffer</span>
                                         </div>
                                     )}
 
                                     {event.type === 'appointment' && (
-                                        <div className="absolute top-2 right-2 flex items-center gap-1">
+                                        <div className="absolute top-2 right-2 flex items-center gap-3">
                                             <button
                                                 onClick={(e) => {
                                                     e.stopPropagation();
@@ -301,10 +301,10 @@ const DailyTimeline = ({ selectedDate = new Date() }) => {
                                                     setEditData(aptData);
                                                     setIsEditOpen(true);
                                                 }}
-                                                className="p-1.5 rounded-lg bg-white/10 opacity-0 group-hover:opacity-100 transition-all hover:bg-amber-500 hover:text-white"
+                                                className="p-2.5 rounded-lg bg-white/10 opacity-0 group-hover:opacity-100 transition-all hover:bg-amber-500 hover:text-white"
                                                 title="Edit"
                                             >
-                                                <Edit2 size={10} />
+                                                <Edit2 size={14} />
                                             </button>
                                             <button
                                                 onClick={(e) => {
@@ -320,10 +320,10 @@ const DailyTimeline = ({ selectedDate = new Date() }) => {
                                                     });
                                                     setIsTransferOpen(true);
                                                 }}
-                                                className="p-1.5 rounded-lg bg-white/10 opacity-0 group-hover:opacity-100 transition-all hover:bg-primary hover:text-white"
+                                                className="p-2.5 rounded-lg bg-white/10 opacity-0 group-hover:opacity-100 transition-all hover:bg-primary hover:text-white"
                                                 title="Transfer"
                                             >
-                                                <ArrowRight size={10} />
+                                                <ArrowRight size={14} />
                                             </button>
                                             <button
                                                 onClick={(e) => {
@@ -332,10 +332,10 @@ const DailyTimeline = ({ selectedDate = new Date() }) => {
                                                     setSelectedCancelApt(aptData);
                                                     setIsCancelOpen(true);
                                                 }}
-                                                className="p-1.5 rounded-lg bg-white/10 opacity-0 group-hover:opacity-100 transition-all hover:bg-red-500 hover:text-white"
+                                                className="p-2.5 rounded-lg bg-white/10 opacity-0 group-hover:opacity-100 transition-all hover:bg-red-500 hover:text-white"
                                                 title="Cancel"
                                             >
-                                                <Trash2 size={10} />
+                                                <Trash2 size={14} />
                                             </button>
                                         </div>
                                     )}

@@ -108,19 +108,29 @@ export const AuthProvider = ({ children }) => {
 
     const fetchProfile = async (userId) => {
         // 1. Set Status Online
-        // We do this concurrently with fetching to avoid blocking UI
         supabase.from('profiles').update({ is_online: true }).eq('id', userId).then(({ error }) => {
             if (error) console.error('Failed to set online status:', error)
         })
 
-        // 2. Fetch Data
+        // 2. Fetch Data (including subscription)
         const { data, error } = await supabase
             .from('profiles')
-            .select('*, business:businesses!profiles_business_id_fkey(name, owner_id)')
+            .select(`
+                *,
+                business:businesses!profiles_business_id_fkey(name, owner_id),
+                subscription:subscriptions(tier, role, status, expires_at)
+            `)
             .eq('id', userId)
             .single()
 
-        if (data) setProfile(data)
+        if (data) {
+            // Flatten subscription if it exists (it's a 1-to-1 but Supabase returns array)
+            const profileData = {
+                ...data,
+                subscription: data.subscription?.[0] || null
+            }
+            setProfile(profileData)
+        }
     }
 
     const updateProfile = async (updates) => {

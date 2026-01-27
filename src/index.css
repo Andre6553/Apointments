@@ -71,6 +71,15 @@ body {
     /* Creates padding effect */
     background-clip: padding-box;
   }
+
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
 }
 
 h1,

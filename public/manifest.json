@@ -1,6 +1,6 @@
 {
-    "name": "Appointments Tracker",
-    "short_name": "Tracker",
+    "name": "Apointment Tracker",
+    "short_name": "Apointment Tracker",
     "description": "Professional Schedule Management",
     "start_url": "/",
     "display": "standalone",

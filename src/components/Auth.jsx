@@ -71,7 +71,7 @@ const Auth = () => {
                         </div>
                     </motion.div>
                     <h1 className="text-4xl font-heading font-extrabold tracking-tight text-white mb-2">
-                        Appointment <span className="bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">Tracker</span>
+                        Apointment <span className="bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">Tracker</span>
                     </h1>
                     <div className="flex items-center justify-center gap-2 text-slate-400 text-sm font-medium tracking-wide uppercase">
                         <Sparkles size={14} className="text-primary" />

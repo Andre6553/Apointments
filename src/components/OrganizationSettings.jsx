@@ -4,6 +4,7 @@ import { useAuth } from '../hooks/useAuth'
 import { Building2, Save, Users, Plus, Loader2, Trash2, ShieldCheck, Mail, CheckCircle2 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useToast } from '../contexts/ToastContext'
+import EditStaffModal from './EditStaffModal'
 
 const OrganizationSettings = () => {
     const { profile, fetchProfile } = useAuth()
@@ -16,6 +17,8 @@ const OrganizationSettings = () => {
     const [transferFrom, setTransferFrom] = useState('')
     const [transferTo, setTransferTo] = useState('')
     const [isTransferring, setIsTransferring] = useState(false)
+    const [selectedStaff, setSelectedStaff] = useState(null)
+    const [isEditModalOpen, setIsEditModalOpen] = useState(false)
     const showToast = useToast()
 
     useEffect(() => {
@@ -188,14 +191,14 @@ const OrganizationSettings = () => {
                             </div>
                         </div>
 
-                        <form onSubmit={handleUpdateBusinessName} className="flex gap-4">
-                            <div className="flex-1 space-y-2">
+                        <form onSubmit={handleUpdateBusinessName} className="space-y-6">
+                            <div className="space-y-2">
                                 <label className="text-xs font-bold text-slate-400 uppercase tracking-widest ml-1">Business Name</label>
                                 <input
                                     type="text"
                                     value={businessName}
                                     onChange={(e) => setBusinessName(e.target.value)}
-                                    className="glass-input h-14 w-full"
+                                    className="glass-input h-14 w-full text-lg"
                                     placeholder="e.g. Rose's Nails"
                                     required
                                 />
@@ -203,10 +206,10 @@ const OrganizationSettings = () => {
                             <button
                                 type="submit"
                                 disabled={isUpdatingName}
-                                className="mt-6 bg-primary hover:bg-indigo-600 px-8 rounded-2xl font-bold flex items-center gap-2 transition-all shadow-lg shadow-primary/20"
+                                className="bg-primary hover:bg-indigo-600 px-10 py-4 rounded-2xl font-bold flex items-center gap-2 transition-all shadow-lg shadow-primary/20 active:scale-95"
                             >
                                 {isUpdatingName ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />}
-                                <span>Save</span>
+                                <span>Save Changes</span>
                             </button>
                         </form>
                     </div>
@@ -228,29 +231,29 @@ const OrganizationSettings = () => {
                         </div>
 
                         {/* Add Staff Form */}
-                        <form onSubmit={handleAddStaff} className="bg-white/[0.02] border border-white/5 p-6 rounded-2xl space-y-4">
-                            <div className="flex items-center gap-3 text-slate-400 mb-2">
-                                <Mail size={16} />
-                                <span className="text-xs font-bold uppercase tracking-widest">Add Provider by Email</span>
-                            </div>
-                            <div className="flex gap-4">
+                        <form onSubmit={handleAddStaff} className="bg-white/[0.02] border border-white/5 p-6 rounded-2xl space-y-6">
+                            <div className="space-y-2">
+                                <div className="flex items-center gap-3 text-slate-400 mb-2 ml-1">
+                                    <Mail size={16} />
+                                    <span className="text-xs font-bold uppercase tracking-widest">Add Provider by Email</span>
+                                </div>
                                 <input
                                     type="email"
                                     value={newStaffEmail}
                                     onChange={(e) => setNewStaffEmail(e.target.value)}
-                                    className="glass-input flex-1 h-12 text-sm"
+                                    className="glass-input h-14 w-full text-lg"
                                     placeholder="Enter colleague's email..."
                                     required
                                 />
-                                <button
-                                    type="submit"
-                                    disabled={isAddingStaff}
-                                    className="bg-emerald-500 hover:bg-emerald-600 text-white px-6 rounded-xl font-bold flex items-center gap-2 transition-all"
-                                >
-                                    {isAddingStaff ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
-                                    <span>Add to Team</span>
-                                </button>
                             </div>
+                            <button
+                                type="submit"
+                                disabled={isAddingStaff}
+                                className="bg-emerald-500 hover:bg-emerald-600 px-10 py-4 rounded-2xl font-bold flex items-center gap-2 transition-all shadow-lg shadow-emerald-500/20 active:scale-95 text-white"
+                            >
+                                {isAddingStaff ? <Loader2 size={18} className="animate-spin" /> : <Plus size={18} />}
+                                <span>Add to Team</span>
+                            </button>
                         </form>
 
                         {/* Staff List */}
@@ -266,7 +269,14 @@ const OrganizationSettings = () => {
                                 </div>
                             ) : (
                                 staff.map((member) => (
-                                    <div key={member.id} className="group flex items-center justify-between p-4 rounded-xl bg-white/[0.02] border border-white/5 hover:bg-white/[0.04] transition-all">
+                                    <div
+                                        key={member.id}
+                                        onClick={() => {
+                                            setSelectedStaff(member)
+                                            setIsEditModalOpen(true)
+                                        }}
+                                        className="group flex items-center justify-between p-4 rounded-xl bg-white/[0.02] border border-white/5 hover:bg-white/[0.04] transition-all cursor-pointer"
+                                    >
                                         <div className="flex items-center gap-4">
                                             <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-500/20 to-transparent flex items-center justify-center text-indigo-400 font-bold border border-white/5">
                                                 {member.full_name?.[0] || 'U'}
@@ -282,16 +292,21 @@ const OrganizationSettings = () => {
                                             </div>
                                         </div>
 
-                                        {/* Don't allow removing yourself */}
-                                        {member.id !== profile?.id && (
-                                            <button
-                                                onClick={() => removeStaff(member.id)}
-                                                className="p-2.5 text-slate-500 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition-all rounded-xl hover:bg-rose-500/10"
-                                                title="Remove from organization"
-                                            >
-                                                <Trash2 size={18} />
-                                            </button>
-                                        )}
+                                        <div className="flex items-center gap-2">
+                                            {/* Don't allow removing yourself */}
+                                            {member.id !== profile?.id && (
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.stopPropagation()
+                                                        removeStaff(member.id)
+                                                    }}
+                                                    className="p-2.5 text-slate-500 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition-all rounded-xl hover:bg-rose-500/10"
+                                                    title="Remove from organization"
+                                                >
+                                                    <Trash2 size={18} />
+                                                </button>
+                                            )}
+                                        </div>
                                     </div>
                                 ))
                             )}
@@ -357,6 +372,13 @@ const OrganizationSettings = () => {
                     </div>
                 </div>
             </div>
+
+            <EditStaffModal
+                isOpen={isEditModalOpen}
+                onClose={() => setIsEditModalOpen(false)}
+                member={selectedStaff}
+                onUpdate={fetchStaff}
+            />
         </div>
     )
 }
