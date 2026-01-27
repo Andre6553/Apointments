@@ -98,17 +98,22 @@ const SubscriptionPage = () => {
 
     useEffect(() => {
         const fetchPricing = async () => {
+            console.log('[SubscriptionPage] Fetching pricing from app_settings...');
             const { data, error } = await supabase
                 .from('app_settings')
                 .select('*')
                 .in('key', ['pricing_admin', 'pricing_provider']);
 
+            console.log('[SubscriptionPage] Pricing fetch result:', { data, error });
+
             if (data && !error) {
                 const newPricing = { ...pricing };
                 data.forEach(item => {
+                    console.log('[SubscriptionPage] Processing:', item.key, item.value);
                     if (item.key === 'pricing_admin') newPricing.Admin = item.value;
                     if (item.key === 'pricing_provider') newPricing.Provider = item.value;
                 });
+                console.log('[SubscriptionPage] New pricing state:', newPricing);
                 setPricing(newPricing);
             }
         };

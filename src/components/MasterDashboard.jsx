@@ -172,12 +172,22 @@ const MasterDashboard = () => {
                 { key: 'pricing_provider', value: settings.pricing_provider }
             ];
 
+            console.log('[MasterDashboard] Saving settings:', updates);
+
             for (const item of updates) {
-                await supabase.from('app_settings').upsert(item, { onConflict: 'key' });
+                const { error } = await supabase
+                    .from('app_settings')
+                    .upsert(item, { onConflict: 'key' });
+
+                if (error) {
+                    console.error('[MasterDashboard] Error saving setting:', item.key, error);
+                    throw error;
+                }
             }
             alert('Global pricing updated successfully!');
         } catch (err) {
             console.error('Update failed:', err);
+            alert('Failed to save settings: ' + (err.message || err));
         } finally {
             setSaving(false);
         }
