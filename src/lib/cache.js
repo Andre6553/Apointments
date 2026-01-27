@@ -8,7 +8,9 @@ export const CACHE_KEYS = {
     TIMELINE: 'timeline_cache',
     WORKING_HOURS: 'work_hours_full', // Full list of days
     DAILY_WORKING_HOURS: 'work_hours_daily', // Single day for timeline
-    BREAKS: 'breaks_cache'
+    BREAKS: 'breaks_cache',
+    PROFILE: 'profile_cache',
+    STAFF: 'staff_cache'
 };
 
 const getUserIdSuffix = () => {

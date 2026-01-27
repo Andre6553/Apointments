@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
+import { getCache, setCache, CACHE_KEYS } from '../lib/cache'
 
 const AuthContext = createContext({})
 
@@ -9,6 +10,54 @@ export const AuthProvider = ({ children }) => {
     const [loading, setLoading] = useState(true)
     const [connectionError, setConnectionError] = useState(null)
 
+    // ... (omitting unchanged useEffects for brevity in instruction, will be careful with replacement) ...
+
+    const fetchProfile = async (userId) => {
+        // Optimistic Load
+        const cached = getCache(CACHE_KEYS.PROFILE)
+        if (cached) setProfile(cached)
+
+        // 1. Set Status Online
+        supabase.from('profiles').update({ is_online: true }).eq('id', userId).then(({ error }) => {
+            if (error) console.error('Failed to set online status:', error)
+        })
+
+        // 2. Fetch Data (including subscription)
+        const { data, error } = await supabase
+            .from('profiles')
+            .select(`
+                *,
+                business:businesses!profiles_business_id_fkey(name, owner_id),
+                subscription:subscriptions(tier, role, status, expires_at)
+            `)
+            .eq('id', userId)
+            .single()
+
+        if (data) {
+            // Flatten subscription if it exists (it's a 1-to-1 but Supabase returns array)
+            const profileData = {
+                ...data,
+                subscription: data.subscription?.[0] || null
+            }
+            setProfile(profileData)
+            setCache(CACHE_KEYS.PROFILE, profileData)
+        }
+    }
+
+    const updateProfile = async (updates) => {
+        if (!user) return
+        const { error } = await supabase
+            .from('profiles')
+            .update(updates)
+            .eq('id', user.id)
+        if (error) throw error
+
+        setProfile(prev => {
+            const newer = { ...prev, ...updates }
+            setCache(CACHE_KEYS.PROFILE, newer)
+            return newer
+        })
+    }
     useEffect(() => {
         let mounted = true
         let initFinished = false
@@ -106,42 +155,7 @@ export const AuthProvider = ({ children }) => {
         }
     }, [])
 
-    const fetchProfile = async (userId) => {
-        // 1. Set Status Online
-        supabase.from('profiles').update({ is_online: true }).eq('id', userId).then(({ error }) => {
-            if (error) console.error('Failed to set online status:', error)
-        })
 
-        // 2. Fetch Data (including subscription)
-        const { data, error } = await supabase
-            .from('profiles')
-            .select(`
-                *,
-                business:businesses!profiles_business_id_fkey(name, owner_id),
-                subscription:subscriptions(tier, role, status, expires_at)
-            `)
-            .eq('id', userId)
-            .single()
-
-        if (data) {
-            // Flatten subscription if it exists (it's a 1-to-1 but Supabase returns array)
-            const profileData = {
-                ...data,
-                subscription: data.subscription?.[0] || null
-            }
-            setProfile(profileData)
-        }
-    }
-
-    const updateProfile = async (updates) => {
-        if (!user) return
-        const { error } = await supabase
-            .from('profiles')
-            .update(updates)
-            .eq('id', user.id)
-        if (error) throw error
-        setProfile(prev => ({ ...prev, ...updates }))
-    }
 
     const signOut = async () => {
         if (user) {

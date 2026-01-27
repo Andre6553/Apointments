@@ -5,13 +5,14 @@ import { Building2, Save, Users, Plus, Loader2, Trash2, ShieldCheck, Mail, Check
 import { motion, AnimatePresence } from 'framer-motion'
 import { useToast } from '../contexts/ToastContext'
 import EditStaffModal from './EditStaffModal'
+import { getCache, setCache, CACHE_KEYS } from '../lib/cache'
 
 const OrganizationSettings = () => {
     const { profile, fetchProfile } = useAuth()
     const [businessName, setBusinessName] = useState('')
     const [isUpdatingName, setIsUpdatingName] = useState(false)
-    const [staff, setStaff] = useState([])
-    const [isLoadingStaff, setIsLoadingStaff] = useState(false)
+    const [staff, setStaff] = useState(() => getCache(CACHE_KEYS.STAFF) || [])
+    const [isLoadingStaff, setIsLoadingStaff] = useState(!getCache(CACHE_KEYS.STAFF))
     const [newStaffEmail, setNewStaffEmail] = useState('')
     const [isAddingStaff, setIsAddingStaff] = useState(false)
     const [transferFrom, setTransferFrom] = useState('')
@@ -36,6 +37,9 @@ const OrganizationSettings = () => {
     const fetchStaff = async () => {
         setIsLoadingStaff(true)
         try {
+            const cached = getCache(CACHE_KEYS.STAFF);
+            if (cached) setStaff(cached);
+
             const { data, error } = await supabase
                 .from('profiles')
                 .select('*')
@@ -43,6 +47,7 @@ const OrganizationSettings = () => {
 
             if (error) throw error
             setStaff(data || [])
+            setCache(CACHE_KEYS.STAFF, data || [])
         } catch (err) {
             console.error('Error fetching staff:', err)
         } finally {
@@ -96,7 +101,7 @@ const OrganizationSettings = () => {
 
             showToast(`${targetProfile.full_name} added to team`, 'success')
             setNewStaffEmail('')
-            fetchStaff()
+            fetchStaff() // Will update cache
         } catch (err) {
             console.error('Error adding staff:', err)
             showToast('Failed to add staff member', 'error')
@@ -116,10 +121,15 @@ const OrganizationSettings = () => {
 
             if (error) throw error
             showToast('Staff member removed', 'success')
-            fetchStaff()
+
+            // Optimistic update
+            const newStaff = staff.filter(s => s.id !== staffId);
+            setStaff(newStaff)
+            setCache(CACHE_KEYS.STAFF, newStaff)
         } catch (err) {
             console.error('Error removing staff:', err)
             showToast('Failed to remove staff', 'error')
+            fetchStaff() // Revert/Refresh on error
         }
     }
 
