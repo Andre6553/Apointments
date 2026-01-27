@@ -40,7 +40,9 @@ const MasterDashboard = () => {
         activeSubscribers: 0,
         totalOrganizations: 0,
         newSignups: 0,
-        revenueChart: []
+        revenueChart: [],
+        revenueTrend: 0,
+        conversionRate: 0
     });
     const [orgs, setOrgs] = useState([]);
     const [settings, setSettings] = useState({
@@ -122,17 +124,32 @@ const MasterDashboard = () => {
                 o.subscriptions?.some(s => s.status === 'active' && s.tier !== 'trial')
             ).length;
 
+            const totalOrgs = orgData?.length || 0;
+            const convRate = totalOrgs > 0 ? Math.round((activeSubs / totalOrgs) * 100) : 0;
+
+            // Calculate Revenue Trend (Week over Week)
+            const thisWeekRev = weeks[3].rev;
+            const lastWeekRev = weeks[2].rev;
+            let revTrend = 0;
+            if (lastWeekRev > 0) {
+                revTrend = Math.round(((thisWeekRev - lastWeekRev) / lastWeekRev) * 100);
+            } else if (thisWeekRev > 0) {
+                revTrend = 100; // First week of revenue
+            }
+
             setStats({
                 totalRevenue,
                 activeSubscribers: activeSubs || 0,
-                totalOrganizations: orgData?.length || 0,
+                totalOrganizations: totalOrgs,
                 newSignups: orgData?.filter(o => {
                     const created = new Date(o.created_at);
                     const thirtyDaysAgo = new Date();
                     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
                     return created > thirtyDaysAgo;
                 }).length || 0,
-                revenueChart: weeks.map(w => ({ name: w.name, rev: w.rev }))
+                revenueChart: weeks.map(w => ({ name: w.name, rev: w.rev })),
+                revenueTrend: revTrend,
+                conversionRate: convRate
             });
 
             setOrgs(orgData || []);
@@ -294,10 +311,38 @@ const MasterDashboard = () => {
             {/* Stats Overview */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
                 {[
-                    { label: 'Total Revenue', value: `$${stats.totalRevenue.toLocaleString()}`, icon: TrendingUp, color: 'text-emerald-400', trend: '+12%' },
-                    { label: 'Active Orgs', value: stats.totalOrganizations, icon: Building2, color: 'text-primary', trend: `+${stats.newSignups} new` },
-                    { label: 'Paid Subscribers', value: stats.activeSubscribers, icon: Users, color: 'text-purple-400', trend: '85% conv.' },
-                    { label: 'System Health', value: '100%', icon: Activity, color: 'text-blue-400', trend: 'Stable' }
+                    {
+                        label: 'Total Revenue',
+                        value: `$${stats.totalRevenue.toLocaleString()}`,
+                        icon: TrendingUp,
+                        color: 'text-emerald-400',
+                        trend: `${stats.revenueTrend >= 0 ? '+' : ''}${stats.revenueTrend}%`,
+                        trendColor: stats.revenueTrend >= 0 ? 'text-emerald-400' : 'text-red-400'
+                    },
+                    {
+                        label: 'Active Orgs',
+                        value: stats.totalOrganizations,
+                        icon: Building2,
+                        color: 'text-primary',
+                        trend: `+${stats.newSignups} new`,
+                        trendColor: 'text-emerald-400'
+                    },
+                    {
+                        label: 'Paid Subscribers',
+                        value: stats.activeSubscribers,
+                        icon: Users,
+                        color: 'text-purple-400',
+                        trend: `${stats.conversionRate}% conv.`,
+                        trendColor: 'text-purple-400'
+                    },
+                    {
+                        label: 'System Health',
+                        value: '100%',
+                        icon: Activity,
+                        color: 'text-blue-400',
+                        trend: 'Stable',
+                        trendColor: 'text-emerald-400'
+                    }
                 ].map((stat, i) => (
                     <motion.div
                         key={i}
@@ -314,8 +359,9 @@ const MasterDashboard = () => {
                         </div>
                         <div className="flex items-end justify-between">
                             <h3 className="text-3xl font-black text-white tracking-tight">{stat.value}</h3>
-                            <span className="text-xs font-bold text-emerald-400 flex items-center gap-1">
-                                <ArrowUpRight size={14} /> {stat.trend}
+                            <span className={`text-xs font-bold ${stat.trendColor} flex items-center gap-1`}>
+                                {stat.trend.includes('%') && (stat.revenueTrend >= 0 ? <ArrowUpRight size={14} /> : <ArrowDownRight size={14} />)}
+                                {stat.trend}
                             </span>
                         </div>
                     </motion.div>
