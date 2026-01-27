@@ -149,14 +149,19 @@ const SubscriptionPage = () => {
         const zarAmount = (amount * exchangeRate).toFixed(2);
         const itemName = `${role} ${tier === 'monthly' ? 'Monthly' : 'Yearly'} Subscription`;
 
-        const merchantId = '10000100'; // Sandbox
-        const merchantKey = '46f0cd694581a'; // Sandbox
+        // PayFast Credentials - Correct Sandbox test credentials
+        const sandboxMerchantId = '10004002';
+        const sandboxMerchantKey = 'q1cd2rdny4a53';
+        const sandboxPassphrase = 'payfast';
+
         const liveMerchantId = '11945617';
         const liveMerchantKey = '9anvup217hdck';
+        const livePassphrase = import.meta.env.VITE_PAYFAST_PASSPHRASE || 'OmniBibleApp1';
 
         const isLive = import.meta.env.PROD;
-        const mId = isLive ? liveMerchantId : merchantId;
-        const mKey = isLive ? liveMerchantKey : merchantKey;
+        const mId = isLive ? liveMerchantId : sandboxMerchantId;
+        const mKey = isLive ? liveMerchantKey : sandboxMerchantKey;
+        const passphrase = isLive ? livePassphrase : sandboxPassphrase;
 
         // Redirect URL logic
         const returnUrl = `${window.location.origin}/?payment=success`;
@@ -200,7 +205,6 @@ const SubscriptionPage = () => {
         });
 
         // 3. Append Passphrase & Hash
-        const passphrase = import.meta.env.VITE_PAYFAST_PASSPHRASE || 'OmniBibleApp1';
         if (passphrase) {
             signatureString += `&passphrase=${encodeURIComponent(passphrase.trim()).replace(/%20/g, '+')}`;
         }
@@ -208,7 +212,7 @@ const SubscriptionPage = () => {
         const signature = CryptoJS.MD5(signatureString).toString();
         signatureFields.signature = signature;
 
-        console.log('[SubscriptionPage] Triggering PayFast OnSite Modal');
+        console.log('[SubscriptionPage] Triggering PayFast OnSite Modal with', { mId, isLive });
 
         // 4. Trigger On-Site Payment
         if (window.payfast_do_onsite_payment) {
