@@ -149,37 +149,32 @@ const SubscriptionPage = () => {
         const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
         const notifyUrl = `${supabaseUrl}/functions/v1/payfast-webhook`;
 
-        const form = document.createElement('form');
-        form.method = 'POST';
-        form.action = baseUrl;
-
-        // 1. Construct Payload - Matching User's Working Code logic (No pre-filtering, no signature)
+        // 1. Construct Payload - Switching to GET request to match OmniBibleApp1
         const fields = {
-            merchant_id: mId,
-            merchant_key: mKey,
+            cmd: '_paynow',
+            receiver: mId, // PayFast uses 'receiver' in GET, 'merchant_id' in POST
+            item_name: itemName,
+            amount: isSA ? zarAmount : amount.toFixed(2),
             return_url: returnUrl,
             cancel_url: cancelUrl,
             notify_url: notifyUrl,
             name_first: profile?.full_name?.split(' ')[0] || 'User',
             email_address: user?.email,
-            m_payment_id: `sub_${Date.now()}`,
-            amount: isSA ? zarAmount : amount.toFixed(2),
-            item_name: itemName,
             custom_str1: profile?.business_id,
             custom_str2: user?.id,
+            merchant_key: mKey
         };
 
-        // 3. Submit Form
-        Object.entries(fields).forEach(([key, value]) => {
-            const input = document.createElement('input');
-            input.type = 'hidden';
-            input.name = key;
-            input.value = value;
-            form.appendChild(input);
+        // Filter empty values
+        const params = new URLSearchParams();
+        Object.keys(fields).forEach(key => {
+            if (fields[key] !== undefined && fields[key] !== null && fields[key] !== '') {
+                params.append(key, String(fields[key]).trim());
+            }
         });
 
-        document.body.appendChild(form);
-        form.submit();
+        console.log(`[SubscriptionPage] Redirecting to PayFast: ${baseUrl}`);
+        window.location.href = `${baseUrl}?${params.toString()}`;
     };
 
     if (verifying) {
