@@ -149,10 +149,10 @@ const SubscriptionPage = () => {
         const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
         const notifyUrl = `${supabaseUrl}/functions/v1/payfast-webhook`;
 
-        // 1. Construct Payload - Switching to GET request to match OmniBibleApp1
+        // 1. Construct Payload
         const fields = {
             cmd: '_paynow',
-            receiver: mId, // PayFast uses 'receiver' in GET, 'merchant_id' in POST
+            receiver: mId,
             item_name: itemName,
             amount: isSA ? zarAmount : amount.toFixed(2),
             return_url: returnUrl,
@@ -165,13 +165,39 @@ const SubscriptionPage = () => {
             merchant_key: mKey
         };
 
-        // Filter empty values
-        const params = new URLSearchParams();
+        // 2. Filter & Sort for Signature
+        // PayFast requires sorting keys alphabetically for the signature string
+        const signatureFields = {};
         Object.keys(fields).forEach(key => {
             if (fields[key] !== undefined && fields[key] !== null && fields[key] !== '') {
-                params.append(key, String(fields[key]).trim());
+                signatureFields[key] = String(fields[key]).trim();
             }
         });
+
+        const sortedKeys = Object.keys(signatureFields).sort();
+        let signatureString = '';
+        const params = new URLSearchParams();
+
+        sortedKeys.forEach(key => {
+            const val = signatureFields[key];
+            // Encode for signature string: key=encodedVal
+            // Custom encoding to match PayFast: spaces to +, %20 to +
+            const encodedVal = encodeURIComponent(val).replace(/%20/g, '+');
+            if (signatureString.length > 0) signatureString += '&';
+            signatureString += `${key}=${encodedVal}`;
+
+            // Append to URL params
+            params.append(key, val);
+        });
+
+        // 3. Append Passphrase & Hash
+        const passphrase = import.meta.env.VITE_PAYFAST_PASSPHRASE || 'OmniBibleApp1';
+        if (passphrase) {
+            signatureString += `&passphrase=${encodeURIComponent(passphrase.trim()).replace(/%20/g, '+')}`;
+        }
+
+        const signature = CryptoJS.MD5(signatureString).toString();
+        params.append('signature', signature);
 
         console.log(`[SubscriptionPage] Redirecting to PayFast: ${baseUrl}`);
         window.location.href = `${baseUrl}?${params.toString()}`;
