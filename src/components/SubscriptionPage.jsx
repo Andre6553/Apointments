@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import CryptoJS from 'crypto-js';
 import { useAuth } from '../hooks/useAuth';
 import { motion } from 'framer-motion';
 import { Check, ShieldCheck, Clock, CreditCard, ExternalLink, AlertCircle, Loader2 } from 'lucide-react';
@@ -166,6 +167,27 @@ const SubscriptionPage = () => {
             custom_str1: profile?.business_id,
             custom_str2: user?.id,
         };
+
+        // Generate Signature
+        const passphrase = import.meta.env.VITE_PAYFAST_PASSPHRASE || 'OmniBibleApp1';
+        let signatureString = '';
+        const keys = Object.keys(fields).sort();
+
+        const params = [];
+        keys.forEach(key => {
+            const val = String(fields[key]).trim();
+            if (val !== '') {
+                params.push(`${key}=${encodeURIComponent(val).replace(/%20/g, '+')}`);
+            }
+        });
+
+        signatureString = params.join('&');
+        if (passphrase) {
+            signatureString += `&passphrase=${encodeURIComponent(passphrase.trim()).replace(/%20/g, '+')}`;
+        }
+
+        const signature = CryptoJS.MD5(signatureString).toString();
+        fields.signature = signature;
 
         Object.entries(fields).forEach(([key, value]) => {
             const input = document.createElement('input');
