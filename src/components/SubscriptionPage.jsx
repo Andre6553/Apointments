@@ -10,6 +10,22 @@ const SubscriptionPage = () => {
     const [loading, setLoading] = useState(false);
     const [verifying, setVerifying] = useState(false);
     const [paymentStatus, setPaymentStatus] = useState(null);
+    const [scriptLoaded, setScriptLoaded] = useState(false);
+
+    // Inject PayFast Script
+    useEffect(() => {
+        const script = document.createElement('script');
+        script.src = 'https://www.payfast.co.za/onsite/engine.js';
+        script.async = true;
+        script.onload = () => setScriptLoaded(true);
+        document.body.appendChild(script);
+        return () => {
+            // Optional: Don't remove immediately to avoid re-loading on re-renders, or do check
+            if (document.body.contains(script)) {
+                // document.body.removeChild(script); 
+            }
+        };
+    }, []);
 
     // Variables for pricing and display
     const isSA = Intl.DateTimeFormat().resolvedOptions().timeZone === 'Africa/Johannesburg';
@@ -141,7 +157,6 @@ const SubscriptionPage = () => {
         const isLive = import.meta.env.PROD;
         const mId = isLive ? liveMerchantId : merchantId;
         const mKey = isLive ? liveMerchantKey : merchantKey;
-        const baseUrl = isLive ? 'https://www.payfast.co.za/eng/process' : 'https://sandbox.payfast.co.za/eng/process';
 
         // Redirect URL logic
         const returnUrl = `${window.location.origin}/?payment=success`;
@@ -149,45 +164,39 @@ const SubscriptionPage = () => {
         const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
         const notifyUrl = `${supabaseUrl}/functions/v1/payfast-webhook`;
 
-        // 1. Construct Payload
+        // 1. Construct Payload - Use 'merchant_id' for OnSite, not 'receiver'
         const fields = {
-            cmd: '_paynow',
-            receiver: mId,
-            item_name: itemName,
-            amount: isSA ? zarAmount : amount.toFixed(2),
+            merchant_id: mId,
+            merchant_key: mKey,
             return_url: returnUrl,
             cancel_url: cancelUrl,
             notify_url: notifyUrl,
             name_first: profile?.full_name?.split(' ')[0] || 'User',
             email_address: user?.email,
+            m_payment_id: `sub_${Date.now()}`,
+            amount: isSA ? zarAmount : amount.toFixed(2),
+            item_name: itemName,
             custom_str1: profile?.business_id,
             custom_str2: user?.id,
-            merchant_key: mKey
+            // subscription_type: '1' // Optional: Uncomment for recurring if enabled on account
         };
 
         // 2. Filter & Sort for Signature
-        // PayFast requires sorting keys alphabetically for the signature string
         const signatureFields = {};
         Object.keys(fields).forEach(key => {
             if (fields[key] !== undefined && fields[key] !== null && fields[key] !== '') {
-                signatureFields[key] = String(fields[key]).trim();
+                signatureFields[key] = String(fields[key]).trim(); // Trim spaces!
             }
         });
 
         const sortedKeys = Object.keys(signatureFields).sort();
         let signatureString = '';
-        const params = new URLSearchParams();
 
         sortedKeys.forEach(key => {
             const val = signatureFields[key];
-            // Encode for signature string: key=encodedVal
-            // Custom encoding to match PayFast: spaces to +, %20 to +
             const encodedVal = encodeURIComponent(val).replace(/%20/g, '+');
             if (signatureString.length > 0) signatureString += '&';
             signatureString += `${key}=${encodedVal}`;
-
-            // Append to URL params
-            params.append(key, val);
         });
 
         // 3. Append Passphrase & Hash
@@ -197,10 +206,26 @@ const SubscriptionPage = () => {
         }
 
         const signature = CryptoJS.MD5(signatureString).toString();
-        params.append('signature', signature);
+        signatureFields.signature = signature;
 
-        console.log(`[SubscriptionPage] Redirecting to PayFast: ${baseUrl}`);
-        window.location.href = `${baseUrl}?${params.toString()}`;
+        console.log('[SubscriptionPage] Triggering PayFast OnSite Modal');
+
+        // 4. Trigger On-Site Payment
+        if (window.payfast_do_onsite_payment) {
+            window.payfast_do_onsite_payment(signatureFields, (result) => {
+                if (result === true) {
+                    // Transaction completed - Handled by return_url usually, but fallback here
+                    window.location.href = returnUrl;
+                } else {
+                    // Transaction failed/cancelled
+                    setLoading(false);
+                }
+            });
+        } else {
+            console.error('PayFast OnSite payment script not loaded');
+            setLoading(false);
+            alert('Payment system is initializing, please try again in a moment.');
+        }
     };
 
     if (verifying) {
