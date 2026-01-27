@@ -65,7 +65,37 @@ const ClientList = () => {
     useEffect(() => {
         // Fetch only when page, debouncedSearch changes
         fetchClients(page > 0);
-    }, [page, debouncedSearch]);
+
+        // Realtime Subscription
+        const channel = supabase.channel(`clients-list-updates-${profile?.id}`)
+            .on('postgres_changes', {
+                event: '*',
+                schema: 'public',
+                table: 'clients',
+                filter: profile?.role?.toLowerCase() !== 'admin' ? `owner_id=eq.${profile?.id}` : undefined
+            }, (payload) => {
+                const { eventType, new: newRecord, old: oldRecord } = payload;
+
+                if (eventType === 'INSERT') {
+                    // Only prepend if we are on the first page and no search is active
+                    if (page === 0 && !debouncedSearch) {
+                        setClients(prev => {
+                            if (prev.some(c => c.id === newRecord.id)) return prev;
+                            return [newRecord, ...prev];
+                        });
+                    }
+                } else if (eventType === 'UPDATE') {
+                    setClients(prev => prev.map(c => c.id === newRecord.id ? newRecord : c));
+                } else if (eventType === 'DELETE') {
+                    setClients(prev => prev.filter(c => c.id !== oldRecord.id));
+                }
+            })
+            .subscribe();
+
+        return () => {
+            supabase.removeChannel(channel);
+        };
+    }, [page, debouncedSearch, profile]);
 
     const handleLoadMore = () => {
         setPage(prev => prev + 1);
