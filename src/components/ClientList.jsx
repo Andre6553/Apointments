@@ -10,24 +10,51 @@ const ClientList = () => {
     const [loading, setLoading] = useState(true);
     const [showAdd, setShowAdd] = useState(false);
     const [search, setSearch] = useState('');
+    const [page, setPage] = useState(0);
+    const [hasMore, setHasMore] = useState(true);
     const [newClient, setNewClient] = useState({ firstName: '', lastName: '', phone: '', email: '' });
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [editingClient, setEditingClient] = useState(null);
     const [isEditOpen, setIsEditOpen] = useState(false);
+    const [debouncedSearch, setDebouncedSearch] = useState('');
 
     const { profile } = useAuth();
+    const PAGE_SIZE = 20;
 
-    const fetchClients = async () => {
+    // Debounce search input
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            setDebouncedSearch(search);
+            setPage(0); // Reset page on new search
+        }, 500);
+        return () => clearTimeout(timer);
+    }, [search]);
+
+    const fetchClients = async (isLoadMore = false) => {
         setLoading(true);
         try {
             let query = supabase
                 .from('clients')
                 .select('*')
-                .order('created_at', { ascending: false });
+                .order('created_at', { ascending: false })
+                .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
+
+            if (debouncedSearch) {
+                // Server-side search
+                const term = `%${debouncedSearch}%`;
+                query = query.or(`first_name.ilike.${term},last_name.ilike.${term},phone.ilike.${term}`);
+            }
 
             const { data, error } = await query;
             if (error) throw error;
-            setClients(data || []);
+
+            if (isLoadMore) {
+                setClients(prev => [...prev, ...(data || [])]);
+            } else {
+                setClients(data || []);
+            }
+
+            setHasMore((data || []).length === PAGE_SIZE);
         } catch (err) {
             console.error('Error fetching clients:', err);
         } finally {
@@ -36,8 +63,13 @@ const ClientList = () => {
     };
 
     useEffect(() => {
-        fetchClients();
-    }, []);
+        // Fetch only when page, debouncedSearch changes
+        fetchClients(page > 0);
+    }, [page, debouncedSearch]);
+
+    const handleLoadMore = () => {
+        setPage(prev => prev + 1);
+    };
 
     const handleAddClient = async (e) => {
         e.preventDefault();
@@ -62,7 +94,9 @@ const ClientList = () => {
 
             setNewClient({ firstName: '', lastName: '', phone: '', email: '' });
             setShowAdd(false);
-            fetchClients();
+            // Reset and refetch
+            setPage(0);
+            if (page === 0) fetchClients();
         } catch (error) {
             console.error('Error adding client:', error);
             alert(error.message || 'Failed to add client');
@@ -74,13 +108,11 @@ const ClientList = () => {
     const deleteClient = async (id) => {
         if (!confirm('Are you sure you want to delete this client?')) return;
         const { error } = await supabase.from('clients').delete().eq('id', id);
-        if (!error) fetchClients();
+        if (!error) {
+            // Remove from local state to avoid refetch
+            setClients(prev => prev.filter(c => c.id !== id));
+        }
     };
-
-    const filteredClients = clients.filter(c =>
-        `${c.first_name} ${c.last_name}`.toLowerCase().includes(search.toLowerCase()) ||
-        c.phone.includes(search)
-    );
 
     return (
         <div className="space-y-8">
@@ -171,12 +203,12 @@ const ClientList = () => {
             </AnimatePresence>
 
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-                {loading ? (
+                {loading && page === 0 ? (
                     <div className="col-span-full flex flex-col items-center py-24 text-slate-500">
                         <Loader2 className="w-12 h-12 animate-spin mb-6 text-primary" />
                         <p className="text-sm font-bold uppercase tracking-widest animate-pulse">Loading Directory...</p>
                     </div>
-                ) : filteredClients.length === 0 ? (
+                ) : clients.length === 0 ? (
                     <div className="col-span-full glass-card border-dashed border-white/10 p-24 text-center">
                         <div className="w-20 h-20 bg-surface/50 rounded-full flex items-center justify-center mx-auto mb-6 border border-white/5">
                             <AlertCircle className="text-slate-500" size={40} />
@@ -184,76 +216,97 @@ const ClientList = () => {
                         <h3 className="text-xl font-bold text-white mb-2">No clients found</h3>
                         <p className="text-slate-500">Try adjusting your search or add a new client.</p>
                     </div>
-                ) : filteredClients.map(c => (
-                    <motion.div
-                        layout
-                        key={c.id}
-                        initial={{ opacity: 0, scale: 0.95 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        className="group relative glass-card p-6 hover:border-primary/30 transition-all duration-300 hover:shadow-glow group"
-                    >
-                        <div className="flex justify-between items-start mb-6">
-                            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary/20 to-indigo-500/10 flex items-center justify-center text-primary font-bold text-2xl border border-primary/20 group-hover:scale-105 transition-transform">
-                                {c.first_name[0]}{c.last_name[0]}
-                            </div>
-                            <button
-                                onClick={() => deleteClient(c.id)}
-                                className="p-2.5 text-slate-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all rounded-xl hover:bg-red-500/10"
+                ) : (
+                    <>
+                        {clients.map(c => (
+                            <motion.div
+                                layout
+                                key={c.id}
+                                initial={{ opacity: 0, scale: 0.95 }}
+                                animate={{ opacity: 1, scale: 1 }}
+                                className="group relative glass-card p-6 hover:border-primary/30 transition-all duration-300 hover:shadow-glow group"
                             >
-                                <Trash2 size={18} />
-                            </button>
-                        </div>
-
-                        <h3 className="text-xl font-heading font-bold text-white mb-6 group-hover:text-primary transition-colors">{c.first_name} {c.last_name}</h3>
-
-                        <div className="space-y-4">
-                            <a href={`tel:${c.phone}`} className="flex items-center gap-4 text-slate-400 group/item hover:text-white transition-colors cursor-pointer p-2 hover:bg-white/5 rounded-lg -mx-2">
-                                <div className="p-2 bg-surface rounded-lg group-hover/item:text-primary transition-colors border border-white/5">
-                                    <Phone size={16} />
-                                </div>
-                                <span className="text-sm font-medium">{c.phone}</span>
-                            </a>
-                            {c.email && (
-                                <a href={`mailto:${c.email}`} className="flex items-center gap-4 text-slate-400 group/item hover:text-white transition-colors cursor-pointer p-2 hover:bg-white/5 rounded-lg -mx-2">
-                                    <div className="p-2 bg-surface rounded-lg group-hover/item:text-secondary transition-colors border border-white/5">
-                                        <Mail size={16} />
+                                <div className="flex justify-between items-start mb-6">
+                                    <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary/20 to-indigo-500/10 flex items-center justify-center text-primary font-bold text-2xl border border-primary/20 group-hover:scale-105 transition-transform">
+                                        {c.first_name[0]}{c.last_name[0]}
                                     </div>
-                                    <span className="text-sm font-medium truncate">{c.email}</span>
-                                </a>
-                            )}
+                                    <button
+                                        onClick={() => deleteClient(c.id)}
+                                        className="p-2.5 text-slate-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all rounded-xl hover:bg-red-500/10"
+                                    >
+                                        <Trash2 size={18} />
+                                    </button>
+                                </div>
 
-                            {/* WhatsApp Status Indicator */}
-                            <div className="flex items-center gap-4 text-slate-400 p-2 -mx-2 bg-white/[0.02] rounded-xl border border-white/5">
-                                <div className={`p-2 rounded-lg border border-white/5 ${c.whatsapp_opt_in === true ? 'bg-emerald-500/10 text-emerald-400' :
-                                    c.whatsapp_opt_in === false ? 'bg-rose-500/10 text-rose-400' :
-                                        'bg-surface text-slate-500'
-                                    }`}>
-                                    <MessageCircle size={16} className={c.whatsapp_opt_in === null ? 'opacity-50' : ''} />
+                                <h3 className="text-xl font-heading font-bold text-white mb-6 group-hover:text-primary transition-colors">{c.first_name} {c.last_name}</h3>
+
+                                <div className="space-y-4">
+                                    <a href={`tel:${c.phone}`} className="flex items-center gap-4 text-slate-400 group/item hover:text-white transition-colors cursor-pointer p-2 hover:bg-white/5 rounded-lg -mx-2">
+                                        <div className="p-2 bg-surface rounded-lg group-hover/item:text-primary transition-colors border border-white/5">
+                                            <Phone size={16} />
+                                        </div>
+                                        <span className="text-sm font-medium">{c.phone}</span>
+                                    </a>
+                                    {c.email && (
+                                        <a href={`mailto:${c.email}`} className="flex items-center gap-4 text-slate-400 group/item hover:text-white transition-colors cursor-pointer p-2 hover:bg-white/5 rounded-lg -mx-2">
+                                            <div className="p-2 bg-surface rounded-lg group-hover/item:text-secondary transition-colors border border-white/5">
+                                                <Mail size={16} />
+                                            </div>
+                                            <span className="text-sm font-medium truncate">{c.email}</span>
+                                        </a>
+                                    )}
+
+                                    {/* WhatsApp Status Indicator */}
+                                    <div className="flex items-center gap-4 text-slate-400 p-2 -mx-2 bg-white/[0.02] rounded-xl border border-white/5">
+                                        <div className={`p-2 rounded-lg border border-white/5 ${c.whatsapp_opt_in === true ? 'bg-emerald-500/10 text-emerald-400' :
+                                            c.whatsapp_opt_in === false ? 'bg-rose-500/10 text-rose-400' :
+                                                'bg-surface text-slate-500'
+                                            }`}>
+                                            <MessageCircle size={16} className={c.whatsapp_opt_in === null ? 'opacity-50' : ''} />
+                                        </div>
+                                        <div className="flex flex-col">
+                                            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">WhatsApp Status</span>
+                                            <span className={`text-xs font-bold ${c.whatsapp_opt_in === true ? 'text-emerald-400' :
+                                                c.whatsapp_opt_in === false ? 'text-rose-400' :
+                                                    'text-slate-500'
+                                                }`}>
+                                                {c.whatsapp_opt_in === true ? 'Opted In' :
+                                                    c.whatsapp_opt_in === false ? 'Opted Out' : 'Not Set'}
+                                            </span>
+                                        </div>
+                                        <button
+                                            onClick={() => {
+                                                setEditingClient(c)
+                                                setIsEditOpen(true)
+                                            }}
+                                            className="ml-auto text-xs font-bold text-primary hover:text-white hover:underline decoration-primary underline-offset-4"
+                                        >
+                                            Manage
+                                        </button>
+                                    </div>
                                 </div>
-                                <div className="flex flex-col">
-                                    <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">WhatsApp Status</span>
-                                    <span className={`text-xs font-bold ${c.whatsapp_opt_in === true ? 'text-emerald-400' :
-                                        c.whatsapp_opt_in === false ? 'text-rose-400' :
-                                            'text-slate-500'
-                                        }`}>
-                                        {c.whatsapp_opt_in === true ? 'Opted In' :
-                                            c.whatsapp_opt_in === false ? 'Opted Out' : 'Not Set'}
-                                    </span>
-                                </div>
-                                <button
-                                    onClick={() => {
-                                        setEditingClient(c)
-                                        setIsEditOpen(true)
-                                    }}
-                                    className="ml-auto text-xs font-bold text-primary hover:text-white hover:underline decoration-primary underline-offset-4"
-                                >
-                                    Manage
-                                </button>
-                            </div>
-                        </div>
-                    </motion.div>
-                ))}
+                            </motion.div>
+                        ))}
+                    </>
+                )}
             </div>
+
+            {hasMore && !loading && clients.length > 0 && (
+                <div className="flex justify-center pt-4">
+                    <button
+                        onClick={handleLoadMore}
+                        className="px-8 py-3 bg-surface hover:bg-white/5 text-slate-400 hover:text-white border border-white/5 rounded-xl font-bold transition-all flex items-center gap-2 mb-8"
+                    >
+                        Load More Clients
+                    </button>
+                </div>
+            )}
+
+            {loading && page > 0 && (
+                <div className="flex justify-center py-8">
+                    <Loader2 className="w-8 h-8 animate-spin text-primary" />
+                </div>
+            )}
 
             <EditClientModal
                 isOpen={isEditOpen}
