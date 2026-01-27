@@ -132,10 +132,10 @@ const SubscriptionPage = () => {
         const zarAmount = (amount * exchangeRate).toFixed(2);
         const itemName = `${role} ${tier === 'monthly' ? 'Monthly' : 'Yearly'} Subscription`;
 
-        // PayFast Live Credentials
-        const merchantId = '11945617';
+        // PayFast Live Credentials (matching Omni Bible pattern)
+        const baseUrl = 'https://www.payfast.co.za/eng/process';
+        const receiver = '11945617'; // merchant_id
         const merchantKey = '9anvup217hdck';
-        const passphrase = import.meta.env.VITE_PAYFAST_PASSPHRASE || 'OmniBibleApp1';
 
         // URLs
         const returnUrl = `${window.location.origin}/?payment=success`;
@@ -143,79 +143,26 @@ const SubscriptionPage = () => {
         const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
         const notifyUrl = `${supabaseUrl}/functions/v1/payfast-webhook`;
 
-        // Build payment data in EXACT ORDER as per PayFast docs
-        // Order: Merchant Details -> Customer Details -> Transaction Details
-        const paymentDataOrdered = [
-            ['merchant_id', merchantId],
-            ['merchant_key', merchantKey],
-            ['return_url', returnUrl],
-            ['cancel_url', cancelUrl],
-            ['notify_url', notifyUrl],
-            ['name_first', profile?.full_name?.split(' ')[0] || 'User'],
-            ['email_address', user?.email],
-            ['m_payment_id', `sub_${Date.now()}`],
-            ['amount', isSA ? zarAmount : amount.toFixed(2)],
-            ['item_name', itemName],
-            ['custom_str1', profile?.business_id || ''],
-            ['custom_str2', user?.id || ''],
-        ];
+        const finalAmount = `${isSA ? zarAmount : amount.toFixed(2)}`;
 
-        // Filter out empty values and build signature string
-        const filteredData = [];
-        let signatureString = '';
+        console.log('[SubscriptionPage] Redirecting to PayFast with amount:', finalAmount);
 
-        paymentDataOrdered.forEach(([key, value]) => {
-            if (value !== undefined && value !== null && value !== '') {
-                const trimmedValue = String(value).trim();
-                filteredData.push([key, trimmedValue]);
-
-                // URL encode for signature (uppercase hex, spaces as +)
-                const encodedVal = encodeURIComponent(trimmedValue).replace(/%20/g, '+');
-                if (signatureString.length > 0) signatureString += '&';
-                signatureString += `${key}=${encodedVal}`;
-            }
+        // Build URL params (matching working Omni Bible pattern)
+        const payParams = new URLSearchParams({
+            cmd: '_paynow',
+            receiver: receiver,
+            item_name: itemName,
+            amount: finalAmount,
+            return_url: returnUrl,
+            cancel_url: cancelUrl,
+            notify_url: notifyUrl,
+            custom_str1: profile?.business_id || '',
+            custom_str2: user?.id || '',
+            merchant_key: merchantKey
         });
 
-        // Append passphrase
-        const fullSignatureString = signatureString + `&passphrase=${encodeURIComponent(passphrase.trim()).replace(/%20/g, '+')}`;
-
-        console.log('[SubscriptionPage] Signature string:', signatureString);
-        console.log('[SubscriptionPage] Full signature string (with passphrase):', fullSignatureString);
-
-        // Use dynamic import for crypto-js
-        import('crypto-js').then(CryptoJS => {
-            const signature = CryptoJS.default.MD5(fullSignatureString).toString();
-
-            console.log('[SubscriptionPage] Generated signature:', signature);
-            console.log('[SubscriptionPage] Payment data:', filteredData);
-
-            // Build form and submit to PayFast
-            const form = document.createElement('form');
-            form.method = 'POST';
-            form.action = 'https://www.payfast.co.za/eng/process';
-
-            filteredData.forEach(([key, value]) => {
-                const input = document.createElement('input');
-                input.type = 'hidden';
-                input.name = key;
-                input.value = value;
-                form.appendChild(input);
-            });
-
-            // Add signature
-            const sigInput = document.createElement('input');
-            sigInput.type = 'hidden';
-            sigInput.name = 'signature';
-            sigInput.value = signature;
-            form.appendChild(sigInput);
-
-            document.body.appendChild(form);
-            form.submit();
-        }).catch(err => {
-            console.error('[SubscriptionPage] Failed to load crypto module:', err);
-            alert('Payment system error. Please try again.');
-            setLoading(false);
-        });
+        // Simple redirect (no signature needed for this method)
+        window.location.href = `${baseUrl}?${payParams.toString()}`;
     };
 
     if (verifying) {
