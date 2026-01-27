@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react';
-import CryptoJS from 'crypto-js';
 import { useAuth } from '../hooks/useAuth';
 import { motion } from 'framer-motion';
 import { Check, ShieldCheck, Clock, CreditCard, ExternalLink, AlertCircle, Loader2 } from 'lucide-react';
@@ -143,25 +142,11 @@ const SubscriptionPage = () => {
         return `$ ${amount.toFixed(2)}`;
     };
 
-    const handlePayment = (tier) => {
+    const handlePayment = async (tier) => {
         setLoading(true);
         const amount = tier === 'monthly' ? monthlyPrice : yearlyPrice;
         const zarAmount = (amount * exchangeRate).toFixed(2);
         const itemName = `${role} ${tier === 'monthly' ? 'Monthly' : 'Yearly'} Subscription`;
-
-        // PayFast Credentials - Correct Sandbox test credentials
-        const sandboxMerchantId = '10004002';
-        const sandboxMerchantKey = 'q1cd2rdny4a53';
-        const sandboxPassphrase = 'payfast';
-
-        const liveMerchantId = '11945617';
-        const liveMerchantKey = '9anvup217hdck';
-        const livePassphrase = import.meta.env.VITE_PAYFAST_PASSPHRASE || 'OmniBibleApp1';
-
-        const isLive = import.meta.env.PROD;
-        const mId = isLive ? liveMerchantId : sandboxMerchantId;
-        const mKey = isLive ? liveMerchantKey : sandboxMerchantKey;
-        const passphrase = isLive ? livePassphrase : sandboxPassphrase;
 
         // Redirect URL logic
         const returnUrl = `${window.location.origin}/?payment=success`;
@@ -169,66 +154,63 @@ const SubscriptionPage = () => {
         const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
         const notifyUrl = `${supabaseUrl}/functions/v1/payfast-webhook`;
 
-        // 1. Construct Payload - Use 'merchant_id' for OnSite, not 'receiver'
-        const fields = {
-            merchant_id: mId,
-            merchant_key: mKey,
+        // Payment payload
+        const paymentData = {
+            amount: isSA ? zarAmount : amount.toFixed(2),
+            item_name: itemName,
+            email_address: user?.email,
+            name_first: profile?.full_name?.split(' ')[0] || 'User',
+            m_payment_id: `sub_${Date.now()}`,
+            custom_str1: profile?.business_id,
+            custom_str2: user?.id,
             return_url: returnUrl,
             cancel_url: cancelUrl,
             notify_url: notifyUrl,
-            name_first: profile?.full_name?.split(' ')[0] || 'User',
-            email_address: user?.email,
-            m_payment_id: `sub_${Date.now()}`,
-            amount: isSA ? zarAmount : amount.toFixed(2),
-            item_name: itemName,
-            custom_str1: profile?.business_id,
-            custom_str2: user?.id,
-            // subscription_type: '1' // Optional: Uncomment for recurring if enabled on account
         };
 
-        // 2. Filter & Sort for Signature
-        const signatureFields = {};
-        Object.keys(fields).forEach(key => {
-            if (fields[key] !== undefined && fields[key] !== null && fields[key] !== '') {
-                signatureFields[key] = String(fields[key]).trim(); // Trim spaces!
-            }
-        });
+        console.log('[SubscriptionPage] Requesting PayFast payment UUID...');
 
-        const sortedKeys = Object.keys(signatureFields).sort();
-        let signatureString = '';
-
-        sortedKeys.forEach(key => {
-            const val = signatureFields[key];
-            const encodedVal = encodeURIComponent(val).replace(/%20/g, '+');
-            if (signatureString.length > 0) signatureString += '&';
-            signatureString += `${key}=${encodedVal}`;
-        });
-
-        // 3. Append Passphrase & Hash
-        if (passphrase) {
-            signatureString += `&passphrase=${encodeURIComponent(passphrase.trim()).replace(/%20/g, '+')}`;
-        }
-
-        const signature = CryptoJS.MD5(signatureString).toString();
-        signatureFields.signature = signature;
-
-        console.log('[SubscriptionPage] Triggering PayFast OnSite Modal with', { mId, isLive });
-
-        // 4. Trigger On-Site Payment
-        if (window.payfast_do_onsite_payment) {
-            window.payfast_do_onsite_payment(signatureFields, (result) => {
-                if (result === true) {
-                    // Transaction completed - Handled by return_url usually, but fallback here
-                    window.location.href = returnUrl;
-                } else {
-                    // Transaction failed/cancelled
-                    setLoading(false);
-                }
+        try {
+            // Step 1: Call Edge Function to get UUID from PayFast
+            const response = await fetch(`${supabaseUrl}/functions/v1/payfast-generate-payment`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(paymentData),
             });
-        } else {
-            console.error('PayFast OnSite payment script not loaded');
+
+            const result = await response.json();
+
+            if (!response.ok || !result.uuid) {
+                console.error('[SubscriptionPage] Failed to get payment UUID:', result);
+                alert('Payment initialization failed. Please try again.');
+                setLoading(false);
+                return;
+            }
+
+            console.log('[SubscriptionPage] Got UUID:', result.uuid);
+
+            // Step 2: Trigger On-Site Payment with UUID
+            if (window.payfast_do_onsite_payment) {
+                window.payfast_do_onsite_payment({ uuid: result.uuid }, (paymentResult) => {
+                    if (paymentResult === true) {
+                        // Transaction completed - Handled by return_url usually, but fallback here
+                        window.location.href = returnUrl;
+                    } else {
+                        // Transaction failed/cancelled
+                        setLoading(false);
+                    }
+                });
+            } else {
+                console.error('PayFast OnSite payment script not loaded');
+                setLoading(false);
+                alert('Payment system is initializing, please try again in a moment.');
+            }
+        } catch (error) {
+            console.error('[SubscriptionPage] Payment error:', error);
+            alert('An error occurred. Please try again.');
             setLoading(false);
-            alert('Payment system is initializing, please try again in a moment.');
         }
     };
 
