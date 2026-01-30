@@ -80,26 +80,52 @@ const DailyTimeline = ({ selectedDate = new Date() }) => {
             })
 
             const timelineEvents = [
-                ...(aptsRes.data?.map(a => ({
-                    id: a.id,
-                    type: 'appointment',
-                    start: new Date(a.scheduled_start),
-                    duration: a.duration_minutes,
-                    label: profile?.role === 'Admin'
-                        ? `${a.client?.first_name} ${a.client?.last_name} (${a.provider?.full_name || 'Unassigned'})`
-                        : `${a.client?.first_name} ${a.client?.last_name}`,
-                    status: a.status
-                })) || []),
+                ...(aptsRes.data?.map(a => {
+                    const start = new Date(a.scheduled_start)
+                    const aptStartMins = start.getHours() * 60 + start.getMinutes()
+                    const duration = parseInt(a.duration_minutes) || 0
+                    const aptEndMins = aptStartMins + duration
+
+                    const shiftStartMins = hoursRes.data?.start_time ? timeToMinutes(hoursRes.data.start_time) : 0
+                    const shiftEndMins = hoursRes.data?.end_time ? timeToMinutes(hoursRes.data.end_time) : 1440
+                    const isClosed = hoursRes.data?.is_active === false
+                    const isOutOfBounds = isClosed || aptStartMins < shiftStartMins || aptEndMins > (shiftEndMins + 1)
+
+                    return {
+                        id: a.id,
+                        type: 'appointment',
+                        start,
+                        duration,
+                        label: profile?.role === 'Admin'
+                            ? `${a.client?.first_name} ${a.client?.last_name} (${a.provider?.full_name || 'Unassigned'})`
+                            : `${a.client?.first_name} ${a.client?.last_name}`,
+                        status: a.status,
+                        isOutOfBounds
+                    }
+                }) || []),
                 ...(breaksRes.data?.map(b => {
                     const [h, m] = b.start_time.split(':').map(Number)
                     const start = new Date(selectedDate)
                     start.setHours(h, m, 0, 0)
+
+                    const breakStartMins = h * 60 + m
+                    const duration = parseInt(b.duration_minutes) || 0
+                    const breakEndMins = breakStartMins + duration
+
+                    const shiftStartMins = hoursRes.data?.start_time ? timeToMinutes(hoursRes.data.start_time) : 0
+                    const shiftEndMins = hoursRes.data?.end_time ? timeToMinutes(hoursRes.data.end_time) : 1440
+
+                    // If shifts are active, check bounds. If inactive or missing, everything is "OOO" unless it's a 24h setup
+                    const isClosed = hoursRes.data?.is_active === false
+                    const isOutOfBounds = isClosed || breakStartMins < shiftStartMins || breakEndMins > (shiftEndMins + 1) // +1 for 23:59 edge cases
+
                     return {
                         id: b.id,
                         type: 'break',
                         start,
-                        duration: b.duration_minutes,
-                        label: b.label
+                        duration,
+                        label: b.label,
+                        isOutOfBounds
                     }
                 }) || [])
             ]
@@ -254,7 +280,8 @@ const DailyTimeline = ({ selectedDate = new Date() }) => {
                                     key={event.id}
                                     initial={{ opacity: 0, x: -10 }}
                                     animate={{ opacity: 1, x: 0 }}
-                                    className={`absolute left-2 right-2 rounded-xl border p-2 flex flex-col shadow-lg transition-transform hover:scale-[1.01] cursor-pointer group
+                                    className={`absolute left-2 right-2 rounded-xl border p-2 flex flex-col shadow-lg transition-all hover:scale-[1.01] cursor-pointer group
+                                    ${event.isOutOfBounds ? 'saturate-0 opacity-20 brightness-50 border-white/5 z-0' : 'z-[5]'}
                                     ${event.type === 'appointment'
                                             ? 'bg-indigo-500/20 border-indigo-500/30 text-white'
                                             : 'bg-orange-600/20 border-orange-500/30 text-white'
@@ -272,6 +299,7 @@ const DailyTimeline = ({ selectedDate = new Date() }) => {
                                     <div className="flex items-center gap-1 overflow-hidden min-h-[14px]">
                                         {event.type === 'appointment' ? <User size={9} className="shrink-0" /> : <Coffee size={9} className="shrink-0" />}
                                         <span className="text-[9px] font-extrabold truncate leading-none">{event.label}</span>
+                                        {event.isOutOfBounds && <span className="text-[7px] font-bold text-slate-500 ml-auto shrink-0">OUTSIDE SHIFT</span>}
                                     </div>
                                     {event.duration >= 15 && (
                                         <span className="text-[8px] font-bold opacity-60 leading-none mt-0.5">

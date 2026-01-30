@@ -9,7 +9,7 @@ import { playNotificationSound } from '../utils/sound'
 import { useNavigate } from 'react-router-dom'
 import AddAppointmentModal from './AddAppointmentModal'
 
-const WorkloadBalancer = ({ initialChatSender }) => {
+const WorkloadBalancer = ({ initialChatSender, onChatHandled }) => {
     const { user, profile } = useAuth()
 
     const [delayedApts, setDelayedApts] = useState([])
@@ -38,9 +38,10 @@ const WorkloadBalancer = ({ initialChatSender }) => {
         if (initialChatSender) {
             setSelectedProvider(initialChatSender);
             setShowOnlineModal(true);
-            // We should also clear the notification in Dashboard really, but resetting unreadCount locally works for the badge
+            // Clear the trigger in the parent component so it doesn't re-open on tab change
+            if (onChatHandled) onChatHandled();
         }
-    }, [initialChatSender]);
+    }, [initialChatSender, onChatHandled]);
 
     // Handle initial read and status updates when opening chat
     useEffect(() => {
