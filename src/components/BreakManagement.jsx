@@ -62,13 +62,19 @@ const BreakManagement = () => {
             const { data: { user } } = await supabase.auth.getUser()
             if (!user) throw new Error('You must be logged in');
 
-            const { error } = await supabase.from('breaks').insert([{
-                profile_id: user.id,
-                label: newBreak.label,
-                start_time: newBreak.startTime,
-                duration_minutes: parseInt(newBreak.duration),
-                day_of_week: new Date().getDay()
-            }])
+            // For demo consistency, we add the break for all 7 days
+            const allDaysBreaks = []
+            for (let d = 0; d < 7; d++) {
+                allDaysBreaks.push({
+                    profile_id: user.id,
+                    label: newBreak.label,
+                    start_time: newBreak.startTime,
+                    duration_minutes: parseInt(newBreak.duration),
+                    day_of_week: d
+                })
+            }
+
+            const { error } = await supabase.from('breaks').insert(allDaysBreaks)
 
             if (error) throw error;
 
@@ -81,10 +87,18 @@ const BreakManagement = () => {
         }
     }
 
-    const deleteBreak = async (id) => {
-        if (!confirm('Cancel this scheduled break?')) return
+    const deleteBreak = async (breakToCancel) => {
+        if (!confirm(`Cancel this scheduled break (${breakToCancel.label}) for all days?`)) return
         try {
-            await supabase.from('breaks').delete().eq('id', id)
+            const { data: { user } } = await supabase.auth.getUser()
+            if (!user) throw new Error('Not logged in')
+
+            await supabase.from('breaks').delete()
+                .eq('profile_id', user.id)
+                .eq('label', breakToCancel.label)
+                .eq('start_time', breakToCancel.start_time)
+                .eq('duration_minutes', breakToCancel.duration_minutes)
+
             fetchBreaks()
         } catch (e) {
             console.error(e)
@@ -174,20 +188,17 @@ const BreakManagement = () => {
                         <Loader2 className="w-10 h-10 animate-spin mb-4 text-orange-500" />
                         <p className="font-medium animate-pulse">Loading break slots...</p>
                     </div>
-                ) : breaks.length === 0 ? (
-                    <div className="col-span-full glass-card border-dashed border-white/10 p-20 text-center">
-                        <div className="w-16 h-16 rounded-full bg-slate-800/50 flex items-center justify-center mx-auto mb-6">
-                            <Coffee className="text-slate-600" size={32} />
-                        </div>
-                        <p className="text-slate-400 text-lg font-medium">No breaks scheduled</p>
-                        <p className="text-slate-600 text-sm mt-1">Use the button above to reserve some downtime.</p>
-                    </div>
-                ) : breaks.map(brk => (
+                ) : Object.values(breaks.reduce((acc, brk) => {
+                    const key = `${brk.label}-${brk.start_time}-${brk.duration_minutes}`;
+                    if (!acc[key]) acc[key] = { ...brk, days: [] };
+                    acc[key].days.push(brk.day_of_week);
+                    return acc;
+                }, {})).map(brk => (
                     <motion.div
                         layout
                         initial={{ opacity: 0, scale: 0.9 }}
                         animate={{ opacity: 1, scale: 1 }}
-                        key={brk.id}
+                        key={`${brk.label}-${brk.start_time}`}
                         className="glass-card group hover:border-orange-500/30 p-6 transition-all hover:shadow-glow hover:shadow-orange-500/10"
                     >
                         <div className="flex justify-between items-start mb-6">
@@ -195,14 +206,19 @@ const BreakManagement = () => {
                                 <Coffee size={24} />
                             </div>
                             <button
-                                onClick={() => deleteBreak(brk.id)}
+                                onClick={() => deleteBreak(brk)}
                                 className="p-2 text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all hover:bg-red-400/10 rounded-lg"
                             >
                                 <Trash2 size={16} />
                             </button>
                         </div>
 
-                        <h3 className="text-lg font-bold mb-4 text-white group-hover:text-orange-400 transition-colors">{brk.label}</h3>
+                        <div className="flex flex-col gap-0.5 mb-4">
+                            <h3 className="text-lg font-bold text-white group-hover:text-orange-400 transition-colors">{brk.label}</h3>
+                            <p className="text-[10px] text-slate-500 font-bold uppercase tracking-tight">
+                                {brk.days.length === 7 ? 'Daily' : brk.days.length === 5 && !brk.days.includes(0) && !brk.days.includes(6) ? 'Weekdays' : `${brk.days.length} Days`}
+                            </p>
+                        </div>
 
                         <div className="flex items-center gap-3 mt-auto">
                             <div className="flex items-center gap-1.5 text-slate-400 bg-white/5 px-2.5 py-1 rounded-md text-xs font-bold border border-white/5">

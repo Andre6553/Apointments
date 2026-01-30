@@ -19,6 +19,7 @@ const WorkloadBalancer = ({ initialChatSender }) => {
     const [globalView, setGlobalView] = useState(profile?.role?.toLowerCase() === 'admin')
     const [suggestions, setSuggestions] = useState([])
     const [systemHealth, setSystemHealth] = useState(null)
+    const [processing, setProcessing] = useState(false)
     const navigate = useNavigate()
 
     // Appointment Actions
@@ -58,9 +59,9 @@ const WorkloadBalancer = ({ initialChatSender }) => {
 
     // Note: The main chat subscription (later in file) handles real-time "mark as read" for NEW messages
 
-    const fetchData = async () => {
+    const fetchData = async (isSilent = false) => {
         if (!profile?.business_id) return
-        setLoading(true)
+        if (!isSilent) setLoading(true)
         try {
             // 1. Fetch delayed appointments
             // 1. Fetch delayed appointments (Limit to recent & near future to avoid fetching 400+ items)
@@ -159,14 +160,15 @@ const WorkloadBalancer = ({ initialChatSender }) => {
                 }, (payload) => {
                     if (payload.new.is_online !== payload.old.is_online) {
                         console.log('[Balancer] Online status changed, recalculating...');
-                        fetchData()
+                        fetchData(true)
                     }
                 })
                 .on('postgres_changes', {
                     event: '*',
                     schema: 'public',
-                    table: 'appointments'
-                }, () => fetchData()) // Also refresh on status changes
+                    table: 'appointments',
+                    filter: `business_id=eq.${profile.business_id}`
+                }, () => fetchData(true)) // Also refresh on status changes
                 .subscribe()
 
             return () => {
@@ -269,7 +271,7 @@ const WorkloadBalancer = ({ initialChatSender }) => {
 
             // Trigger feedback
             setSuggestions(prev => prev.filter(s => s.appointmentId !== sug.appointmentId))
-            fetchData()
+            fetchData(true)
         } catch (err) {
             console.error('Failed to approve suggestion:', err)
             alert('Action failed. Check logs.')
@@ -278,11 +280,11 @@ const WorkloadBalancer = ({ initialChatSender }) => {
 
     const approveAllSuggestions = async () => {
         if (!confirm(`Apply all ${suggestions.length} smart reassignments?`)) return
-        setLoading(true)
+        setProcessing(true)
         for (const sug of suggestions) {
             await approveSuggestion(sug)
         }
-        setLoading(false)
+        setProcessing(false)
         alert('Autopilot complete: All suggested shifts applied!')
     }
 
@@ -911,13 +913,13 @@ const WorkloadBalancer = ({ initialChatSender }) => {
 
                                     <button
                                         onClick={approveAllSuggestions}
-                                        disabled={loading}
+                                        disabled={processing}
                                         className="group relative px-8 py-4 bg-white text-slate-900 rounded-2xl font-black text-lg tracking-tight hover:scale-105 active:scale-95 transition-all shadow-xl shadow-white/10 overflow-hidden"
                                     >
                                         <div className="absolute inset-0 bg-gradient-to-r from-transparent via-slate-200/50 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000" />
                                         <span className="relative z-10 flex items-center gap-3">
-                                            {loading ? <Loader2 className="animate-spin" /> : <img src="/sparkles.svg" className="w-5 h-5" />}
-                                            {loading ? 'Processing...' : 'AUTO-FIX SCHEDULE'}
+                                            {processing ? <Loader2 className="animate-spin" /> : <Sparkles className="w-5 h-5" />}
+                                            {processing ? 'Processing...' : 'AUTO-FIX SCHEDULE'}
                                         </span>
                                     </button>
                                 </div>

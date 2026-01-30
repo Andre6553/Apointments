@@ -127,13 +127,20 @@ const ScheduleSettings = () => {
 
         setIsSubmitting(true)
         try {
-            const { error } = await supabase.from('breaks').insert([{
-                profile_id: user.id,
-                label: newBreak.label,
-                start_time: newBreak.startTime,
-                duration_minutes: parseInt(newBreak.duration),
-                day_of_week: new Date().getDay()
-            }])
+            // For simplicity in Demo/Stress test context, we often want breaks for all days
+            // We'll add them for all 7 days to ensure consistent coverage
+            const allDaysBreaks = []
+            for (let d = 0; d < 7; d++) {
+                allDaysBreaks.push({
+                    profile_id: user.id,
+                    label: newBreak.label,
+                    start_time: newBreak.startTime,
+                    duration_minutes: parseInt(newBreak.duration),
+                    day_of_week: d
+                })
+            }
+
+            const { error } = await supabase.from('breaks').insert(allDaysBreaks)
 
             if (error) throw error
             setShowAddBreak(false)
@@ -159,18 +166,30 @@ const ScheduleSettings = () => {
         }
     }
 
-    const deleteBreak = async (id) => {
-        if (!confirm('Cancel this scheduled break?')) return
+    const deleteBreak = async (breakToCancel) => {
+        if (!confirm(`Cancel this scheduled break (${breakToCancel.label}) for all days?`)) return
         try {
-            // Optimistic delete
-            const updatedBreaks = breaks.filter(b => b.id !== id)
+            // Optimistic delete: filter out all breaks that match the label, start_time, and duration
+            const updatedBreaks = breaks.filter(b =>
+                !(b.label === breakToCancel.label &&
+                    b.start_time === breakToCancel.start_time &&
+                    b.duration_minutes === breakToCancel.duration_minutes)
+            )
             setBreaks(updatedBreaks)
             setCache(CACHE_KEYS.BREAKS, updatedBreaks)
 
-            await supabase.from('breaks').delete().eq('id', id)
+            // Delete from DB: matches label, start_time, duration for this user
+            const { error } = await supabase.from('breaks').delete()
+                .eq('profile_id', user.id)
+                .eq('label', breakToCancel.label)
+                .eq('start_time', breakToCancel.start_time)
+                .eq('duration_minutes', breakToCancel.duration_minutes)
+
+            if (error) throw error
             fetchData(true)
         } catch (e) {
-            console.error(e)
+            console.error('Delete failed:', e)
+            fetchData(true) // Revert on failure
         }
     }
 
@@ -408,17 +427,28 @@ const ScheduleSettings = () => {
                 </AnimatePresence>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                    {breaks.map(brk => (
-                        <div key={brk.id} className="glass-card p-5 group flex flex-col justify-between hover:border-orange-500/30 transition-all">
+                    {/* Unique breaks grouping */}
+                    {Object.values(breaks.reduce((acc, brk) => {
+                        const key = `${brk.label}-${brk.start_time}-${brk.duration_minutes}`;
+                        if (!acc[key]) acc[key] = { ...brk, days: [] };
+                        acc[key].days.push(brk.day_of_week);
+                        return acc;
+                    }, {})).map(brk => (
+                        <div key={`${brk.label}-${brk.start_time}`} className="glass-card p-5 group flex flex-col justify-between hover:border-orange-500/30 transition-all">
                             <div className="flex justify-between items-start mb-4">
                                 <div className="w-10 h-10 rounded-xl bg-orange-500/10 flex items-center justify-center text-orange-500 border border-orange-500/20">
                                     <Coffee size={20} />
                                 </div>
-                                <button onClick={() => deleteBreak(brk.id)} className="text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <button onClick={() => deleteBreak(brk)} className="text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity">
                                     <Trash2 size={16} />
                                 </button>
                             </div>
-                            <h4 className="font-bold text-white text-sm mb-3">{brk.label}</h4>
+                            <div className="flex flex-col gap-0.5 mb-3">
+                                <h4 className="font-bold text-white text-sm">{brk.label}</h4>
+                                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-tight">
+                                    {brk.days.length === 7 ? 'Daily' : brk.days.length === 5 && !brk.days.includes(0) && !brk.days.includes(6) ? 'Weekdays' : `${brk.days.length} Days`}
+                                </p>
+                            </div>
                             <div className="flex items-center gap-2 text-[10px] font-bold">
                                 <span className="bg-slate-800 text-slate-400 px-2 py-1 rounded border border-white/5">{brk.start_time.slice(0, 5)}</span>
                                 <span className="text-slate-500">→</span>
