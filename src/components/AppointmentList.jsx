@@ -7,8 +7,59 @@ import AddAppointmentModal from './AddAppointmentModal';
 import { Edit2, Play, Square, AlertCircle, Clock, ArrowRight, Plus, Timer, Calendar as CalendarIcon, Loader2, CheckCircle2, Trash2, Sparkles } from 'lucide-react';
 import TransferModal from './TransferModal';
 import CancelAppointmentModal from './CancelAppointmentModal';
+import AppointmentDetailsModal from './AppointmentDetailsModal';
 import { calculateAndApplyDelay } from '../lib/delayEngine';
 import { getCache, setCache, CACHE_KEYS } from '../lib/cache';
+
+const SessionTimer = ({ startTime, duration }) => {
+    const calculateTime = (startStr, dur) => {
+        if (!startStr) return { minutes: dur, seconds: 0, isOvertime: false };
+        const start = new Date(startStr).getTime();
+        const now = new Date().getTime();
+        const end = start + dur * 60000;
+        const diff = end - now;
+
+        if (diff <= 0) {
+            const over = Math.abs(diff);
+            return {
+                minutes: Math.floor(over / 60000),
+                seconds: Math.floor((over % 60000) / 1000),
+                isOvertime: true
+            };
+        } else {
+            return {
+                minutes: Math.floor(diff / 60000),
+                seconds: Math.floor((diff % 60000) / 1000),
+                isOvertime: false
+            };
+        }
+    };
+
+    const [state, setState] = useState(() => calculateTime(startTime, duration));
+
+    useEffect(() => {
+        const timer = setInterval(() => {
+            setState(calculateTime(startTime, duration));
+        }, 1000);
+        return () => clearInterval(timer);
+    }, [startTime, duration]);
+
+    return (
+        <div className={`
+            flex items-center justify-center gap-2 text-xs font-bold uppercase tracking-widest py-2 rounded-lg border
+            ${state.isOvertime
+                ? 'bg-red-500/10 text-red-500 border-red-500/20 animate-pulse'
+                : 'bg-primary/10 text-primary border-primary/20'}
+        `}>
+            <Timer size={12} className={state.isOvertime ? 'animate-bounce' : ''} />
+            <span>
+                {state.isOvertime ? '+' : ''}
+                {String(state.minutes).padStart(2, '0')}:{String(state.seconds).padStart(2, '0')}
+                {state.isOvertime ? ' Over' : ' Left'}
+            </span>
+        </div>
+    );
+};
 
 const AppointmentList = () => {
     const { user, profile } = useAuth();
@@ -21,6 +72,8 @@ const AppointmentList = () => {
     const [editData, setEditData] = useState(null);
     const [selectedApt, setSelectedApt] = useState(null);
     const [selectedCancelApt, setSelectedCancelApt] = useState(null);
+    const [selectedAptDetails, setSelectedAptDetails] = useState(null);
+    const [isDetailsOpen, setIsDetailsOpen] = useState(false);
 
     const [now, setNow] = useState(new Date());
 
@@ -59,7 +112,7 @@ const AppointmentList = () => {
             .select(`
                 *,
                 client:clients(first_name, last_name, phone),
-                provider:profiles!appointments_assigned_profile_id_fkey(full_name),
+                provider:profiles!appointments_assigned_profile_id_fkey(full_name, skills, role),
                 transfer_requests(id, status, receiver_id, sender_id)
             `)
             .or(`status.eq.active,status.eq.pending`)
@@ -153,56 +206,6 @@ const AppointmentList = () => {
         }
     };
 
-    const SessionTimer = ({ startTime, duration }) => {
-        const [timeLeft, setTimeLeft] = useState({ minutes: duration, seconds: 0 });
-        const [isOvertime, setIsOvertime] = useState(false);
-
-        useEffect(() => {
-            const calculateTime = () => {
-                if (!startTime) return;
-                const start = new Date(startTime).getTime();
-                const now = new Date().getTime();
-                const end = start + duration * 60000;
-                const diff = end - now;
-
-                if (diff <= 0) {
-                    setIsOvertime(true);
-                    const over = Math.abs(diff);
-                    setTimeLeft({
-                        minutes: Math.floor(over / 60000),
-                        seconds: Math.floor((over % 60000) / 1000)
-                    });
-                } else {
-                    setIsOvertime(false);
-                    setTimeLeft({
-                        minutes: Math.floor(diff / 60000),
-                        seconds: Math.floor((diff % 60000) / 1000)
-                    });
-                }
-            };
-
-            calculateTime();
-            const timer = setInterval(calculateTime, 1000);
-            return () => clearInterval(timer);
-        }, [startTime, duration]);
-
-        return (
-            <div className={`
-                flex items-center justify-center gap-2 text-xs font-bold uppercase tracking-widest py-2 rounded-lg border
-                ${isOvertime
-                    ? 'bg-red-500/10 text-red-500 border-red-500/20 animate-pulse'
-                    : 'bg-primary/10 text-primary border-primary/20'}
-            `}>
-                <Timer size={12} className={isOvertime ? 'animate-bounce' : ''} />
-                <span>
-                    {isOvertime ? '+' : ''}
-                    {String(timeLeft.minutes).padStart(2, '0')}:{String(timeLeft.seconds).padStart(2, '0')}
-                    {isOvertime ? ' Over' : ' Left'}
-                </span>
-            </div>
-        );
-    };
-
     return (
         <div className="space-y-8">
             {/* Actions Bar */}
@@ -269,6 +272,13 @@ const AppointmentList = () => {
                 />
             )}
 
+            <AppointmentDetailsModal
+                isOpen={isDetailsOpen}
+                onClose={() => { setIsDetailsOpen(false); setSelectedAptDetails(null); }}
+                appointment={selectedAptDetails}
+                onStart={startAppointment}
+            />
+
             <div className="space-y-4">
                 {loading ? (
                     <div className="flex flex-col items-center py-32 text-slate-500">
@@ -310,8 +320,12 @@ const AppointmentList = () => {
                                     animate={{ opacity: 1, y: 0 }}
                                     transition={{ delay: index * 0.1 }}
                                     key={apt.id}
+                                    onClick={() => {
+                                        setSelectedAptDetails(apt);
+                                        setIsDetailsOpen(true);
+                                    }}
                                     className={`
-                                    relative glass-card group overflow-hidden transition-all duration-300 hover:border-white/10 hover:translate-x-1
+                                    relative glass-card group overflow-hidden transition-all duration-300 hover:border-white/10 hover:translate-x-1 cursor-pointer active:scale-[0.99]
                                     ${apt.status === 'active' ? 'border-emerald-500 shadow-[0_0_20px_rgba(16,185,129,0.3)] bg-emerald-500/5' : ''}
                                 `}
                                 >
@@ -442,7 +456,7 @@ const AppointmentList = () => {
                                         </div>
 
                                         {/* Actions */}
-                                        <div className="flex items-center justify-end md:min-w-[180px] pt-4 md:pt-0 border-t border-white/5 md:border-0">
+                                        <div className="flex items-center justify-end md:min-w-[180px] pt-4 md:pt-0 border-t border-white/5 md:border-0 relative z-20" onClick={(e) => e.stopPropagation()}>
                                             {apt.status === 'pending' && (
                                                 <div className="flex items-center gap-2">
                                                     <button

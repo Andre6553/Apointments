@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { ArrowLeftRight, UserCheck, AlertTriangle, CheckCircle2, Clock, BarChart3, Loader2, Globe, User, Sparkles, ChevronRight, Check, CheckCheck } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { format } from 'date-fns'
 import { sendWhatsApp } from '../lib/notifications'
 import { useAuth } from '../hooks/useAuth'
 import { playNotificationSound } from '../utils/sound'
@@ -13,6 +14,7 @@ const WorkloadBalancer = ({ initialChatSender }) => {
 
     const [delayedApts, setDelayedApts] = useState([])
     const [freeProviders, setFreeProviders] = useState([])
+    const [allProviders, setAllProviders] = useState([])
     const [loading, setLoading] = useState(true)
     const [globalView, setGlobalView] = useState(profile?.role?.toLowerCase() === 'admin')
     const [suggestions, setSuggestions] = useState([])
@@ -124,6 +126,7 @@ const WorkloadBalancer = ({ initialChatSender }) => {
 
             console.log(`[Balancer] Online & Free Providers:`, free.map(f => f.full_name));
             setFreeProviders(free)
+            setAllProviders(providersWithHeartbeat)
 
             // 3. Fetch Smart Recommendations (Autopilot)
             if (profile?.role?.toLowerCase() === 'admin' && profile?.business_id) {
@@ -172,6 +175,38 @@ const WorkloadBalancer = ({ initialChatSender }) => {
         }
     }, [user, profile, globalView])
 
+    const notifyAdminsOfOfflineProviders = async (apt, offlineQualified) => {
+        try {
+            const clientName = `${apt.client?.first_name} ${apt.client?.last_name || ''}`.trim();
+            const treatment = apt.treatment_name || 'Treatment';
+            const startTime = format(new Date(apt.scheduled_start), 'HH:mm');
+            const providersList = offlineQualified.map(p => `${p.full_name} (${p.phone || 'No phone'})`).join(', ');
+
+            const message = `Hi ${profile.full_name || 'Admin'}, we have a client (${clientName}) that needs ${treatment} at ${startTime} but the qualified providers are currently not online. Can you attend to it ASAP?\n\nQualified Providers: ${providersList}`;
+
+            // Fetch Admins
+            const { data: admins } = await supabase
+                .from('profiles')
+                .select('whatsapp, full_name')
+                .eq('business_id', profile.business_id)
+                .in('role', ['Admin', 'Manager', 'Owner']);
+
+            if (admins && admins.length > 0) {
+                for (const admin of admins) {
+                    if (admin.whatsapp) {
+                        await sendWhatsApp(admin.whatsapp, message);
+                    }
+                }
+                alert('Admins notified via WhatsApp!');
+            } else {
+                alert('No admin contact details found.');
+            }
+        } catch (err) {
+            console.error('Notification Error:', err);
+            alert('Failed to send notification.');
+        }
+    };
+
     const shiftClient = async (aptId, newProviderId, oldProviderId) => {
         if (!confirm('Shift this client to the new provider?')) return
 
@@ -196,7 +231,8 @@ const WorkloadBalancer = ({ initialChatSender }) => {
 
                     // Notify New Provider
                     if (provider.whatsapp) {
-                        await sendWhatsApp(provider.whatsapp, `[Reassignment] Hi ${provider.full_name}, ${clientName} has been shifted to your schedule.`);
+                        const startTime = format(new Date(apt.scheduled_start), 'HH:mm');
+                        await sendWhatsApp(provider.whatsapp, `[Reassignment] Hi ${provider.full_name}, ${clientName} has been shifted to your schedule at ${startTime}.`);
                     }
                 }
 
@@ -955,14 +991,62 @@ const WorkloadBalancer = ({ initialChatSender }) => {
                                     </div>
 
                                     <div className="p-6 space-y-4">
-                                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 ml-1">Recommended Reassignment</p>
+                                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 ml-1">
+                                            {apt.required_skills?.length > 0 ? `Qualified Reassignment (${(typeof apt.required_skills === 'string' ? [apt.required_skills] : apt.required_skills).join(', ')})` : 'Recommended Reassignment'}
+                                        </p>
                                         <div className="space-y-3">
                                             {freeProviders.length === 0 ? (
                                                 <div className="p-4 rounded-xl bg-slate-800/50 border border-white/5 text-center">
                                                     <p className="text-sm text-slate-500 italic">No free providers available at the moment.</p>
                                                 </div>
-                                            ) : freeProviders.map(provider => (
-                                                provider.id !== apt.assigned_profile_id && (
+                                            ) : (() => {
+                                                const req = (typeof apt.required_skills === 'string' ? [apt.required_skills] : apt.required_skills) || [];
+                                                const qualified = freeProviders.filter(provider => {
+                                                    if (provider.id === apt.assigned_profile_id) return false;
+                                                    if (req.length === 0) return true;
+                                                    const pSkills = (provider.skills || []).map(s => typeof s === 'object' ? s.code : s);
+                                                    return req.every(r => pSkills.includes(r));
+                                                });
+
+                                                if (qualified.length === 0) {
+                                                    const offlineQualified = allProviders.filter(p => {
+                                                        if (p.is_online) return false;
+                                                        if (req.length === 0) return true;
+                                                        const pSkills = (p.skills || []).map(s => typeof s === 'object' ? s.code : s);
+                                                        return req.every(r => pSkills.includes(r));
+                                                    });
+
+                                                    return (
+                                                        <div className="space-y-4">
+                                                            <div className="p-4 rounded-xl bg-orange-500/5 border border-orange-500/20 text-center">
+                                                                <p className="text-sm text-orange-400 font-medium">No qualified providers currently online for this treatment.</p>
+                                                            </div>
+                                                            {offlineQualified.length > 0 && (
+                                                                <div className="bg-slate-900/40 rounded-xl border border-white/5 p-4 space-y-3">
+                                                                    <div className="flex justify-between items-center">
+                                                                        <h4 className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Qualified Offline Staff</h4>
+                                                                        <button
+                                                                            onClick={() => notifyAdminsOfOfflineProviders(apt, offlineQualified)}
+                                                                            className="text-[10px] bg-red-500/10 hover:bg-red-500/20 text-red-400 px-2 py-1 rounded border border-red-500/20 transition-colors font-bold uppercase tracking-wider flex items-center gap-1"
+                                                                        >
+                                                                            <AlertTriangle size={10} /> Notify Admins
+                                                                        </button>
+                                                                    </div>
+                                                                    <div className="space-y-2">
+                                                                        {offlineQualified.map(p => (
+                                                                            <div key={p.id} className="flex justify-between items-center text-xs">
+                                                                                <span className="text-slate-300 font-medium">{p.full_name}</span>
+                                                                                <span className="text-slate-500">{p.phone || 'No phone'}</span>
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    );
+                                                }
+
+                                                return qualified.map(provider => (
                                                     <div key={provider.id} className={`
                                                             flex justify-between items-center p-4 rounded-xl transition-all border group/provider
                                                             ${provider.is_online
@@ -982,8 +1066,12 @@ const WorkloadBalancer = ({ initialChatSender }) => {
                                                             <div>
                                                                 <div className="flex items-center gap-2">
                                                                     <h4 className="font-bold text-slate-200 text-sm">{provider.full_name}</h4>
-                                                                    {!provider.is_online && (
+                                                                    {!provider.is_online ? (
                                                                         <span className="text-[8px] font-black uppercase tracking-widest text-slate-500 bg-white/5 px-1.5 py-0.5 rounded border border-white/5">Away</span>
+                                                                    ) : (
+                                                                        <span className="text-[8px] font-black uppercase tracking-widest text-emerald-500 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/10 flex items-center gap-1">
+                                                                            <CheckCircle2 size={8} /> Qualified Match
+                                                                        </span>
                                                                     )}
                                                                 </div>
                                                                 <span className="text-xs text-slate-500 font-medium">{provider.role}</span>
@@ -1003,8 +1091,8 @@ const WorkloadBalancer = ({ initialChatSender }) => {
                                                             {provider.is_online ? 'Assign' : 'Offline'}
                                                         </button>
                                                     </div>
-                                                )
-                                            ))}
+                                                ));
+                                            })()}
                                         </div>
                                     </div>
                                 </motion.div>

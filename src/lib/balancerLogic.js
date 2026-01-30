@@ -74,7 +74,8 @@ export const getSmartReassignments = async (businessId) => {
     // 3d. Fetch Treatments (to handle missing treatment_id in appointments)
     const { data: allTreatments } = await supabase
         .from('treatments')
-        .select('name, required_skills');
+        .select('name, required_skills')
+        .eq('business_id', businessId);
 
     // Map treatments for fast lookup
     const treatmentSkillsMap = {};
@@ -99,9 +100,8 @@ export const getSmartReassignments = async (businessId) => {
             const pid = provider.id;
 
             // CHECK 0: Skills Match (Enforced per USER request)
-            const requiredSkills = (apt.required_skills && Array.isArray(apt.required_skills) && apt.required_skills.length > 0)
-                ? apt.required_skills
-                : (treatmentSkillsMap[apt.treatment_name] || []);
+            const rawReq = apt.required_skills || treatmentSkillsMap[apt.treatment_name] || [];
+            const requiredSkills = Array.isArray(rawReq) ? rawReq : (rawReq ? [rawReq] : []);
 
             if (Array.isArray(requiredSkills) && requiredSkills.length > 0) {
                 const providerSkillsRaw = Array.isArray(provider.skills) ? provider.skills : [];
@@ -155,6 +155,7 @@ export const getSmartReassignments = async (businessId) => {
         if (bestFix) {
             suggestions.push({
                 appointmentId: apt.id,
+                clientId: apt.client_id,
                 clientName: `${apt.client?.first_name} ${apt.client?.last_name || ''}`.trim(),
                 currentProviderName: apt.provider?.full_name,
                 currentProviderId: apt.assigned_profile_id,
@@ -208,7 +209,7 @@ export const analyzeSystemHealth = async (businessId) => {
     // Fetch ALL remaining work for today (Active + Pending)
     const { data: workload } = await supabase
         .from('appointments')
-        .select('id, assigned_profile_id, status, scheduled_start, duration_minutes, treatment_name, required_skills, client:clients(first_name, last_name, phone)')
+        .select('id, client_id, assigned_profile_id, status, scheduled_start, duration_minutes, treatment_name, required_skills, client:clients(first_name, last_name, phone)')
         .in('assigned_profile_id', pIds)
         .in('status', ['active', 'pending'])
         .gte('scheduled_start', `${todayStr}T00:00:00`)

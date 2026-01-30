@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { format, isSameDay } from 'date-fns';
 import { useAuth } from '../hooks/useAuth';
 import { getCache, setCache, CACHE_KEYS } from '../lib/cache';
+import { sendWhatsApp } from '../lib/notifications';
 
 const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) => {
     const { user, profile } = useAuth();
@@ -28,6 +29,10 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
     const [isFetchingProviderBase, setIsFetchingProviderBase] = useState(false);
     const [suggestedSlots, setSuggestedSlots] = useState([]);
     const [searchingSlots, setSearchingSlots] = useState(false);
+    const [providers, setProviders] = useState([]);
+    const [targetProviderId, setTargetProviderId] = useState(null);
+    const [targetProviderSkills, setTargetProviderSkills] = useState([]);
+    const isAdmin = profile?.role?.toLowerCase() === 'admin' || profile?.role?.toLowerCase() === 'manager' || profile?.role?.toLowerCase() === 'owner';
 
     useEffect(() => {
         if (isOpen) {
@@ -35,8 +40,9 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
             fetchTreatments();
             setSuggestedSlots([]);
             if (editData) {
+                setTargetProviderId(editData.assigned_profile_id);
                 setFormData({
-                    clientId: editData.client_id,
+                    clientId: editData.client_id || editData.clientId,
                     date: format(new Date(editData.scheduled_start), 'yyyy-MM-dd'),
                     time: format(new Date(editData.scheduled_start), 'HH:mm'),
                     duration: editData.duration_minutes,
@@ -46,6 +52,7 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
                     cost: editData.cost || 0
                 });
             } else {
+                setTargetProviderId(user?.id);
                 setFormData({
                     clientId: '',
                     date: format(new Date(), 'yyyy-MM-dd'),
@@ -61,36 +68,51 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
     }, [isOpen, editData]);
 
     useEffect(() => {
-        if (isOpen && user?.id) {
-            fetchProviderBaseData();
+        if (isOpen && profile?.business_id && isAdmin) {
+            fetchProviders();
         }
-    }, [isOpen, user?.id, formData.date]);
+    }, [isOpen, profile?.business_id]);
 
-    const findSlotsForDate = async (targetDate, startTimeStr, duration, existingApts = null) => {
+    const fetchProviders = async () => {
+        const { data } = await supabase
+            .from('profiles')
+            .select('id, full_name, whatsapp')
+            .eq('business_id', profile.business_id)
+            .eq('role', 'Provider');
+        if (data) setProviders(data);
+    };
+
+    useEffect(() => {
+        if (isOpen && targetProviderId) {
+            fetchProviderBaseData();
+            fetchTargetProviderSkills();
+        }
+    }, [isOpen, targetProviderId, formData.date]);
+
+    const fetchTargetProviderSkills = async () => {
+        if (!targetProviderId) return;
+        const { data } = await supabase
+            .from('profiles')
+            .select('skills')
+            .eq('id', targetProviderId)
+            .single();
+        if (data) {
+            const raw = Array.isArray(data.skills) ? data.skills : [];
+            const codes = raw.map(s => (typeof s === 'object' ? s.code : s));
+            setTargetProviderSkills(codes);
+        }
+    };
+
+    const findSlotsForDate = async (targetDate, duration, constraints) => {
+        const { allHours, allBreaks, allApts } = constraints;
         const [y, m, d] = targetDate.split('-').map(Number);
         const dayOfWeek = new Date(y, m - 1, d).getDay();
 
-        const [hoursRes, breaksRes] = await Promise.all([
-            supabase.from('working_hours').select('*').eq('profile_id', user.id).eq('day_of_week', dayOfWeek).maybeSingle(),
-            supabase.from('breaks').select('*').eq('profile_id', user.id).eq('day_of_week', dayOfWeek)
-        ]);
-
-        const hours = hoursRes.data;
-        const breaks = breaksRes.data || [];
-
+        const hours = allHours.find(h => h.day_of_week === dayOfWeek);
         if (!hours || hours.is_active === false) return [];
 
-        let dayApts = existingApts;
-        if (!dayApts) {
-            const { data } = await supabase
-                .from('appointments')
-                .select('scheduled_start, duration_minutes')
-                .eq('assigned_profile_id', user.id)
-                .in('status', ['pending', 'active', 'completed'])
-                .gte('scheduled_start', `${targetDate}T00:00:00`)
-                .lte('scheduled_start', `${targetDate}T23:59:59`);
-            dayApts = data || [];
-        }
+        const breaks = allBreaks.filter(b => b.day_of_week === dayOfWeek);
+        const dayApts = allApts.filter(apt => apt.scheduled_start.startsWith(targetDate));
 
         const slots = [];
         const [hS, mS] = hours.start_time.split(':').map(Number);
@@ -101,16 +123,8 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
         const now = new Date();
 
         if (isSameDay(searchStart, now)) {
-            const currentPlusBuffer = new Date(now.getTime() + 15 * 60000); // 15m from now
-            if (currentPlusBuffer > searchStart) {
-                searchStart = currentPlusBuffer;
-            }
-        }
-
-        if (startTimeStr) {
-            const [h, m] = startTimeStr.split(':').map(Number);
-            const requestedStart = new Date(y, m - 1, d, h, m);
-            if (requestedStart > searchStart) searchStart = requestedStart;
+            const currentPlusBuffer = new Date(now.getTime() + 15 * 60000);
+            if (currentPlusBuffer > searchStart) searchStart = currentPlusBuffer;
         }
 
         let candidate = new Date(Math.ceil(searchStart.getTime() / (5 * 60000)) * (5 * 60000));
@@ -150,15 +164,46 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
     };
 
     const handleFindSoonest = async () => {
+        // Skill Check First
+        const requiredSkills = formData.requiredSkills || [];
+        if (requiredSkills.length > 0) {
+            const hasAllSkills = requiredSkills.every(req => targetProviderSkills.includes(req));
+            if (!hasAllSkills) {
+                alert(`Cannot search: the selected provider does not have the required skills (${requiredSkills.join(', ')}) for this treatment.`);
+                return;
+            }
+        }
+
         setSearchingSlots(true);
         setSuggestedSlots([]);
         try {
+            // Optimization: Fetch everything we need for the next 60 days in BULK
+            const startDate = new Date();
+            const endDate = new Date(); endDate.setDate(startDate.getDate() + 60);
+
+            const [hoursRes, breaksRes, aptsRes] = await Promise.all([
+                supabase.from('working_hours').select('*').eq('profile_id', targetProviderId).eq('is_active', true),
+                supabase.from('breaks').select('*').eq('profile_id', targetProviderId),
+                supabase.from('appointments')
+                    .select('scheduled_start, duration_minutes')
+                    .eq('assigned_profile_id', targetProviderId)
+                    .in('status', ['pending', 'active', 'completed'])
+                    .gte('scheduled_start', startDate.toISOString())
+                    .lte('scheduled_start', endDate.toISOString())
+            ]);
+
+            const constraints = {
+                allHours: hoursRes.data || [],
+                allBreaks: breaksRes.data || [],
+                allApts: aptsRes.data || []
+            };
+
             let found = [];
             let checkDate = new Date();
 
-            for (let i = 0; i < 7; i++) {
+            for (let i = 0; i < 60; i++) {
                 const dateStr = format(checkDate, 'yyyy-MM-dd');
-                const daySlots = await findSlotsForDate(dateStr, null, formData.duration);
+                const daySlots = await findSlotsForDate(dateStr, formData.duration, constraints);
                 found = [...found, ...daySlots];
                 if (found.length >= 5) break;
                 checkDate.setDate(checkDate.getDate() + 1);
@@ -166,7 +211,7 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
 
             setSuggestedSlots(found.slice(0, 5));
             if (found.length === 0) {
-                alert('No available slots found in the next 7 days.');
+                alert('No available slots found in the next 60 days.');
             }
         } catch (err) {
             console.error('Find soonest failed:', err);
@@ -176,17 +221,16 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
     };
 
     const fetchProviderBaseData = async () => {
-        if (!user?.id || !formData.date) return;
+        if (!targetProviderId || !formData.date) return;
         setIsFetchingProviderBase(true);
 
         try {
             const [y, m, d] = formData.date.split('-').map(Number);
             const dayOfWeek = new Date(y, m - 1, d).getDay();
 
-
             const [hoursRes, breaksRes] = await Promise.all([
-                supabase.from('working_hours').select('*').eq('profile_id', user.id).eq('day_of_week', dayOfWeek).maybeSingle(),
-                supabase.from('breaks').select('*').eq('profile_id', user.id).eq('day_of_week', dayOfWeek)
+                supabase.from('working_hours').select('*').eq('profile_id', targetProviderId).eq('day_of_week', dayOfWeek).maybeSingle(),
+                supabase.from('breaks').select('*').eq('profile_id', targetProviderId).eq('day_of_week', dayOfWeek)
             ]);
 
             setProviderData({
@@ -212,7 +256,7 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
             isCurrent = false;
             clearTimeout(timer);
         };
-    }, [formData.date, formData.time, formData.duration, formData.clientId, isOpen]);
+    }, [formData.date, formData.time, formData.duration, formData.clientId, formData.treatmentId, formData.requiredSkills, targetProviderId, isOpen]);
 
     const checkConflicts = async (isCurrent) => {
         const timeRegex = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -303,6 +347,20 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
         try {
             if (!user || !isCurrent) return;
 
+            // 0. Skill Validation Check (Instant)
+            const requiredSkills = formData.requiredSkills || [];
+            if (requiredSkills.length > 0 && targetProviderSkills.length > 0) {
+                const hasAllSkills = requiredSkills.every(req => targetProviderSkills.includes(req));
+                if (!hasAllSkills) {
+                    setSlotStatus({
+                        type: 'error',
+                        message: `Provider lacks required skills (${requiredSkills.join(', ')})`,
+                        suggestion: null
+                    });
+                    return;
+                }
+            }
+
             const [startHour, startMin] = formData.time.split(':').map(Number);
             const slotStart = new Date(formData.date);
             slotStart.setHours(startHour, startMin, 0, 0);
@@ -312,7 +370,7 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
             let query = supabase
                 .from('appointments')
                 .select('scheduled_start, duration_minutes')
-                .eq('assigned_profile_id', user.id)
+                .eq('assigned_profile_id', targetProviderId)
                 .in('status', ['pending', 'active', 'completed'])
                 .gte('scheduled_start', `${formData.date}T00:00:00`)
                 .lte('scheduled_start', `${formData.date}T23:59:59`);
@@ -448,15 +506,13 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
     const handleSubmit = async (e) => {
         e.preventDefault();
 
-        // 1. Check Provider Skills
-        const providerSkillsRaw = Array.isArray(profile?.skills) ? profile.skills : [];
-        const providerCodes = providerSkillsRaw.map(s => (typeof s === 'object' ? s.code : s));
+        // 1. Check Target Provider Skills (Corrected from profile?.skills)
         const requiredSkills = formData.requiredSkills || [];
 
         if (requiredSkills.length > 0) {
-            const hasAllSkills = requiredSkills.every(req => providerCodes.includes(req));
+            const hasAllSkills = requiredSkills.every(req => targetProviderSkills.includes(req));
             if (!hasAllSkills) {
-                alert(`Cannot book: You do not have the required skills (${requiredSkills.join(', ')}) to perform this treatment.`);
+                alert(`Cannot book: This provider does not have the required skills (${requiredSkills.join(', ')}) to perform this treatment.`);
                 return;
             }
         }
@@ -476,7 +532,7 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
 
             const appointmentData = {
                 client_id: formData.clientId,
-                assigned_profile_id: user.id,
+                assigned_profile_id: targetProviderId,
                 scheduled_start: scheduledStart,
                 duration_minutes: parseInt(formData.duration),
                 notes: formData.notes,
@@ -487,11 +543,67 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
                 status: editData ? editData.status : 'pending'
             };
 
+            // Detect Changes for Notifications
+            const isReschedule = editData && (editData.scheduled_start !== scheduledStart);
+            const isReassign = editData && (editData.assigned_profile_id !== targetProviderId);
+
             const { error } = editData
                 ? await supabase.from('appointments').update(appointmentData).eq('id', editData.id)
                 : await supabase.from('appointments').insert([appointmentData]);
 
             if (error) throw error;
+
+            // Handle Notifications on Update
+            if (editData && (isReschedule || isReassign)) {
+                try {
+                    const client = clients.find(c => c.id === formData.clientId);
+                    const newProvider = providers.find(p => p.id === targetProviderId);
+
+                    if (client) {
+                        const dateLabel = format(new Date(scheduledStart), 'EEEE, MMM do');
+                        const timeLabel = format(new Date(scheduledStart), 'HH:mm');
+                        const bizName = profile?.business_name || "the clinic";
+
+                        let clientMsg = `Hi ${client.first_name}, this is ${bizName}. `;
+                        if (isReschedule && isReassign) {
+                            clientMsg += `Your appointment for ${formData.treatmentName} has been updated. It is now on ${dateLabel} at ${timeLabel} with ${newProvider?.full_name || 'a new provider'}.`;
+                        } else if (isReschedule) {
+                            clientMsg += `Your appointment for ${formData.treatmentName} has been rescheduled to ${dateLabel} at ${timeLabel}.`;
+                        } else if (isReassign) {
+                            clientMsg += `Your appointment for ${formData.treatmentName} on ${dateLabel} will now be handled by ${newProvider?.full_name || 'a new provider'}.`;
+                        }
+
+                        await sendWhatsApp(client.phone, clientMsg);
+                    }
+
+                    if (newProvider && newProvider.whatsapp) {
+                        const dateLabel = format(new Date(scheduledStart), 'EEE, MMM do');
+                        const timeLabel = format(new Date(scheduledStart), 'HH:mm');
+                        const clientName = `${client?.first_name || ''} ${client?.last_name || ''}`.trim();
+
+                        let staffMsg = `[Update] Hi ${newProvider.full_name}, `;
+                        if (isReassign) {
+                            staffMsg += `you have been assigned a new session: ${clientName} for ${formData.treatmentName} on ${dateLabel} at ${timeLabel}.`;
+                        } else {
+                            staffMsg += `the session for ${clientName} on ${dateLabel} has been moved to ${timeLabel}.`;
+                        }
+
+                        await sendWhatsApp(newProvider.whatsapp, staffMsg);
+                    }
+
+                    // Notify old provider if it was a shift
+                    if (isReassign) {
+                        const oldProvider = providers.find(p => p.id === editData.assigned_profile_id);
+                        if (oldProvider && oldProvider.whatsapp) {
+                            const dateLabel = format(new Date(editData.scheduled_start), 'EEE, MMM do');
+                            const clientName = `${client?.first_name || ''} ${client?.last_name || ''}`.trim();
+                            await sendWhatsApp(oldProvider.whatsapp, `[Shifted] Hi ${oldProvider.full_name}, your session with ${clientName} on ${dateLabel} has been reassigned to ${newProvider?.full_name || 'another provider'}.`);
+                        }
+                    }
+                } catch (notiErr) {
+                    console.error('Failed to send update notifications:', notiErr);
+                }
+            }
 
             // Optimistic cache update for instant feedback
             try {
@@ -596,6 +708,26 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
                                         {fetchingClients && <Loader2 className="absolute right-10 top-1/2 -translate-y-1/2 animate-spin text-primary" size={16} />}
                                     </div>
                                 </div>
+
+                                {isAdmin && (
+                                    <div className="space-y-1">
+                                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Assign to Provider</label>
+                                        <div className="relative group">
+                                            <User size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-primary transition-colors" />
+                                            <select
+                                                className="glass-input w-full pl-12 h-14"
+                                                value={targetProviderId || ''}
+                                                onChange={e => setTargetProviderId(e.target.value)}
+                                                required
+                                            >
+                                                <option value="" className="bg-slate-900">Select provider...</option>
+                                                {providers.map(p => (
+                                                    <option key={p.id} value={p.id} className="bg-slate-900">{p.full_name} {p.id === user?.id ? '(Me)' : ''}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    </div>
+                                )}
 
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                     <div className="space-y-1">

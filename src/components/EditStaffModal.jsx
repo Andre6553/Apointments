@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, User, Phone, Mail, Save, Loader2, Shield } from 'lucide-react'
+import { X, User, Phone, Mail, Save, Loader2, Shield, Sparkles, PlusCircle, Trash2 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useToast } from '../contexts/ToastContext'
 
@@ -10,7 +10,29 @@ const EditStaffModal = ({ isOpen, onClose, member, onUpdate }) => {
     const [whatsapp, setWhatsapp] = useState('')
     const [email, setEmail] = useState('')
     const [loading, setLoading] = useState(false)
+    const [availableSkills, setAvailableSkills] = useState([])
+    const [providerSkills, setProviderSkills] = useState([])
     const showToast = useToast()
+
+    useEffect(() => {
+        if (isOpen && member?.business_id) {
+            fetchAvailableSkills()
+        }
+    }, [isOpen, member?.id, member?.business_id])
+
+    const fetchAvailableSkills = async () => {
+        try {
+            const { data, error } = await supabase
+                .from('business_skills')
+                .select('*')
+                .eq('business_id', member.business_id)
+                .order('name')
+            if (error) throw error
+            setAvailableSkills(data || [])
+        } catch (err) {
+            console.error('Error fetching available skills:', err)
+        }
+    }
 
     useEffect(() => {
         if (member) {
@@ -19,8 +41,20 @@ const EditStaffModal = ({ isOpen, onClose, member, onUpdate }) => {
             setLastName(names.slice(1).join(' ') || '')
             setWhatsapp(member.whatsapp || '')
             setEmail(member.email || '')
+
+            // Normalize skills to a simple array of codes for the UI
+            const skills = member.skills || []
+            setProviderSkills(skills.map(s => typeof s === 'object' ? s.code : s))
         }
     }, [member])
+
+    const toggleSkill = (code) => {
+        setProviderSkills(prev =>
+            prev.includes(code)
+                ? prev.filter(s => s !== code)
+                : [...prev, code]
+        )
+    }
 
     const handleSubmit = async (e) => {
         e.preventDefault()
@@ -31,7 +65,8 @@ const EditStaffModal = ({ isOpen, onClose, member, onUpdate }) => {
                 .update({
                     full_name: `${firstName} ${lastName}`.trim(),
                     whatsapp,
-                    email
+                    email,
+                    skills: providerSkills // Saving as array of codes
                 })
                 .eq('id', member.id)
 
@@ -138,6 +173,66 @@ const EditStaffModal = ({ isOpen, onClose, member, onUpdate }) => {
                                     <p className="text-[10px] text-amber-500/80 font-medium italic mt-1 px-1">
                                         Note: Changing email here updates the contact record but not the login credentials.
                                     </p>
+                                </div>
+
+                                {/* Managed Skills Section */}
+                                <div className="space-y-4 pt-4 border-t border-white/5">
+                                    <div className="flex items-center gap-2 text-slate-400 ml-1">
+                                        <Sparkles size={14} className="text-primary" />
+                                        <span className="text-xs font-bold uppercase tracking-widest text-slate-400">Provider Skills</span>
+                                    </div>
+
+                                    {/* Skill Selector Dropdown */}
+                                    <div className="space-y-2">
+                                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Assign New Skill</label>
+                                        <select
+                                            className="glass-input w-full text-sm"
+                                            value=""
+                                            onChange={(e) => {
+                                                if (e.target.value) toggleSkill(e.target.value)
+                                            }}
+                                        >
+                                            <option value="">Select a skill to add...</option>
+                                            {availableSkills.filter(s => !providerSkills.includes(s.code)).length === 0 ? (
+                                                <option disabled value="">No more skills available to add</option>
+                                            ) : (
+                                                availableSkills
+                                                    .filter(s => !providerSkills.includes(s.code))
+                                                    .map(skill => (
+                                                        <option key={skill.id} value={skill.code} className="bg-slate-900">
+                                                            {skill.name} ({skill.code})
+                                                        </option>
+                                                    ))
+                                            )}
+                                        </select>
+                                    </div>
+
+                                    {/* Active Skill Tags */}
+                                    <div className="flex flex-wrap gap-2 min-h-[40px] p-3 rounded-xl bg-white/[0.02] border border-white/5">
+                                        {providerSkills.length === 0 ? (
+                                            <span className="text-[10px] text-slate-600 font-medium uppercase tracking-widest py-2">No skills assigned</span>
+                                        ) : (
+                                            providerSkills.map(code => {
+                                                const skillInfo = availableSkills.find(s => s.code === code)
+                                                return (
+                                                    <div
+                                                        key={code}
+                                                        className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-primary/10 border border-primary/20 text-primary transition-all group/tag"
+                                                    >
+                                                        <span className="text-[10px] font-black uppercase tracking-tighter">{code}</span>
+                                                        <span className="text-[10px] font-bold whitespace-nowrap">{skillInfo?.name || code}</span>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => toggleSkill(code)}
+                                                            className="text-primary/40 hover:text-rose-400 transition-colors"
+                                                        >
+                                                            <X size={10} />
+                                                        </button>
+                                                    </div>
+                                                )
+                                            })
+                                        )}
+                                    </div>
                                 </div>
                             </form>
                         </div>

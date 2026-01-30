@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../hooks/useAuth'
-import { Building2, Save, Users, Plus, Loader2, Trash2, ShieldCheck, Mail, CheckCircle2 } from 'lucide-react'
+import { Building2, Save, Users, Plus, Loader2, Trash2, ShieldCheck, Mail, CheckCircle2, Sparkles } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useToast } from '../contexts/ToastContext'
 import EditStaffModal from './EditStaffModal'
 import { getCache, setCache, CACHE_KEYS } from '../lib/cache'
+import { getDemoStatus, seedBusinessSkills } from '../lib/demoSeeder'
 
 const OrganizationSettings = () => {
     const { profile, fetchProfile } = useAuth()
@@ -20,7 +21,28 @@ const OrganizationSettings = () => {
     const [isTransferring, setIsTransferring] = useState(false)
     const [selectedStaff, setSelectedStaff] = useState(null)
     const [isEditModalOpen, setIsEditModalOpen] = useState(false)
+    const [skills, setSkills] = useState([])
+    const [isLoadingSkills, setIsLoadingSkills] = useState(false)
+    const [newSkillName, setNewSkillName] = useState('')
+    const [newSkillCode, setNewSkillCode] = useState('')
+    const [isAddingSkill, setIsAddingSkill] = useState(false)
+    const [isSeedingDemo, setIsSeedingDemo] = useState(false)
     const showToast = useToast()
+    const isDemoOn = getDemoStatus()
+
+    const handleSeedDemoSkills = async () => {
+        setIsSeedingDemo(true)
+        try {
+            await seedBusinessSkills(profile.business_id)
+            showToast('Medical demo skills loaded', 'success')
+            fetchSkills()
+        } catch (err) {
+            console.error('Error seeding demo skills:', err)
+            showToast('Failed to load demo skills', 'error')
+        } finally {
+            setIsSeedingDemo(false)
+        }
+    }
 
     useEffect(() => {
         if (profile?.business?.name) {
@@ -31,6 +53,7 @@ const OrganizationSettings = () => {
     useEffect(() => {
         if (profile?.business_id) {
             fetchStaff()
+            fetchSkills()
         }
     }, [profile?.business_id])
 
@@ -52,6 +75,69 @@ const OrganizationSettings = () => {
             console.error('Error fetching staff:', err)
         } finally {
             setIsLoadingStaff(false)
+        }
+    }
+
+    const fetchSkills = async () => {
+        setIsLoadingSkills(true)
+        try {
+            const { data, error } = await supabase
+                .from('business_skills')
+                .select('*')
+                .eq('business_id', profile.business_id)
+                .order('name')
+
+            if (error) throw error
+            setSkills(data || [])
+        } catch (err) {
+            console.error('Error fetching skills:', err)
+        } finally {
+            setIsLoadingSkills(false)
+        }
+    }
+
+    const handleAddSkill = async (e) => {
+        e.preventDefault()
+        if (!newSkillName.trim() || !newSkillCode.trim()) return
+
+        setIsAddingSkill(true)
+        try {
+            const { error } = await supabase
+                .from('business_skills')
+                .insert({
+                    business_id: profile.business_id,
+                    name: newSkillName.trim(),
+                    code: newSkillCode.trim().toUpperCase()
+                })
+
+            if (error) throw error
+            showToast('Skill added successfully', 'success')
+            setNewSkillName('')
+            setNewSkillCode('')
+            fetchSkills()
+        } catch (err) {
+            console.error('Error adding skill:', err)
+            showToast('Failed to add skill', 'error')
+        } finally {
+            setIsAddingSkill(false)
+        }
+    }
+
+    const removeSkill = async (skillId) => {
+        if (!confirm('Are you sure you want to remove this skill? This might affect service requirements.')) return
+
+        try {
+            const { error } = await supabase
+                .from('business_skills')
+                .delete()
+                .eq('id', skillId)
+
+            if (error) throw error
+            showToast('Skill removed', 'success')
+            setSkills(prev => prev.filter(s => s.id !== skillId))
+        } catch (err) {
+            console.error('Error removing skill:', err)
+            showToast('Failed to remove skill', 'error')
         }
     }
 
@@ -317,6 +403,110 @@ const OrganizationSettings = () => {
                                                 </button>
                                             )}
                                         </div>
+                                    </div>
+                                ))
+                            )}
+                        </div>
+                    </div>
+                </div>
+
+                {/* Business Skills Section */}
+                <div className="lg:col-span-12">
+                    <div className="glass-card p-8 border-white/5 space-y-8">
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-4">
+                                <div className="p-3 rounded-2xl bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                                    <Sparkles size={24} />
+                                </div>
+                                <div>
+                                    <h4 className="font-bold text-white">Business Skills</h4>
+                                    <p className="text-xs text-slate-500">Global skills available to assign to providers</p>
+                                </div>
+                            </div>
+
+                            {/* Demo Quick Fill */}
+                            {isDemoOn && (
+                                <button
+                                    onClick={handleSeedDemoSkills}
+                                    disabled={isSeedingDemo}
+                                    className="px-4 py-2 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-[10px] font-black uppercase tracking-widest hover:bg-indigo-500/20 transition-all flex items-center gap-2"
+                                >
+                                    {isSeedingDemo ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+                                    Quick Fill Medical Skills
+                                </button>
+                            )}
+                        </div>
+
+                        {/* Add Skill Form */}
+                        <form onSubmit={handleAddSkill} className="bg-white/[0.02] border border-white/5 p-6 rounded-2xl space-y-6">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                    <label className="text-xs font-bold text-slate-400 uppercase tracking-widest ml-1">Skill Name</label>
+                                    <input
+                                        type="text"
+                                        value={newSkillName}
+                                        onChange={(e) => setNewSkillName(e.target.value)}
+                                        className="glass-input h-14 w-full text-lg"
+                                        placeholder="e.g. Botox Specialist"
+                                        required
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="text-xs font-bold text-slate-400 uppercase tracking-widest ml-1">Internal Code</label>
+                                    <input
+                                        type="text"
+                                        value={newSkillCode}
+                                        onChange={(e) => setNewSkillCode(e.target.value)}
+                                        className="glass-input h-14 w-full text-lg"
+                                        placeholder="e.g. BTX"
+                                        required
+                                    />
+                                </div>
+                            </div>
+                            <button
+                                type="submit"
+                                disabled={isAddingSkill}
+                                className="bg-primary hover:bg-indigo-600 px-10 py-4 rounded-2xl font-bold flex items-center gap-2 transition-all shadow-lg shadow-primary/20 active:scale-95 text-white"
+                            >
+                                {isAddingSkill ? <Loader2 size={18} className="animate-spin" /> : <Plus size={18} />}
+                                <span>Register Skill</span>
+                            </button>
+                        </form>
+
+                        {/* Skills List */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                            {isLoadingSkills ? (
+                                <div className="col-span-full py-12 flex flex-col items-center gap-4 text-slate-500">
+                                    <Loader2 className="animate-spin text-primary" size={32} />
+                                    <p className="text-xs font-bold uppercase tracking-widest">Loading Skills...</p>
+                                </div>
+                            ) : skills.length === 0 ? (
+                                <div className="col-span-full py-12 text-center text-slate-500 border border-dashed border-white/10 rounded-2xl">
+                                    No global skills defined yet. Add your first one above!
+                                </div>
+                            ) : (
+                                skills.map((skill) => (
+                                    <div
+                                        key={skill.id}
+                                        className="group flex items-center justify-between p-4 rounded-xl bg-white/[0.02] border border-white/5 hover:bg-white/[0.04] transition-all"
+                                    >
+                                        <div className="flex items-center gap-3">
+                                            <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center text-primary font-bold text-xs">
+                                                {skill.code}
+                                            </div>
+                                            <div>
+                                                <p className="font-bold text-white text-sm">{skill.name}</p>
+                                                <p className="text-[10px] text-slate-500 font-medium uppercase tracking-wider">{skill.code}</p>
+                                            </div>
+                                        </div>
+
+                                        <button
+                                            onClick={() => removeSkill(skill.id)}
+                                            className="p-2 text-slate-500 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition-all rounded-lg hover:bg-rose-500/10"
+                                            title="Delete skill"
+                                        >
+                                            <Trash2 size={16} />
+                                        </button>
                                     </div>
                                 ))
                             )}

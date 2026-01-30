@@ -36,7 +36,7 @@ import {
 } from 'lucide-react';
 import SubscriptionPage from './SubscriptionPage';
 import MasterDashboard from './MasterDashboard';
-import { initializeMedicalDemo, runStressTest, getDemoStatus, setDemoStatus } from '../lib/demoSeeder';
+import { initializeMedicalDemo, runStressTest, getDemoStatus, setDemoStatus, seedBusinessSkills } from '../lib/demoSeeder';
 
 const Dashboard = () => {
     const { user, profile, signOut } = useAuth();
@@ -357,9 +357,9 @@ const Dashboard = () => {
                                         const newState = !demoMode;
                                         setDemoMode(newState);
                                         setDemoStatus(newState);
-                                        if (newState) {
-                                            await initializeMedicalDemo(profile.business_id);
-                                            window.location.reload(); // Force refresh to see new names
+                                        // Auto-seed skills if enabling
+                                        if (newState && profile?.business_id) {
+                                            await seedBusinessSkills(profile.business_id);
                                         }
                                     }}
                                     className={`relative w-10 h-5 rounded-full transition-colors ${demoMode ? 'bg-indigo-500' : 'bg-slate-700'}`}
@@ -368,19 +368,17 @@ const Dashboard = () => {
                                 </button>
                             </div>
 
-                            {demoMode && (
-                                <button
-                                    onClick={async () => {
-                                        if (confirm('RESET DATABASE? This will wipe all appointments.')) {
-                                            await initializeMedicalDemo(profile.business_id);
-                                            window.location.reload();
-                                        }
-                                    }}
-                                    className="w-full py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs font-bold rounded-lg border border-red-500/20 transition-colors"
-                                >
-                                    Reset / Re-Seed
-                                </button>
-                            )}
+                            <button
+                                onClick={async () => {
+                                    if (confirm('RESET DATABASE? This will wipe all appointments and re-initialize providers/treatments.')) {
+                                        await initializeMedicalDemo(profile.business_id);
+                                        window.location.reload();
+                                    }
+                                }}
+                                className="w-full py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs font-bold rounded-lg border border-red-500/20 transition-colors"
+                            >
+                                Reset / Re-Seed
+                            </button>
                             <p className="text-[10px] text-slate-500 leading-tight">
                                 {demoMode ? "Stress Test Active. Generates load automatically." : "System Normal."}
                             </p>

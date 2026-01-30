@@ -7,7 +7,7 @@ import { supabase } from './supabase'
  */
 
 // --- CONFIGURATION ---
-const DOCTORS = [
+export const DOCTORS = [
     { name: 'Dr. Gregory House', skills: [{ label: 'Diagnostician', code: 'DIAG' }, { label: 'Internal Med', code: 'INT' }] },
     { name: 'Dr. Meredith Grey', skills: [{ label: 'General Surgery', code: 'SURG' }] },
     { name: 'Dr. Derek Shepherd', skills: [{ label: 'Neurosurgery', code: 'NEURO' }, { label: 'Surgery', code: 'SURG' }] },
@@ -65,6 +65,41 @@ export const setDemoStatus = (isEnabled) => {
 };
 
 /**
+ * Seeds ONLY the global business skills if they don't exist yet (for Demo Mode)
+ */
+export const seedBusinessSkills = async (businessId) => {
+    console.log('[Demo] Ensuring global business skills exist...');
+
+    // Check if we already have skills
+    const { count } = await supabase
+        .from('business_skills')
+        .select('*', { count: 'exact', head: true })
+        .eq('business_id', businessId);
+
+    if (count > 0) {
+        console.log('[Demo] Skills already exist, skipping auto-seed.');
+        return;
+    }
+
+    const businessSkills = DOCTORS.reduce((acc, doc) => {
+        doc.skills.forEach(skill => {
+            if (!acc.find(s => s.code === skill.code)) {
+                acc.push({
+                    business_id: businessId,
+                    name: skill.label,
+                    code: skill.code
+                });
+            }
+        });
+        return acc;
+    }, []);
+
+    const { error } = await supabase.from('business_skills').insert(businessSkills);
+    if (error) console.error('❌ FAILED to auto-seed business skills:', error);
+    else console.log(`✅ ${businessSkills.length} business skills auto-seeded.`);
+};
+
+/**
  * Wipes appointments and resets providers to Medical Demo state.
  * Does NOT bulk seed appointments anymore.
  */
@@ -111,6 +146,31 @@ export const initializeMedicalDemo = async (businessId) => {
 
     const seedOwner = providers.find(p => p.role?.toLowerCase() === 'admin') || providers[0];
 
+    // 2.5 Seed Global Business Skills
+    console.log('[Demo] Seeding global business skills...');
+    const businessSkills = DOCTORS.reduce((acc, doc) => {
+        doc.skills.forEach(skill => {
+            if (!acc.find(s => s.code === skill.code)) {
+                acc.push({
+                    business_id: businessId,
+                    name: skill.label,
+                    code: skill.code
+                });
+            }
+        });
+        return acc;
+    }, []);
+
+    // Wipe old business skills first
+    await supabase.from('business_skills').delete().eq('business_id', businessId);
+
+    const { error: skillError } = await supabase.from('business_skills').insert(businessSkills);
+    if (skillError) {
+        console.error('❌ FAILED to seed business skills:', skillError);
+    } else {
+        console.log(`✅ ${businessSkills.length} business skills seeded.`);
+    }
+
     // 3. Update Providers (Name & Skills)
     for (let i = 0; i < providers.length; i++) {
         if (!DOCTORS[i]) break;
@@ -119,7 +179,7 @@ export const initializeMedicalDemo = async (businessId) => {
             .from('profiles')
             .update({
                 full_name: DOCTORS[i].name,
-                skills: DOCTORS[i].skills,
+                skills: DOCTORS[i].skills.map(s => s.code),
                 is_online: true
             })
             .eq('id', providers[i].id);
