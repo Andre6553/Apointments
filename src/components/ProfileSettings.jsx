@@ -17,17 +17,27 @@ const ProfileSettings = () => {
     const [status, setStatus] = useState(null) // 'saved' | 'error'
     const [treatments, setTreatments] = useState([])
 
-    const [newTreatment, setNewTreatment] = useState({ name: '', duration: 30, cost: 0 })
-    const [editingId, setEditingId] = useState(null)
-    const [editValues, setEditValues] = useState({ name: '', duration: 30, cost: 0 })
     const [isLeavingOrg, setIsLeavingOrg] = useState(false)
+
+    // Skills State
+    const [skills, setSkills] = useState([]) // e.g. [{ label: 'Haircut', code: 'HC' }]
+    const [skillInput, setSkillInput] = useState('')
+    const [skillNameInput, setSkillNameInput] = useState('')
+
+    // Treatment with Skills
+    const [newTreatment, setNewTreatment] = useState({ name: '', duration: 30, cost: 0, required_skills: '' })
+    const [editingId, setEditingId] = useState(null)
+    const [editValues, setEditValues] = useState({ name: '', duration: 30, cost: 0, required_skills: '' })
+
 
     useEffect(() => {
         if (profile) {
             setFullName(profile.full_name || '')
             setWhatsapp(profile.whatsapp || '')
             setAcceptsTransfers(profile.accepts_transfers ?? true)
+            setAcceptsTransfers(profile.accepts_transfers ?? true)
             setCurrencySymbol(profile.currency_symbol || '$')
+            setSkills(profile.skills || [])
             fetchTreatments()
         }
     }, [profile])
@@ -83,19 +93,22 @@ const ProfileSettings = () => {
     const handleUpdateProfile = async (e) => {
         e.preventDefault()
         if (!user) return
+        performProfileUpdate({
+            full_name: fullName,
+            whatsapp: whatsapp,
+            accepts_transfers: acceptsTransfers,
+            currency_symbol: currencySymbol
+        })
+    }
 
+    const performProfileUpdate = async (updates) => {
         setIsSubmitting(true)
         setStatus(null)
 
         try {
             const { error } = await supabase
                 .from('profiles')
-                .update({
-                    full_name: fullName,
-                    whatsapp: whatsapp,
-                    accepts_transfers: acceptsTransfers,
-                    currency_symbol: currencySymbol
-                })
+                .update(updates)
                 .eq('id', user.id)
 
             if (error) throw error
@@ -111,6 +124,38 @@ const ProfileSettings = () => {
         }
     }
 
+    // Skills Manager
+    const handleAddSkill = () => {
+        if (!skillInput.trim()) return
+        const code = skillInput.toUpperCase().trim()
+        const label = skillNameInput.trim() || code
+
+        // Check if code exists (handle both string and object formats)
+        const exists = skills.some(s =>
+            (typeof s === 'string' ? s : s.code) === code
+        )
+        if (exists) return
+
+        const newSkill = { label, code }
+        const newSkills = [...skills, newSkill]
+
+        setSkills(newSkills)
+        setSkillInput('')
+        setSkillNameInput('')
+
+        // Auto-save
+        performProfileUpdate({ skills: newSkills })
+    }
+
+    const handleRemoveSkill = (codeToRemove) => {
+        const newSkills = skills.filter(s => {
+            const code = typeof s === 'string' ? s : s.code
+            return code !== codeToRemove
+        })
+        setSkills(newSkills)
+        performProfileUpdate({ skills: newSkills })
+    }
+
     const handleAddTreatment = async (e) => {
         e.preventDefault()
         if (!user || !newTreatment.name) return
@@ -122,14 +167,15 @@ const ProfileSettings = () => {
                     profile_id: user.id,
                     name: newTreatment.name,
                     duration_minutes: parseInt(newTreatment.duration),
-                    cost: parseFloat(newTreatment.cost)
+                    cost: parseFloat(newTreatment.cost),
+                    required_skills: newTreatment.required_skills ? newTreatment.required_skills.split(',').map(s => s.trim().toUpperCase()) : []
                 }])
                 .select()
                 .single()
 
             if (error) throw error
             setTreatments([...treatments, data])
-            setNewTreatment({ name: '', duration: 30, cost: 0 })
+            setNewTreatment({ name: '', duration: 30, cost: 0, required_skills: '' })
         } catch (err) {
             console.error('Error adding treatment:', err)
             alert('Failed to add treatment. (Note: Name must be unique)')
@@ -143,12 +189,19 @@ const ProfileSettings = () => {
                 .update({
                     name: editValues.name,
                     duration_minutes: parseInt(editValues.duration),
-                    cost: parseFloat(editValues.cost)
+                    cost: parseFloat(editValues.cost),
+                    required_skills: editValues.required_skills ? editValues.required_skills.split(',').map(s => s.trim().toUpperCase()) : []
                 })
                 .eq('id', id)
 
             if (error) throw error
-            setTreatments(treatments.map(t => t.id === id ? { ...t, ...editValues, duration_minutes: parseInt(editValues.duration), cost: parseFloat(editValues.cost) } : t))
+            setTreatments(treatments.map(t => t.id === id ? {
+                ...t,
+                ...editValues,
+                duration_minutes: parseInt(editValues.duration),
+                cost: parseFloat(editValues.cost),
+                required_skills: editValues.required_skills ? editValues.required_skills.split(',').map(s => s.trim().toUpperCase()) : []
+            } : t))
             setEditingId(null)
         } catch (err) {
             console.error('Error updating treatment:', err)
@@ -233,6 +286,69 @@ const ProfileSettings = () => {
                                     required
                                 />
                             </div>
+                        </div>
+                    </div>
+
+                    {/* Skills Editor */}
+                    <div className="space-y-4 pt-4 border-t border-white/5">
+                        <label className="text-xs font-bold text-slate-400 uppercase tracking-widest ml-1">My Skills</label>
+                        <div className="bg-slate-900/50 rounded-2xl p-4 border border-white/5">
+                            <div className="flex flex-wrap gap-2 mb-4">
+                                {skills.map((skill, idx) => {
+                                    const isObj = typeof skill === 'object'
+                                    const code = isObj ? skill.code : skill
+                                    const label = isObj ? skill.label : skill
+
+                                    return (
+                                        <div key={`${code}-${idx}`} className="bg-indigo-500 text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-2 shadow-lg shadow-indigo-500/20">
+                                            <span>
+                                                {label} <span className="opacity-50 font-normal">({code})</span>
+                                            </span>
+                                            <button
+                                                type="button"
+                                                onClick={() => handleRemoveSkill(code)}
+                                                className="hover:text-indigo-200 transition-colors"
+                                            >
+                                                <XCircle size={14} />
+                                            </button>
+                                        </div>
+                                    )
+                                })}
+                                {skills.length === 0 && <span className="text-slate-500 text-sm italic">No skills listed (Matches all basic services)</span>}
+                            </div>
+
+                            <div className="flex flex-col md:flex-row gap-2">
+                                <input
+                                    type="text"
+                                    value={skillNameInput}
+                                    onChange={e => setSkillNameInput(e.target.value)}
+                                    placeholder="Skill Name (e.g. Haircut)"
+                                    className="glass-input h-10 flex-[2] text-sm"
+                                />
+                                <input
+                                    type="text"
+                                    value={skillInput}
+                                    onChange={e => setSkillInput(e.target.value)}
+                                    placeholder="Code (HC)"
+                                    className="glass-input h-10 flex-1 text-sm uppercase"
+                                    onKeyDown={e => {
+                                        if (e.key === 'Enter') {
+                                            e.preventDefault();
+                                            handleAddSkill();
+                                        }
+                                    }}
+                                />
+                                <button
+                                    type="button"
+                                    onClick={handleAddSkill}
+                                    className="bg-indigo-500 hover:bg-indigo-600 text-white px-6 h-10 rounded-xl font-bold text-xs shadow-lg shadow-indigo-500/20 transition-all active:scale-95"
+                                >
+                                    ADD
+                                </button>
+                            </div>
+                            <p className="text-[10px] text-slate-500 mt-2 ml-1">
+                                * The Code (e.g. HC) matches the 'Req. Skills' in your Service definitions.
+                            </p>
                         </div>
                     </div>
 
@@ -354,21 +470,20 @@ const ProfileSettings = () => {
                                 required
                             />
                         </div>
-                        <div className="md:col-span-4 space-y-2">
-                            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Cost ({currencySymbol})</label>
-                            <div className="flex gap-2">
-                                <input
-                                    type="number"
-                                    placeholder="0"
-                                    className="glass-input w-full h-12 text-sm"
-                                    value={newTreatment.cost}
-                                    onChange={e => setNewTreatment({ ...newTreatment, cost: e.target.value })}
-                                    required
-                                />
-                                <button type="submit" className="h-12 w-12 bg-primary rounded-xl flex items-center justify-center text-white shadow-lg shadow-primary/20 hover:scale-105 transition-transform shrink-0">
-                                    <Save size={18} />
-                                </button>
-                            </div>
+                        <div className="md:col-span-3 space-y-2">
+                            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Req. Skills (Optional)</label>
+                            <input
+                                type="text"
+                                placeholder="e.g. HC,COL"
+                                className="glass-input w-full h-12 text-sm uppercase"
+                                value={newTreatment.required_skills}
+                                onChange={e => setNewTreatment({ ...newTreatment, required_skills: e.target.value })}
+                            />
+                        </div>
+                        <div className="md:col-span-12 flex justify-end">
+                            <button type="submit" className="h-12 px-6 bg-primary rounded-xl flex items-center justify-center text-white shadow-lg shadow-primary/20 hover:scale-105 transition-transform gap-2 font-bold text-sm">
+                                <Save size={18} /> Add Service
+                            </button>
                         </div>
                     </form>
 
@@ -427,14 +542,29 @@ const ProfileSettings = () => {
                                                     </div>
                                                     <div>
                                                         <p className="text-sm font-bold text-white">{t.name}</p>
-                                                        <p className="text-xs text-slate-500 font-medium">{currencySymbol}{t.cost}</p>
+                                                        <div className="flex items-center gap-2">
+                                                            <p className="text-xs text-slate-500 font-medium">{currencySymbol}{t.cost}</p>
+                                                            {Array.isArray(t.required_skills) && t.required_skills.length > 0 && (
+                                                                <div className="flex gap-1">
+                                                                    {t.required_skills.map(s => (
+                                                                        <span key={s} className="px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 text-[10px] font-bold">{s}</span>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                        </div>
                                                     </div>
                                                 </div>
+
                                                 <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                                                     <button
                                                         onClick={() => {
                                                             setEditingId(t.id)
-                                                            setEditValues({ name: t.name, duration: t.duration_minutes, cost: t.cost })
+                                                            setEditValues({
+                                                                name: t.name,
+                                                                duration: t.duration_minutes,
+                                                                cost: t.cost,
+                                                                required_skills: Array.isArray(t.required_skills) ? t.required_skills.join(',') : ''
+                                                            })
                                                         }}
                                                         className="p-2 text-slate-500 hover:text-primary transition-colors hover:bg-white/5 rounded-lg"
                                                     >
@@ -458,46 +588,48 @@ const ProfileSettings = () => {
             </div>
 
 
-            {profile?.business_id && (
-                <div className="glass-card p-8 border-white/5 space-y-6">
-                    <div className="flex items-center gap-4">
-                        <div className="p-3 rounded-2xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
-                            <Building2 size={24} />
-                        </div>
-                        <div>
-                            <h4 className="font-bold text-white">Organization Membership</h4>
-                            <p className="text-xs text-slate-500">Currently linked to {profile.business?.name}</p>
-                        </div>
-                    </div>
-
-                    <div className="p-6 rounded-2xl bg-amber-500/5 border border-amber-500/10 space-y-4">
-                        <div className="flex gap-3">
-                            <AlertTriangle className="text-amber-500 shrink-0" size={18} />
-                            <div className="space-y-1">
-                                <p className="text-sm font-bold text-amber-500">Resignation Notice</p>
-                                <p className="text-xs text-slate-400 leading-relaxed">
-                                    Leaving this organization will remove your access to the shared dashboard,
-                                    team schedule, and the business client list. Your profile will return to
-                                    individual status.
-                                </p>
+            {
+                profile?.business_id && (
+                    <div className="glass-card p-8 border-white/5 space-y-6">
+                        <div className="flex items-center gap-4">
+                            <div className="p-3 rounded-2xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                                <Building2 size={24} />
+                            </div>
+                            <div>
+                                <h4 className="font-bold text-white">Organization Membership</h4>
+                                <p className="text-xs text-slate-500">Currently linked to {profile.business?.name}</p>
                             </div>
                         </div>
 
-                        <button
-                            onClick={handleLeaveOrganization}
-                            disabled={isLeavingOrg}
-                            className="w-full h-12 rounded-xl border border-white/10 hover:bg-rose-500/10 hover:border-rose-500/30 text-slate-400 hover:text-rose-400 font-bold text-sm flex items-center justify-center gap-2 transition-all group"
-                        >
-                            {isLeavingOrg ? (
-                                <Loader2 size={18} className="animate-spin" />
-                            ) : (
-                                <LogOut size={18} className="group-hover:-translate-x-1 transition-transform" />
-                            )}
-                            Leave Organization
-                        </button>
+                        <div className="p-6 rounded-2xl bg-amber-500/5 border border-amber-500/10 space-y-4">
+                            <div className="flex gap-3">
+                                <AlertTriangle className="text-amber-500 shrink-0" size={18} />
+                                <div className="space-y-1">
+                                    <p className="text-sm font-bold text-amber-500">Resignation Notice</p>
+                                    <p className="text-xs text-slate-400 leading-relaxed">
+                                        Leaving this organization will remove your access to the shared dashboard,
+                                        team schedule, and the business client list. Your profile will return to
+                                        individual status.
+                                    </p>
+                                </div>
+                            </div>
+
+                            <button
+                                onClick={handleLeaveOrganization}
+                                disabled={isLeavingOrg}
+                                className="w-full h-12 rounded-xl border border-white/10 hover:bg-rose-500/10 hover:border-rose-500/30 text-slate-400 hover:text-rose-400 font-bold text-sm flex items-center justify-center gap-2 transition-all group"
+                            >
+                                {isLeavingOrg ? (
+                                    <Loader2 size={18} className="animate-spin" />
+                                ) : (
+                                    <LogOut size={18} className="group-hover:-translate-x-1 transition-transform" />
+                                )}
+                                Leave Organization
+                            </button>
+                        </div>
                     </div>
-                </div>
-            )}
+                )
+            }
 
             <div className="glass-card p-6 border-white/5 bg-white/[0.02]">
                 <div className="flex items-center gap-4 text-slate-500">
@@ -510,7 +642,7 @@ const ProfileSettings = () => {
                     </div>
                 </div>
             </div>
-        </div>
+        </div >
     )
 }
 

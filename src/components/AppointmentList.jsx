@@ -298,11 +298,11 @@ const AppointmentList = () => {
                         {appointments
                             .filter(apt => {
                                 if (apt.status !== 'pending') return true;
-                                // Hide sessions that are more than 30 minutes in the past
+                                // Hide sessions that are more than 4 hours in the past (to avoid clutter)
                                 const startTime = new Date(apt.scheduled_start).getTime();
                                 const now = new Date().getTime();
                                 const diffMinutes = (now - startTime) / 60000;
-                                return diffMinutes < 30;
+                                return diffMinutes < 240; // Extended from 30m to 4h to allow late starts
                             })
                             .map((apt, index) => (
                                 <motion.div
@@ -409,8 +409,16 @@ const AppointmentList = () => {
 
                                             <div className="space-y-3">
                                                 <div className="flex flex-col gap-2">
-                                                    <div className="flex items-center gap-2 text-[11px] font-bold text-primary uppercase tracking-wider bg-primary/5 border border-primary/10 px-3 py-1.5 rounded-xl w-fit">
-                                                        <Sparkles size={12} /> {apt.treatment_name || 'Standard Session'}
+                                                    <div className="flex items-center flex-wrap gap-2">
+                                                        <div className="flex items-center gap-2 text-[11px] font-bold text-primary uppercase tracking-wider bg-primary/5 border border-primary/10 px-3 py-1.5 rounded-xl w-fit">
+                                                            <Sparkles size={12} /> {apt.treatment_name || 'Standard Session'}
+                                                        </div>
+
+                                                        {apt.required_skills?.map((skill, si) => (
+                                                            <span key={si} className="text-[9px] font-black text-slate-500 bg-white/5 px-2 py-1 rounded-lg border border-white/10 uppercase tracking-[0.1em]">
+                                                                {skill}
+                                                            </span>
+                                                        ))}
                                                     </div>
 
                                                     <div className="flex items-center gap-4 text-xs text-slate-400 font-medium ml-1">

@@ -367,13 +367,21 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
                 }
             }
 
-            // 3. Check Appointments
+            // 3. Check Appointments (Buffer-aware)
             if (existing && existing.length > 0) {
+                // Fetch buffer settings from profile (injected or fetched)
+                const bufferMs = (profile?.enable_buffer ? (profile.buffer_minutes || 0) : 0) * 60000;
+
                 for (const apt of existing) {
                     const aS = new Date(apt.scheduled_start);
                     const aE = new Date(aS.getTime() + apt.duration_minutes * 60000);
-                    if (slotStart < aE && slotEnd > aS) {
-                        setErrorWithSuggestion('Slot already booked');
+
+                    const aE_buffered = aE.getTime() + bufferMs;
+                    const myE_buffered = slotEnd.getTime() + bufferMs;
+
+                    // Buffer-aware overlap: any intersection of [S, E+Buffer] ranges
+                    if (slotStart.getTime() < aE_buffered && myE_buffered > aS.getTime()) {
+                        setErrorWithSuggestion('Slot already booked (includes buffer)');
                         return;
                     }
                 }
@@ -408,7 +416,7 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
             const { data } = await supabase
                 .from('treatments')
                 .select('*')
-                .eq('profile_id', user.id)
+                .eq('business_id', profile?.business_id)
                 .order('name');
             if (data) setTreatments(data);
         } catch (err) {
@@ -431,13 +439,28 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
                 treatmentId: selected.id,
                 treatmentName: selected.name,
                 duration: selected.duration_minutes,
-                cost: selected.cost
+                cost: selected.cost,
+                requiredSkills: selected.required_skills || []
             });
         }
     };
 
     const handleSubmit = async (e) => {
         e.preventDefault();
+
+        // 1. Check Provider Skills
+        const providerSkillsRaw = Array.isArray(profile?.skills) ? profile.skills : [];
+        const providerCodes = providerSkillsRaw.map(s => (typeof s === 'object' ? s.code : s));
+        const requiredSkills = formData.requiredSkills || [];
+
+        if (requiredSkills.length > 0) {
+            const hasAllSkills = requiredSkills.every(req => providerCodes.includes(req));
+            if (!hasAllSkills) {
+                alert(`Cannot book: You do not have the required skills (${requiredSkills.join(', ')}) to perform this treatment.`);
+                return;
+            }
+        }
+
         if (slotStatus.type === 'error') {
             alert('Cannot book: ' + slotStatus.message);
             return;
@@ -458,6 +481,8 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
                 duration_minutes: parseInt(formData.duration),
                 notes: formData.notes,
                 treatment_name: formData.treatmentName,
+                treatment_id: formData.treatmentId || null,
+                required_skills: formData.requiredSkills || [],
                 cost: formData.cost,
                 status: editData ? editData.status : 'pending'
             };

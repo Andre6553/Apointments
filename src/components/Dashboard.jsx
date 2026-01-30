@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useLocation } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../hooks/useAuth';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -35,18 +36,50 @@ import {
 } from 'lucide-react';
 import SubscriptionPage from './SubscriptionPage';
 import MasterDashboard from './MasterDashboard';
+import { initializeMedicalDemo, runStressTest, getDemoStatus, setDemoStatus } from '../lib/demoSeeder';
 
 const Dashboard = () => {
     const { user, profile, signOut } = useAuth();
     const [activeTab, setActiveTab] = useState('appointments');
     const [isSidebarOpen, setIsSidebarOpen] = useState(false);
     const [currentTime, setCurrentTime] = useState(new Date());
+    const [demoMode, setDemoMode] = useState(getDemoStatus()); // DEMO MODE
     const [selectedNotification, setSelectedNotification] = useState(null);
     const [isResponseModalOpen, setIsResponseModalOpen] = useState(false);
     const { count: alertCount } = useWorkloadAlerts();
 
+    // Global Messaging State
+    const [unreadChatCount, setUnreadChatCount] = useState(0);
+    const [incomingMessageSender, setIncomingMessageSender] = useState(null);
+    const [manualChatTarget, setManualChatTarget] = useState(null); // control explicit opens
+    const [deepLinkClientId, setDeepLinkClientId] = useState(null); // For deep linking to clients
+
+    const location = useLocation();
+
+    // Listen for URL changes (Deep Linking)
+    useEffect(() => {
+        const path = location.pathname;
+        if (path.startsWith('/clients/')) {
+            const id = path.split('/')[2];
+            // Safety: Ensure id is not null, undefined, or the literal string "undefined"
+            if (id && id !== 'undefined') {
+                setDeepLinkClientId(id);
+                setActiveTab('clients');
+            }
+        }
+    }, [location]);
+
     useEffect(() => {
         const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+
+        // DEMO MODE: Auto-Seed Seeder
+        const demoInterval = setInterval(() => {
+            if (demoMode && user) {
+                runStressTest(user.user_metadata?.business_id || profile?.business_id);
+            }
+        }, 10000); // Check every 10s if we need to add pressure
+
+        // ... existing heartbeats ...
 
         // Proactive Heartbeat: Check for session overruns every 60 seconds
         const overrunMonitor = setInterval(() => {
@@ -54,11 +87,65 @@ const Dashboard = () => {
             checkActiveOverruns();
         }, 60000);
 
+        // Unlock Audio Context on first interaction
+        const unlockAudio = () => {
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            if (AudioContext) {
+                const ctx = new AudioContext();
+                ctx.resume().then(() => {
+                    document.removeEventListener('click', unlockAudio);
+                    document.removeEventListener('keydown', unlockAudio);
+                    document.removeEventListener('touchstart', unlockAudio);
+                });
+            }
+        };
+
+        document.addEventListener('click', unlockAudio);
+        document.addEventListener('keydown', unlockAudio);
+        document.addEventListener('touchstart', unlockAudio);
+
+        // Messaging Polling (30s interval)
+        const fetchMessages = async () => {
+            if (!user) return;
+            const { data, error } = await supabase
+                .from('temporary_messages')
+                .select('sender_id, created_at, sender:profiles!sender_id(full_name, id, role)')
+                .eq('receiver_id', user.id)
+                .eq('is_read', false)
+                .order('created_at', { ascending: false });
+
+            if (data && data.length > 0) {
+                // If count increased, play sound
+                if (data.length > unreadChatCount) {
+                    // Check if valid module first
+                    import('../utils/sound').then(mod => {
+                        if (mod && mod.playNotificationSound) {
+                            mod.playNotificationSound();
+                        }
+                    });
+                }
+                setUnreadChatCount(data.length);
+                setIncomingMessageSender(data[0].sender);
+            } else {
+                setUnreadChatCount(0);
+                setIncomingMessageSender(null);
+            }
+        };
+
+        // Initial fetch
+        fetchMessages();
+        const msgPoller = setInterval(fetchMessages, 30000);
+
         return () => {
             clearInterval(timer);
+            clearInterval(demoInterval);
             clearInterval(overrunMonitor);
+            clearInterval(msgPoller);
+            document.removeEventListener('click', unlockAudio);
+            document.removeEventListener('keydown', unlockAudio);
+            document.removeEventListener('touchstart', unlockAudio);
         };
-    }, []);
+    }, [user, unreadChatCount]);
 
     // Sync active_tab to database for Do Not Disturb (DND) logic
     useEffect(() => {
@@ -143,9 +230,11 @@ const Dashboard = () => {
                     </div>
                 </div>
             ),
-            clients: <ClientList />,
+            clients: <ClientList initialClientId={deepLinkClientId} onClientModalClose={() => setDeepLinkClientId(null)} />,
             schedule: <ScheduleSettings />,
-            balancer: <WorkloadBalancer />,
+            schedule: <ScheduleSettings />,
+            balancer: <WorkloadBalancer initialChatSender={manualChatTarget} />,
+            reports: <Reports />,
             reports: <Reports />,
             organization: <OrganizationSettings />,
             profile: <ProfileSettings />,
@@ -258,6 +347,45 @@ const Dashboard = () => {
                 </div>
 
                 <div className="mt-8 space-y-4">
+                    {/* DEMO CONTROLS (Admin Only) */}
+                    {profile?.role === 'Admin' && (
+                        <div className="bg-slate-900/50 rounded-2xl p-4 border border-white/5 space-y-3">
+                            <div className="flex items-center justify-between">
+                                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Medical Demo</span>
+                                <button
+                                    onClick={async () => {
+                                        const newState = !demoMode;
+                                        setDemoMode(newState);
+                                        setDemoStatus(newState);
+                                        if (newState) {
+                                            await initializeMedicalDemo(profile.business_id);
+                                            window.location.reload(); // Force refresh to see new names
+                                        }
+                                    }}
+                                    className={`relative w-10 h-5 rounded-full transition-colors ${demoMode ? 'bg-indigo-500' : 'bg-slate-700'}`}
+                                >
+                                    <div className={`absolute top-1 left-1 w-3 h-3 rounded-full bg-white transition-transform ${demoMode ? 'translate-x-5' : 'translate-x-0'}`} />
+                                </button>
+                            </div>
+
+                            {demoMode && (
+                                <button
+                                    onClick={async () => {
+                                        if (confirm('RESET DATABASE? This will wipe all appointments.')) {
+                                            await initializeMedicalDemo(profile.business_id);
+                                            window.location.reload();
+                                        }
+                                    }}
+                                    className="w-full py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs font-bold rounded-lg border border-red-500/20 transition-colors"
+                                >
+                                    Reset / Re-Seed
+                                </button>
+                            )}
+                            <p className="text-[10px] text-slate-500 leading-tight">
+                                {demoMode ? "Stress Test Active. Generates load automatically." : "System Normal."}
+                            </p>
+                        </div>
+                    )}
                     <button
                         onClick={() => setActiveTab('profile')}
                         className="w-full text-left p-4 rounded-3xl bg-surface/50 border border-white/5 backdrop-blur-md relative overflow-hidden group transition-all hover:border-primary/30"
@@ -334,6 +462,30 @@ const Dashboard = () => {
                                     </p>
                                 </div>
                                 <div className="flex items-center gap-6">
+                                    {unreadChatCount > 0 && incomingMessageSender && (
+                                        <motion.button
+                                            initial={{ opacity: 0, x: 20 }}
+                                            animate={{ opacity: 1, x: 0 }}
+                                            exit={{ opacity: 0, x: 20 }}
+                                            onClick={() => {
+                                                setManualChatTarget(incomingMessageSender);
+                                                setActiveTab('balancer');
+                                            }}
+                                            className="hidden sm:flex items-center gap-3 px-4 py-2 bg-gradient-to-r from-red-600 to-rose-600 rounded-xl shadow-lg shadow-red-500/20 hover:shadow-red-500/40 transition-all active:scale-95 group"
+                                        >
+                                            <div className="relative">
+                                                <div className="w-2 h-2 rounded-full bg-white animate-pulse absolute -top-0.5 -right-0.5" />
+                                                <div className="p-1.5 bg-white/20 rounded-lg">
+                                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-white"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+                                                </div>
+                                            </div>
+                                            <div className="text-left">
+                                                <p className="text-[10px] font-bold text-red-100 uppercase tracking-wider leading-none mb-0.5">New Message</p>
+                                                <p className="text-xs font-bold text-white leading-none">From {incomingMessageSender.full_name?.split(' ')[0]}</p>
+                                            </div>
+                                            <ChevronRight size={16} className="text-white/70 group-hover:text-white group-hover:translate-x-1 transition-transform" />
+                                        </motion.button>
+                                    )}
                                     <NotificationCenter onOpenNotification={(notif) => {
                                         if (notif.type === 'transfer_request') {
                                             setSelectedNotification(notif);

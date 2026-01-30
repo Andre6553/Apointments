@@ -34,10 +34,15 @@ export const AuthProvider = ({ children }) => {
             .single()
 
         if (data) {
-            // Flatten subscription if it exists (it's a 1-to-1 but Supabase returns array)
+            // Flatten subscription if it exists
+            // CRITIAL FIX: Sort by expiry to ensure we grab the LATEST/ACTIVE one, not an old expired one
+            const sortedSubs = data.subscription?.sort((a, b) =>
+                new Date(b.expires_at || 0) - new Date(a.expires_at || 0)
+            ) || [];
+
             const profileData = {
                 ...data,
-                subscription: data.subscription?.[0] || null
+                subscription: sortedSubs[0] || null
             }
             setProfile(profileData)
             setCache(CACHE_KEYS.PROFILE, profileData)
@@ -155,11 +160,37 @@ export const AuthProvider = ({ children }) => {
         }
     }, [])
 
+    // Heartbeat: Update last_seen every 30 seconds
+    useEffect(() => {
+        if (!user) return
 
+        const sendHeartbeat = async () => {
+            await supabase.from('profiles').update({ last_seen: new Date().toISOString(), is_online: true }).eq('id', user.id)
+        }
+
+        sendHeartbeat() // Initial ping
+        const interval = setInterval(sendHeartbeat, 30000)
+
+        return () => clearInterval(interval)
+    }, [user])
+
+    // Handle Window Close / Tab Close
+    useEffect(() => {
+        const handleUnload = async () => {
+            if (user?.id) {
+                console.log('Marking offline...')
+                await supabase.from('profiles').update({ is_online: false, active_chat_id: null }).eq('id', user.id)
+            }
+        }
+
+        window.addEventListener('beforeunload', handleUnload)
+        return () => window.removeEventListener('beforeunload', handleUnload)
+    }, [user])
 
     const signOut = async () => {
         if (user) {
-            await supabase.from('profiles').update({ is_online: false }).eq('id', user.id)
+            // Updated to also clear active_chat_id
+            await supabase.from('profiles').update({ is_online: false, active_chat_id: null }).eq('id', user.id)
         }
         return supabase.auth.signOut()
     }

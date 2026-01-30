@@ -42,30 +42,36 @@ export const calculateAndApplyDelay = async (appointmentId, actualTime, type = '
 
     console.log(`[DelayEngine] Threshold breached (${delayMinutes}m > ${threshold}m). Propagating delay...`);
 
-    // 2. Find all subsequent PENDING appointments for this provider today
+    // 2. Find all subsequent PENDING appointments for this provider TODAY ONLY
+    const startOfDay = new Date(currentApt.scheduled_start);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(startOfDay);
+    endOfDay.setHours(23, 59, 59, 999);
+
     const { data: subsequentApts, error: subError } = await supabase
         .from('appointments')
         .select('*, client:clients(first_name, last_name, phone, whatsapp_opt_in), provider:profiles!appointments_assigned_profile_id_fkey(whatsapp)')
         .eq('assigned_profile_id', currentApt.assigned_profile_id)
         .eq('status', 'pending')
         .gt('scheduled_start', currentApt.scheduled_start)
+        .lte('scheduled_start', endOfDay.toISOString()) // LIMIT TO SAME DAY
         .order('scheduled_start', { ascending: true })
 
     if (subError || !subsequentApts.length) return
 
     // 3. Update delays in Database
-    console.log(`[DelayEngine] Propagating ${delayMinutes}m delay to ${subsequentApts.length} appointments...`);
+    console.log(`[DelayEngine] Propagating ${delayMinutes}m delay to ${subsequentApts.length} appointments (Batch Update)...`);
 
-    for (const apt of subsequentApts) {
-        const { error: updateError } = await supabase
-            .from('appointments')
-            .update({ delay_minutes: delayMinutes })
-            .eq('id', apt.id);
+    // Batch update via Promise.all (or single query if IDs collected)
+    // Using single query is better: .in('id', ids).update(...)
+    const ids = subsequentApts.map(a => a.id);
+    const { error: batchError } = await supabase
+        .from('appointments')
+        .update({ delay_minutes: delayMinutes })
+        .in('id', ids);
 
-        if (updateError) {
-            console.error(`[DelayEngine] Failed to update delay for apt ${apt.id}:`, updateError);
-            // If it's a 403, we still want to know if the others succeed
-        }
+    if (batchError) {
+        console.error('[DelayEngine] Batch update failed:', batchError);
     }
 
     // 4. Notify Clients or Fallback to Provider
@@ -81,8 +87,12 @@ export const calculateAndApplyDelay = async (appointmentId, actualTime, type = '
             if (sentCount === 0 && apt.provider?.whatsapp) {
                 const fallbackMsg = `⚠️ FALLBACK: ${apt.client?.first_name} ${apt.client?.last_name} is NOT opted into WhatsApp. Their appointment is running ${delayMinutes} mins late. Please call them at ${apt.client?.phone} to inform them manually. - ${bizName}`;
 
-                const { success } = await sendWhatsApp(apt.provider.whatsapp, fallbackMsg);
-                if (success) {
+                try {
+                    const { success } = await sendWhatsApp(apt.provider.whatsapp, fallbackMsg);
+                    // Always update to prevent loop
+                    await supabase.from('appointments').update({ notifications_sent: 1 }).eq('id', apt.id);
+                } catch (err) {
+                    console.error('[DelayEngine] Fallback provider msg failed:', err);
                     await supabase.from('appointments').update({ notifications_sent: 1 }).eq('id', apt.id);
                 }
             }
@@ -98,8 +108,22 @@ export const calculateAndApplyDelay = async (appointmentId, actualTime, type = '
         }
 
         if (shouldSend) {
-            const success = await sendDelayNotification(apt.client, delayMinutes, apt.scheduled_start, sentCount + 1);
-            if (success) {
+            try {
+                const success = await sendDelayNotification(apt.client, delayMinutes, apt.scheduled_start, sentCount + 1);
+
+                // CRITICAL FIX: Always increment counter to prevent infinite retry loops on failure
+                // If it failed, we log it, but we stop bothering the system.
+                await supabase
+                    .from('appointments')
+                    .update({ notifications_sent: sentCount + 1 })
+                    .eq('id', apt.id);
+
+                if (!success) {
+                    console.warn(`[DelayEngine] Notification failed for ${apt.id}, but counter incremented to stop looping.`);
+                }
+            } catch (err) {
+                console.error(`[DelayEngine] Error sending notification for ${apt.id}:`, err);
+                // Force update to stop loop
                 await supabase
                     .from('appointments')
                     .update({ notifications_sent: sentCount + 1 })

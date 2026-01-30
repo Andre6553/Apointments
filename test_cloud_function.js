@@ -25,32 +25,23 @@ function loadEnv() {
 
 const env = loadEnv();
 const supabaseUrl = env.VITE_SUPABASE_URL || env.SUPABASE_URL;
-const supabaseKey = env.SUPABASE_SERVICE_ROLE_KEY || env.VITE_SUPABASE_SERVICE_ROLE_KEY;
+const supabaseKey = env.VITE_SUPABASE_ANON_KEY || env.SUPABASE_ANON_KEY;
 
-if (!supabaseKey) {
-    console.error("Missing SERVICE_ROLE_KEY, cannot perform schema migration via RPC.");
-    process.exit(1);
-}
+console.log('Testing Cloud Function: send-whatsapp');
+console.log('URL:', supabaseUrl);
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-async function run() {
-    try {
-        const migrationSql = fs.readFileSync(path.join(rootDir, 'architecture', 'check_profiles_schema.sql'), 'utf8');
-        console.log('Running migration via RPC exec_sql...');
+async function test() {
+    const { data, error } = await supabase.functions.invoke('send-whatsapp', {
+        body: { to: '+27761963997', message: '☁️ Hello from the Cloud Brain! If you see this, Supabase Edge Functions are working.' }
+    });
 
-        const { error } = await supabase.rpc('exec_sql', { sql: migrationSql });
-
-        if (error) {
-            console.error('Migration RPC failed:', error);
-            // Fallback: Try specific error handling or just log it
-            // If exec_sql doesn't exist, this will fail.
-        } else {
-            console.log('Migration successful!');
-        }
-    } catch (e) {
-        console.error('Migration failed:', e);
+    if (error) {
+        console.error('❌ Function call failed:', error);
+    } else {
+        console.log('✅ Success! Data:', data);
     }
 }
 
-run();
+test();

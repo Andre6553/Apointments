@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../hooks/useAuth';
 import EditClientModal from './EditClientModal';
 
-const ClientList = () => {
+const ClientList = ({ initialClientId, onClientModalClose }) => {
     const [clients, setClients] = useState([]);
     const [loading, setLoading] = useState(true);
     const [showAdd, setShowAdd] = useState(false);
@@ -96,6 +96,25 @@ const ClientList = () => {
             supabase.removeChannel(channel);
         };
     }, [page, debouncedSearch, profile]);
+
+    // Handle Deep Linking (initialClientId)
+    useEffect(() => {
+        if (initialClientId && initialClientId !== 'undefined') {
+            const fetchInitialClient = async () => {
+                const { data, error } = await supabase
+                    .from('clients')
+                    .select('*')
+                    .eq('id', initialClientId)
+                    .single();
+
+                if (data && !error) {
+                    setEditingClient(data);
+                    setIsEditOpen(true);
+                }
+            };
+            fetchInitialClient();
+        }
+    }, [initialClientId]);
 
     const handleLoadMore = () => {
         setPage(prev => prev + 1);
@@ -340,7 +359,11 @@ const ClientList = () => {
 
             <EditClientModal
                 isOpen={isEditOpen}
-                onClose={() => { setIsEditOpen(false); setEditingClient(null) }}
+                onClose={() => {
+                    setIsEditOpen(false);
+                    setEditingClient(null);
+                    if (onClientModalClose) onClientModalClose();
+                }}
                 client={editingClient}
                 onUpdate={fetchClients}
             />

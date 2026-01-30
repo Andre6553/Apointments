@@ -53,10 +53,10 @@ console.log(`From: ${FROM_NUMBER}`);
 console.log('---------------------------');
 
 // --- Helper to Send Template Message ---
-const sendTemplateMessage = async (to, date, time) => {
+const sendTemplateMessage = async (to, date, time, clientName, providerName) => {
     return new Promise((resolve, reject) => {
         try {
-            const message = `Your appointment is coming up on ${date} at ${time}`;
+            const message = `Hi ${clientName || 'there'}, your appointment with ${providerName || 'your doctor'} is coming up on ${date} at ${time}`;
             // NOTE: This body strictly matches the Sandbox 'Appointment Reminder' template.
             // If using a Live number, you must create a template with body: "Your appointment is coming up on {{1}} at {{2}}"
             // and submit it for approval.
@@ -113,6 +113,7 @@ const checkReminders = async () => {
             .select(`
                 id, scheduled_start, 
                 client:clients(first_name, phone, whatsapp_opt_in),
+                provider:profiles!appointments_assigned_profile_id_fkey(full_name),
                 notifications_sent
             `)
             .eq('status', 'pending')
@@ -132,14 +133,22 @@ const checkReminders = async () => {
             for (const apt of apts) {
                 if (!apt.client?.phone || !apt.client?.whatsapp_opt_in) continue;
 
-                // Format for Template
-                const dateStr = format(new Date(apt.scheduled_start), 'MMM do');
-                const timeStr = format(new Date(apt.scheduled_start), 'HH:mm');
+                const scheduledDate = new Date(apt.scheduled_start);
+                const localDate = new Date(scheduledDate.getTime() + (2 * 60 * 60 * 1000));
 
-                const sent = await sendTemplateMessage(apt.client.phone, dateStr, timeStr);
+                const dateStr = format(localDate, 'MMM do');
+                const timeStr = format(localDate, 'HH:mm');
+
+                const sent = await sendTemplateMessage(
+                    apt.client.phone,
+                    dateStr,
+                    timeStr,
+                    apt.client.first_name,
+                    apt.provider?.full_name
+                );
 
                 if (sent) {
-                    console.log(`[ReminderCron] Sent reminder to ${apt.client.first_name}`);
+                    console.log(`[ReminderCron] Sent personalized reminder to ${apt.client.first_name}`);
                     await supabase.from('appointments').update({ reminder_sent: true }).eq('id', apt.id);
                 }
             }

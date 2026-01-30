@@ -17,15 +17,20 @@ export const sendWhatsApp = async (phone, message) => {
 
         if (useProxy) {
             console.log(`[WhatsApp] Attempting local proxy send to ${targetPhone}...`);
-            const proxyRes = await fetch('http://localhost:3001/send-whatsapp', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ to: targetPhone, message })
-            });
+            try {
+                const proxyRes = await fetch('http://localhost:3001/send-whatsapp', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ to: targetPhone, message })
+                });
 
-            if (proxyRes.ok) {
-                console.log('[WhatsApp] Sent via local proxy successfully');
-                return { success: true, via: 'proxy' };
+                if (proxyRes.ok) {
+                    console.log('[WhatsApp] Sent via local proxy successfully');
+                    return { success: true, via: 'proxy' };
+                }
+            } catch (proxyErr) {
+                console.warn('[WhatsApp] Local proxy unavailable, falling back to Edge Function:', proxyErr.message);
+                // Fall through to Edge Function
             }
         }
 

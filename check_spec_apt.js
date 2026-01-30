@@ -26,31 +26,27 @@ function loadEnv() {
 const env = loadEnv();
 const supabaseUrl = env.VITE_SUPABASE_URL || env.SUPABASE_URL;
 const supabaseKey = env.SUPABASE_SERVICE_ROLE_KEY || env.VITE_SUPABASE_SERVICE_ROLE_KEY;
-
-if (!supabaseKey) {
-    console.error("Missing SERVICE_ROLE_KEY, cannot perform schema migration via RPC.");
-    process.exit(1);
-}
-
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-async function run() {
-    try {
-        const migrationSql = fs.readFileSync(path.join(rootDir, 'architecture', 'check_profiles_schema.sql'), 'utf8');
-        console.log('Running migration via RPC exec_sql...');
+async function checkApt() {
+    const { data: apt } = await supabase
+        .from('appointments')
+        .select('*')
+        .eq('id', '08546312-41ae-4b10-bf37-28c427e83603')
+        .single();
 
-        const { error } = await supabase.rpc('exec_sql', { sql: migrationSql });
-
-        if (error) {
-            console.error('Migration RPC failed:', error);
-            // Fallback: Try specific error handling or just log it
-            // If exec_sql doesn't exist, this will fail.
-        } else {
-            console.log('Migration successful!');
-        }
-    } catch (e) {
-        console.error('Migration failed:', e);
+    if (apt) {
+        console.log('Appointment Details:');
+        console.log(`- Scheduled Start: ${apt.scheduled_start}`);
+        const start = new Date(apt.scheduled_start);
+        const now = new Date();
+        const diffMins = (now - start) / 60000;
+        console.log(`- Time since start: ${diffMins.toFixed(1)} minutes`);
+        console.log(`- Status: ${apt.status}`);
+        console.log(`- Assigned To: ${apt.assigned_profile_id}`);
+    } else {
+        console.log('Appointment not found.');
     }
 }
 
-run();
+checkApt();
