@@ -37,6 +37,7 @@ import {
 import SubscriptionPage from './SubscriptionPage';
 import MasterDashboard from './MasterDashboard';
 import { initializeMedicalDemo, runStressTest, getDemoStatus, setDemoStatus, seedBusinessSkills } from '../lib/demoSeeder';
+import { clearLocalLogs } from '../lib/logger';
 
 const Dashboard = () => {
     const { user, profile, signOut } = useAuth();
@@ -44,6 +45,7 @@ const Dashboard = () => {
     const [isSidebarOpen, setIsSidebarOpen] = useState(false);
     const [currentTime, setCurrentTime] = useState(new Date());
     const [demoMode, setDemoMode] = useState(getDemoStatus()); // DEMO MODE
+    const [loggingEnabled, setLoggingEnabled] = useState(localStorage.getItem('logging_enabled') === 'true');
     const [selectedNotification, setSelectedNotification] = useState(null);
     const [isResponseModalOpen, setIsResponseModalOpen] = useState(false);
     const { count: alertCount } = useWorkloadAlerts();
@@ -380,6 +382,61 @@ const Dashboard = () => {
                             <p className="text-[10px] text-slate-500 leading-tight">
                                 {demoMode ? "Stress Test Active. Generates load automatically." : "System Normal."}
                             </p>
+
+                            {/* LOGGING TOGGLE */}
+                            <div className="flex items-center justify-between pt-2 border-t border-white/5">
+                                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Activity Logs</span>
+                                <button
+                                    onClick={() => {
+                                        const newState = !loggingEnabled;
+                                        setLoggingEnabled(newState);
+                                        localStorage.setItem('logging_enabled', newState.toString());
+                                    }}
+                                    className={`relative w-10 h-5 rounded-full transition-colors ${loggingEnabled ? 'bg-emerald-500' : 'bg-slate-700'}`}
+                                >
+                                    <div className={`absolute top-1 left-1 w-3 h-3 rounded-full bg-white transition-transform ${loggingEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                                </button>
+                            </div>
+
+                            <button
+                                onClick={async () => {
+                                    if (confirm('Clear ALL local activity logs? This will delete all .log files in the server directory.')) {
+                                        const success = await clearLocalLogs();
+                                        if (success) {
+                                            alert('Local logs cleared successfully.');
+                                        } else {
+                                            alert('Failed to clear local logs. Is the proxy running?');
+                                        }
+                                    }
+                                }}
+                                className="w-full py-2 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-[10px] font-bold rounded-lg border border-emerald-500/20 transition-colors uppercase tracking-widest mt-2"
+                            >
+                                Clear Local Logs
+                            </button>
+
+                            {(() => {
+                                const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+                                if (!isLocal) {
+                                    return (
+                                        <button
+                                            onClick={async () => {
+                                                if (confirm('Clear PROD audit logs? This will wipe the Supabase audit_logs table.')) {
+                                                    const { error } = await supabase.from('audit_logs').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+                                                    if (!error) {
+                                                        alert('Production logs cleared.');
+                                                    } else {
+                                                        alert('Failed to clear production logs: ' + error.message);
+                                                    }
+                                                }
+                                            }}
+                                            className="w-full py-2 bg-amber-500/5 hover:bg-amber-500/10 text-amber-500/60 text-[9px] font-bold rounded-lg border border-amber-500/10 transition-colors uppercase tracking-tighter"
+                                        >
+                                            Clear Production Logs
+                                        </button>
+                                    );
+                                }
+                                return null;
+                            })()}
                         </div>
                     )}
                     <button

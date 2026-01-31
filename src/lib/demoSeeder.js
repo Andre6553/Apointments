@@ -1,5 +1,6 @@
 
 import { supabase } from './supabase'
+import { logEvent, logAppointment } from './logger'
 
 /**
  * Medical Demo Seeder & Stress Tester
@@ -108,6 +109,7 @@ export const initializeMedicalDemo = async (businessId) => {
 
     // 1. Wipe Data (Hard Delete) with Logging
     console.log(`[Demo] Wiping data for business: ${businessId}...`);
+    logEvent('DEMO_DATA_WIPE', { businessId, timestamp: new Date().toISOString() });
 
     const { error: aptError } = await supabase.from('appointments').delete().eq('business_id', businessId);
     if (aptError) {
@@ -381,7 +383,7 @@ const performBulkSeed = async (businessId, providers, treatments, clients) => {
  */
 export const runStressTest = async (businessId) => {
     if (!getDemoStatus()) return;
-    console.log('🤖 Demo Bot: Running systematic sequential scan (Day 0-13)...');
+    console.log(`🤖 [DemoSeeder] Pulse Triggered for Business: ${businessId}`);
 
     try {
         // 1. Context Collection
@@ -420,87 +422,139 @@ export const runStressTest = async (businessId) => {
         const { data: allHours } = await supabase.from('working_hours').select('*').in('profile_id', pIds);
         const { data: allBreaks } = await supabase.from('breaks').select('*').in('profile_id', pIds);
 
-        // 2. The Search Matrix (Day -> Provider -> Slot)
+        const pulseId = crypto.randomUUID();
+        await logEvent('seeder.pulse.start', { target_provider_count: pIds.length }, {
+            level: 'INFO',
+            trace_id: pulseId,
+            module: 'DemoSeeder'
+        });
+
+        // 2. The Search Matrix (Day -> Sorted Providers -> Slot)
         for (let d = 0; d < 14; d++) {
             const targetDate = new Date(now);
             targetDate.setDate(now.getDate() + d);
             const dayOfWeek = targetDate.getDay();
             const dateStr = targetDate.toDateString();
 
-            for (const provider of targetProviders) {
-                // A. Check if provider has work on this day
-                const myHours = allHours.find(h => h.profile_id === provider.id && h.day_of_week === dayOfWeek);
-                if (!myHours || !myHours.is_active) continue;
+            // ADAPTIVE: Sort providers by load before each day search
+            const sortedProviders = [...targetProviders].sort((a, b) => {
+                const loadA = (allApts || []).filter(apt => apt.assigned_profile_id === a.id && new Date(apt.scheduled_start).toDateString() === dateStr).length;
+                const loadB = (allApts || []).filter(apt => apt.assigned_profile_id === b.id && new Date(apt.scheduled_start).toDateString() === dateStr).length;
+                return loadA - loadB;
+            });
 
-                // B. Resource check
-                const myClients = clients.filter(c => c.owner_id === provider.id);
-                if (!myClients.length) continue;
+            for (const provider of sortedProviders) {
+                try {
+                    // A. Check if provider has work on this day
+                    const myHours = allHours.find(h => h.profile_id === provider.id && h.day_of_week === dayOfWeek);
+                    if (!myHours || !myHours.is_active) continue;
 
-                const providerSkills = (provider.skills || []).map(s => typeof s === 'object' ? s.code : s);
-                const qualifiedTreatments = (treatments || []).filter(t => {
-                    const reqs = t.required_skills || [];
-                    return reqs.length === 0 || reqs.every(req => providerSkills.includes(req));
-                });
-                if (!qualifiedTreatments.length) continue;
+                    // B. Resource check
+                    const myClients = clients.filter(c => c.owner_id === provider.id);
+                    if (!myClients.length) continue;
 
-                // C. Local Context
-                const myBreaks = (allBreaks || []).filter(b => b.profile_id === provider.id && b.day_of_week === dayOfWeek);
-                const myApts = (allApts || []).filter(a => a.assigned_profile_id === provider.id && new Date(a.scheduled_start).toDateString() === dateStr);
+                    const providerSkills = (provider.skills || []).map(s => typeof s === 'object' ? s.code : s);
+                    const qualifiedTreatments = (treatments || []).filter(t => {
+                        const reqs = t.required_skills || [];
+                        return reqs.length === 0 || reqs.every(req => providerSkills.includes(req));
+                    });
+                    if (!qualifiedTreatments.length) continue;
 
-                // D. Slot Scanner
-                const [hS, mS] = myHours.start_time.split(':').map(Number);
-                const [hE, mE] = myHours.end_time.split(':').map(Number);
+                    // C. Local Context
+                    const myBreaks = (allBreaks || []).filter(b => b.profile_id === provider.id && b.day_of_week === dayOfWeek);
+                    const myApts = (allApts || []).filter(a => a.assigned_profile_id === provider.id && new Date(a.scheduled_start).toDateString() === dateStr);
 
-                let scanPointer = new Date(targetDate);
-                scanPointer.setHours(hS, mS, 0, 0);
+                    // D. Slot Scanner
+                    const [hS, mS] = myHours.start_time.split(':').map(Number);
+                    const [hE, mE] = myHours.end_time.split(':').map(Number);
 
-                // Don't book in the past if today
-                if (d === 0 && scanPointer < now) {
-                    scanPointer = new Date(now);
-                    // Round up to nearest 5 mins + 10m buffer from right now
-                    scanPointer.setMinutes(Math.ceil(scanPointer.getMinutes() / 5) * 5 + 10, 0, 0);
-                }
+                    const bufferMin = (provider.enable_buffer ? (provider.buffer_minutes || 0) : 0);
 
-                const workEnd = new Date(targetDate);
-                workEnd.setHours(hE, mE, 0, 0);
+                    // --- ADAPTIVE v2: INTERVAL-BASED GAP SEARCH ---
+                    const decisionStart = performance.now();
 
-                const bufferMin = (provider.enable_buffer ? (provider.buffer_minutes || 0) : 0);
+                    // 1. Build "Occupied" Intervals [start, end]
+                    const occupied = [];
 
-                while (scanPointer < workEnd) {
-                    // Try random treatment from qualified list for variety in the "manual" look
-                    const service = qualifiedTreatments[Math.floor(Math.random() * qualifiedTreatments.length)];
-                    const duration = service.duration_minutes || 30;
-
-                    const slotStart = new Date(scanPointer);
-                    const slotEnd = new Date(slotStart.getTime() + duration * 60000);
-
-                    if (slotEnd > workEnd) break;
-
-                    // CONFLICT CHECK
-                    let hasConflict = false;
-
-                    // 1. Break overlap
-                    for (const brk of myBreaks) {
+                    // A. Breaks
+                    myBreaks.forEach(brk => {
                         const [bH, bM] = brk.start_time.split(':').map(Number);
                         const bS = new Date(targetDate); bS.setHours(bH, bM, 0, 0);
                         const bE = new Date(bS.getTime() + brk.duration_minutes * 60000);
-                        if (slotStart < bE && slotEnd > bS) { hasConflict = true; break; }
-                    }
-                    if (hasConflict) { scanPointer.setMinutes(scanPointer.getMinutes() + 15); continue; }
+                        occupied.push({ start: bS, end: bE, type: 'break' });
+                    });
 
-                    // 2. Appointment + Buffer overlap
-                    for (const apt of myApts) {
+                    // B. Existing Appointments (including buffer)
+                    myApts.forEach(apt => {
                         const aS = new Date(apt.scheduled_start);
                         const aE = new Date(aS.getTime() + apt.duration_minutes * 60000);
                         const aE_buffered = new Date(aE.getTime() + bufferMin * 60000);
-                        const slotEnd_buffered = new Date(slotEnd.getTime() + bufferMin * 60000);
+                        occupied.push({ start: aS, end: aE_buffered, type: 'apt' });
+                    });
 
-                        // Intersection test: [start, end+buffer]
-                        if (slotStart < aE_buffered && slotEnd_buffered > aS) { hasConflict = true; break; }
+                    // C. Constraints from "Now" (don't book in past)
+                    if (d === 0) {
+                        const lockout = new Date(now);
+                        lockout.setMinutes(lockout.getMinutes() + 10); // 10m minimum lead time
+                        const dayStart = new Date(targetDate);
+                        dayStart.setHours(0, 0, 0, 0);
+                        occupied.push({ start: dayStart, end: lockout, type: 'past' });
                     }
 
-                    if (!hasConflict) {
-                        // SUCCESS: Found a gap. Book it.
+                    // D. Staggered Start Logic (Add a virtual occupied slot at the morning start)
+                    const staggerMinutes = Math.floor(Math.random() * 4) * 15;
+                    if (staggerMinutes > 0) {
+                        const sStart = new Date(targetDate); sStart.setHours(hS, mS, 0, 0);
+                        const sEnd = new Date(sStart.getTime() + staggerMinutes * 60000);
+                        occupied.push({ start: sStart, end: sEnd, type: 'stagger' });
+                    }
+
+                    // E. Sort by start time
+                    occupied.sort((a, b) => a.start - b.start);
+
+                    // F. Merge overlapping intervals
+                    const merged = [];
+                    if (occupied.length > 0) {
+                        let current = { ...occupied[0] };
+                        for (let i = 1; i < occupied.length; i++) {
+                            if (occupied[i].start < current.end) {
+                                current.end = new Date(Math.max(current.end, occupied[i].end));
+                            } else {
+                                merged.push(current);
+                                current = { ...occupied[i] };
+                            }
+                        }
+                        merged.push(current);
+                    }
+
+                    // 2. Find Gaps in merged intervals
+                    const gaps = [];
+                    let lastEnd = new Date(targetDate); lastEnd.setHours(hS, mS, 0, 0);
+                    const workEnd = new Date(targetDate); workEnd.setHours(hE, mE, 0, 0);
+
+                    merged.forEach(interval => {
+                        if (interval.start > lastEnd) {
+                            gaps.push({ start: new Date(lastEnd), end: new Date(interval.start) });
+                        }
+                        lastEnd = new Date(Math.max(lastEnd, interval.end));
+                    });
+
+                    if (lastEnd < workEnd) {
+                        gaps.push({ start: new Date(lastEnd), end: new Date(workEnd) });
+                    }
+
+                    // 3. Pick a Gap and Book
+                    // Filter gaps by minimum duration required (random service from qualified list)
+                    const service = qualifiedTreatments[Math.floor(Math.random() * qualifiedTreatments.length)];
+                    const duration = service.duration_minutes || 30;
+                    const requiredSize = (duration + bufferMin) * 60000;
+
+                    const validGaps = gaps.filter(g => (g.end - g.start) >= requiredSize);
+
+                    if (validGaps.length > 0) {
+                        // Strategy: 70% chance earliest slot, 30% chance random valid slot (to look human)
+                        const chosenGap = Math.random() < 0.7 ? validGaps[0] : validGaps[Math.floor(Math.random() * validGaps.length)];
+                        const slotStart = chosenGap.start;
                         const client = myClients[Math.floor(Math.random() * myClients.length)];
 
                         const { error } = await supabase.from('appointments').insert({
@@ -513,26 +567,71 @@ export const runStressTest = async (businessId) => {
                             duration_minutes: duration,
                             scheduled_start: slotStart.toISOString(),
                             status: 'pending',
-                            notes: `🤖 Manual Op (Pulse) for ${provider.full_name}`,
+                            notes: `🤖 Adaptive v2 (Index) for ${provider.full_name}`,
                             cost: service.cost
                         });
 
                         if (!error) {
-                            console.log(`✅ SEQUENTIAL BOOKING: ${service.name} for ${provider.full_name} at ${slotStart.toLocaleString()}`);
-                            return; // Success! Exit until next pulse.
-                        } else {
-                            console.error('❌ Booking failed:', error);
+                            const totalMs = Math.round(performance.now() - decisionStart);
+                            console.log(`✅ ADAPTIVE v2 BOOKING: ${service.name} for ${provider.full_name} at ${slotStart.toLocaleString()}`);
+
+                            await logAppointment({
+                                id: 'automated',
+                                scheduled_start: slotStart.toISOString(),
+                                duration_minutes: duration,
+                                treatment_name: service.name
+                            }, provider, client, null, 'CREATE', {
+                                total_ms: totalMs,
+                                collision_retries: 0, // NO COLLISIONS in v2
+                                trace_id: pulseId
+                            });
+
+                            await logEvent('seeder.selection.success', {
+                                provider_id: provider.id,
+                                attempts: 0,
+                                slot_start: slotStart.toISOString()
+                            }, {
+                                level: 'DEBUG',
+                                trace_id: pulseId,
+                                parent_id: pulseId,
+                                metrics: {
+                                    collision_retries: 0,
+                                    decision_ms: totalMs
+                                },
+                                context: { strategy: 'index_gap_search' }
+                            });
+
                             return;
                         }
+                    } else {
+                        // No valid gaps for this provider-day
+                        await logEvent('seeder.selection.fail', {
+                            provider_id: provider.id,
+                            reason: 'PROVIDER_SATURATED',
+                            attempts: 0
+                        }, {
+                            level: 'DEBUG',
+                            trace_id: pulseId,
+                            metrics: { collision_retries: 0 },
+                            context: { strategy: 'index_gap_search' }
+                        });
+                        // Continue to next provider/day
                     }
-
-                    // Move pointer by 15 mins and try again
-                    scanPointer.setMinutes(scanPointer.getMinutes() + 15);
+                } catch (loopErr) {
+                    console.error('[DemoSeeder] Loop Error:', loopErr);
+                    await logEvent('seeder.loop.error', {
+                        error: loopErr.message,
+                        provider_id: provider.id,
+                        day: d
+                    }, {
+                        level: 'ERROR',
+                        trace_id: pulseId
+                    });
                 }
             }
         }
 
-        console.log('🏁 Demo Bot: 14-day schedule for P1-P4 is completely FULL.');
+        console.log('🏁 [DemoSeeder] Pulse Complete.');
     } catch (err) {
         console.error('Demo Bot Error:', err);
     }

@@ -10,6 +10,7 @@ import CancelAppointmentModal from './CancelAppointmentModal';
 import AppointmentDetailsModal from './AppointmentDetailsModal';
 import { calculateAndApplyDelay } from '../lib/delayEngine';
 import { getCache, setCache, CACHE_KEYS } from '../lib/cache';
+import { logAppointment } from '../lib/logger';
 
 const SessionTimer = ({ startTime, duration }) => {
     const calculateTime = (startStr, dur) => {
@@ -180,6 +181,16 @@ const AppointmentList = () => {
             } finally {
                 // Always refresh to show 'active' state
                 fetchAppointments();
+
+                // AUDIT LOG
+                await logAppointment(
+                    { ...appointments.find(a => a.id === id), actual_start: startTime },
+                    profile,
+                    appointments.find(a => a.id === id)?.client,
+                    profile,
+                    'START',
+                    { total_ms: Math.round(performance.now() - (window.__LAT_START_TS__ || performance.now())) }
+                );
             }
         } else {
             console.error('[StartSession] Update failed:', error);
@@ -202,6 +213,23 @@ const AppointmentList = () => {
                 console.warn('[EndSession] Delay recalculation failed:', err);
             } finally {
                 fetchAppointments();
+
+                // AUDIT LOG
+                const apt = appointments.find(a => a.id === id);
+                const actualDuration = apt?.actual_start ?
+                    Math.round((new Date(endTime).getTime() - new Date(apt.actual_start).getTime()) / 60000) : 0;
+
+                await logAppointment(
+                    { ...apt, actual_end: endTime },
+                    profile,
+                    apt?.client,
+                    profile,
+                    'END',
+                    {
+                        actual_duration_min: actualDuration,
+                        is_overtime: actualDuration > (apt?.duration_minutes || 0)
+                    }
+                );
             }
         }
     };

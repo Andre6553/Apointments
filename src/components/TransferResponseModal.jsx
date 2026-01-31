@@ -4,8 +4,11 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { X, User, Clock, Check, Loader2, AlertCircle, Calendar } from 'lucide-react'
 import { format, parseISO } from 'date-fns'
 import { useAvailability } from '../hooks/useAvailability'
+import { logTransfer } from '../lib/logger'
+import { useAuth } from '../hooks/useAuth'
 
 const TransferResponseModal = ({ isOpen, onClose, notification, onComplete }) => {
+    const { profile } = useAuth()
     const [request, setRequest] = useState(null)
     const [appointment, setAppointment] = useState(null)
     const [loading, setLoading] = useState(true)
@@ -99,6 +102,18 @@ const TransferResponseModal = ({ isOpen, onClose, notification, onComplete }) =>
                 .eq('id', appointment.id)
 
             if (aptError) throw aptError
+
+            // --- Audit Logging ---
+            try {
+                await logTransfer('TRANSFER_ACCEPT', {
+                    receiverName: profile?.full_name || user.email,
+                    clientName: `${appointment.client?.first_name || ''} ${appointment.client?.last_name || ''}`.trim(),
+                    senderName: request.sender?.full_name || request.sender?.email,
+                    finalTime: targetTime
+                }, profile);
+            } catch (logErr) {
+                console.warn('Accept logging failed:', logErr);
+            }
 
             // 2. Update Transfer Request
             const { error: reqError } = await supabase

@@ -8,6 +8,7 @@ import { useAuth } from '../hooks/useAuth'
 import { playNotificationSound } from '../utils/sound'
 import { useNavigate } from 'react-router-dom'
 import AddAppointmentModal from './AddAppointmentModal'
+import { logEvent, logAppointment } from '../lib/logger'
 
 const WorkloadBalancer = ({ initialChatSender, onChatHandled }) => {
     const { user, profile } = useAuth()
@@ -224,9 +225,20 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled }) => {
             });
 
             if (!error) {
-                // Trigger notification
-                const apt = delayedApts.find(a => a.id === aptId);
+                // Log high-fidelity event with Skill Match verification
                 const provider = freeProviders.find(p => p.id === newProviderId);
+                const apt = delayedApts.find(a => a.id === aptId);
+
+                await logAppointment(apt || { id: aptId }, provider || { id: newProviderId }, null, profile, 'REASSIGN', {
+                    previous_provider_id: oldProviderId,
+                    trigger: 'manual_balancer_shift',
+                    skill_match: {
+                        required: apt?.required_skills || [],
+                        provider_skills: provider?.skills || []
+                    }
+                });
+
+                // Trigger notification
                 if (apt && provider) {
                     const clientName = `${apt.client?.first_name} ${apt.client?.last_name || ''}`.trim();
                     const bizName = "[Your Business Name]";
@@ -263,6 +275,17 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled }) => {
                 .eq('id', sug.appointmentId)
 
             if (error) throw error
+
+            // Log high-fidelity event with Skill Match verification
+            await logAppointment({ id: sug.appointmentId, treatment_name: sug.treatmentName }, { id: sug.newProviderId, full_name: sug.newProviderName }, null, profile, 'AUTO_REASSIGN', {
+                previous_provider_id: sug.currentProviderId,
+                trigger: 'autopilot_suggestion',
+                delay_saved_min: sug.delayMinutes,
+                skill_match: {
+                    required: sug.required_skills || [],
+                    provider_skills: sug.newProviderSkills || []
+                }
+            });
 
             // Notify Client & New Provider
             const bizName = "[Your Business Name]"
@@ -302,17 +325,11 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled }) => {
 
             if (delError) throw delError
 
-            // Log the action
-            const { error: logError } = await supabase
-                .from('appointment_logs')
-                .insert({
-                    business_id: profile.business_id,
-                    actor_id: user.id,
-                    action_type: 'DELETE',
-                    details: selectedAptForAction
-                })
-
-            if (logError) console.error('Failed to log deletion:', logError)
+            // Log high-fidelity event (replacing legacy audit table with the new hybrid system)
+            await logAppointment(selectedAptForAction, null, null, profile, 'DELETE', {
+                trigger: 'workload_balancer_cleanup',
+                deleted_at: new Date().toISOString()
+            });
 
             // Notify Admins
             const { data: admins } = await supabase
@@ -402,6 +419,16 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled }) => {
                 .single()
 
             if (error) throw error
+
+            // Log Telemetry
+            await logEvent('chat.send', {
+                receiver_id: selectedProvider.id,
+                message_length: content.length,
+                is_read_immediately: isReadImmediately
+            }, {
+                actor: { type: 'user', id: user.id, name: profile.full_name },
+                context: { module: 'WorkloadBalancer', section: 'QuickChat' }
+            });
 
             // Verification Update (2 Ticks State)
             if (data) {
@@ -630,6 +657,17 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled }) => {
             }
         }
         alert(`SOS Sent to ${sentCount} providers.`);
+
+        // Log Telemetry
+        await logEvent('sos.alert', {
+            sent_count: sentCount,
+            system_load: systemHealth?.loadPercentage,
+            reason: 'critical_capacity_overload'
+        }, {
+            level: 'WARN',
+            actor: { type: 'user', id: user.id, name: profile.full_name },
+            context: { module: 'WorkloadBalancer', section: 'SOS_Banner' }
+        });
     };
 
     if (!profile) return <div className="flex justify-center py-20"><Loader2 className="animate-spin text-slate-500" /></div>

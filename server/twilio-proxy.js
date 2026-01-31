@@ -46,6 +46,42 @@ const supabaseUrl = env.VITE_SUPABASE_URL || env.SUPABASE_URL;
 const supabaseKey = env.SUPABASE_SERVICE_ROLE_KEY || env.VITE_SUPABASE_SERVICE_ROLE_KEY || env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
+// --- Logging System ---
+const LOGS_DIR = path.join(rootDir, 'Logs');
+if (!fs.existsSync(LOGS_DIR)) {
+    fs.mkdirSync(LOGS_DIR, { recursive: true });
+}
+
+let currentLogFile = null;
+let currentLineCount = 0;
+
+const getNewLogFilename = () => {
+    const ts = format(new Date(), 'yyyy-MM-dd_HH-mm-ss');
+    return path.join(LOGS_DIR, `${ts}.log`);
+};
+
+const writeToLogFile = (data) => {
+    try {
+        if (!currentLogFile || currentLineCount >= 500) {
+            currentLogFile = getNewLogFilename();
+            currentLineCount = 0;
+            console.log(`[Logger] Creating new log file: ${path.basename(currentLogFile)}`);
+        }
+
+        // Ensure data has a timestamp (ISO)
+        if (typeof data === 'object' && !data.ts) {
+            data.ts = format(new Date(), 'yyyy-MM-dd HH:mm:ss.SSS');
+        }
+
+        const entry = (typeof data === 'object' ? JSON.stringify(data) : data) + '\n';
+
+        fs.appendFileSync(currentLogFile, entry);
+        currentLineCount++;
+    } catch (err) {
+        console.error('[Logger] Failed to write to log:', err);
+    }
+};
+
 console.log('--- Twilio Proxy Config ---');
 console.log(`SID: ${ACCOUNT_SID ? ACCOUNT_SID.slice(0, 4) + '...' + ACCOUNT_SID.slice(-4) : 'MISSING'}`);
 console.log(`Token: ${AUTH_TOKEN ? AUTH_TOKEN.slice(0, 4) + '...' + AUTH_TOKEN.slice(-4) : 'MISSING'}`);
@@ -222,7 +258,102 @@ const server = http.createServer((req, res) => {
                 res.end(JSON.stringify({ error: error.message }));
             }
         });
-    } else {
+    } else if (req.url === '/log' && req.method === 'POST') {
+        let body = '';
+        req.on('data', chunk => body += chunk);
+        req.on('end', () => {
+            try {
+                const data = JSON.parse(body);
+
+                // Schema v1.3.0 Normalization & Enrichment
+                const serverTs = new Date().toISOString();
+                let logEntry;
+
+                if (data.schema === "lat.audit.v1.3.0") {
+                    // Native v3 support: Preserve and enrich
+                    logEntry = {
+                        ...data,
+                        server_ts: serverTs,
+                        metrics: {
+                            ...data.metrics,
+                            server_arrival_ms: Date.now() - new Date(serverTs).getTime() // internal processing overhead
+                        }
+                    };
+                } else {
+                    // Legacy Normalization to v1.3.0
+                    logEntry = {
+                        schema: "lat.audit.v1.3.0",
+                        v: data.v || "1.2.0",
+                        ts: data.ts || serverTs,
+                        server_ts: serverTs,
+                        event_id: data.event_id || crypto.randomUUID(),
+                        trace_id: data.trace_id || data.event_id || crypto.randomUUID(),
+                        parent_id: data.parent_id || null,
+                        level: data.level || "INFO",
+                        service: data.service || {
+                            name: "apt-tracker-web",
+                            env: "development",
+                            module: "legacy-adapter"
+                        },
+                        event: {
+                            name: data.event?.name || data.type?.toLowerCase().replace(/_/g, '.') || "unknown.legacy",
+                            result_code: data.event?.result_code || "LEGACY_NORMALIZED"
+                        },
+                        actor: data.actor || { type: "unknown", name: "anonymous" },
+                        payload: data.payload || data.data || {},
+                        metrics: data.metrics || {},
+                        context: {
+                            is_demo: data.isDemo || data.context?.is_demo || false,
+                            ...data.context
+                        }
+                    };
+                }
+
+                // Global Enrichment: Clock Drift & Validation
+                if (logEntry.ts) {
+                    const drift = Math.abs(new Date(serverTs) - new Date(logEntry.ts));
+                    if (drift > 10000) { // 10s threshold for production auditing
+                        logEntry.metrics.clock_drift_ms = drift;
+                        logEntry.level = (logEntry.level === "ERROR") ? "ERROR" : "WARN";
+                        logEntry.context.drift_warning = "High clock drift detected between client and server";
+                    }
+                }
+
+                writeToLogFile(logEntry);
+
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: true }));
+            } catch (error) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: error.message }));
+            }
+        });
+    } else if (req.url === '/clear-logs' && req.method === 'POST') {
+        try {
+            console.log('[Logger] Clearing all local log files...');
+            const files = fs.readdirSync(LOGS_DIR);
+            let count = 0;
+            files.forEach(file => {
+                if (file.endsWith('.log')) {
+                    fs.unlinkSync(path.join(LOGS_DIR, file));
+                    count++;
+                }
+            });
+
+            // Reset state
+            currentLogFile = null;
+            currentLineCount = 0;
+
+            console.log(`[Logger] Successfully cleared ${count} log files.`);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true, files_cleared: count }));
+        } catch (err) {
+            console.error('[Logger] Failed to clear logs:', err);
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: err.message }));
+        }
+    }
+    else {
         res.writeHead(404);
         res.end('Not Found');
     }

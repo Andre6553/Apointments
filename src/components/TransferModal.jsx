@@ -5,6 +5,7 @@ import { useAvailability } from '../hooks/useAvailability'
 import { useAuth } from '../hooks/useAuth'
 import { X, User, Clock, ArrowRight, Loader2, CheckCircle2, AlertTriangle, Calendar } from 'lucide-react'
 import { format, parseISO, isWithinInterval } from 'date-fns'
+import { logTransfer } from '../lib/logger'
 
 const TransferModal = ({ isOpen, onClose, appointment, onComplete }) => {
     const { profile } = useAuth()
@@ -16,6 +17,7 @@ const TransferModal = ({ isOpen, onClose, appointment, onComplete }) => {
     const [showConfirm, setShowConfirm] = useState(false) // Toggle for conflict confirm
     const [transferDate, setTransferDate] = useState('')
     const [transferTime, setTransferTime] = useState('')
+    const [reason, setReason] = useState('')
 
     useEffect(() => {
         if (isOpen) {
@@ -25,6 +27,7 @@ const TransferModal = ({ isOpen, onClose, appointment, onComplete }) => {
             setShowConfirm(false)
             setTransferDate(format(parseISO(appointment.scheduled_start), 'yyyy-MM-dd'))
             setTransferTime(format(parseISO(appointment.scheduled_start), 'HH:mm'))
+            setReason('')
         }
     }, [isOpen])
 
@@ -100,11 +103,30 @@ const TransferModal = ({ isOpen, onClose, appointment, onComplete }) => {
                         transfer_request_id: request.id,
                         appointment_id: appointment.id,
                         sender_id: user.id,
-                        new_scheduled_start: `${transferDate}T${transferTime}:00`
+                        new_scheduled_start: `${transferDate}T${transferTime}:00`,
+                        reason: reason
                     }
                 })
 
             if (notifError) throw notifError
+
+            // --- Audit Logging ---
+            try {
+                const requiredSkills = appointment.required_skills || [];
+                const providerSkills = selectedProvider.skills || [];
+                const hasSkills = requiredSkills.every(req => providerSkills.includes(req));
+
+                await logTransfer('TRANSFER_REQUEST', {
+                    senderName: profile.full_name || profile.email,
+                    receiverName: selectedProvider.full_name || selectedProvider.email,
+                    clientName: `${appointment.client?.first_name || ''} ${appointment.client?.last_name || ''}`.trim(),
+                    reason: reason,
+                    hasSkills: hasSkills,
+                    newTime: `${transferDate} ${transferTime}`
+                }, profile);
+            } catch (logErr) {
+                console.warn('Transfer logging failed:', logErr);
+            }
 
             onComplete && onComplete()
             onClose()
@@ -260,6 +282,18 @@ const TransferModal = ({ isOpen, onClose, appointment, onComplete }) => {
                                                 </button>
                                             ))}
                                         </div>
+                                    </div>
+
+                                    {/* Reason for Transfer */}
+                                    <div className="space-y-2">
+                                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Reason for Transfer</label>
+                                        <textarea
+                                            value={reason}
+                                            onChange={(e) => setReason(e.target.value)}
+                                            placeholder="Why are you transferring this client? (e.g., rescheduling, specialist required...)"
+                                            className="glass-input w-full min-h-[80px] py-3 text-sm resize-none"
+                                            required
+                                        />
                                     </div>
 
                                     {/* Reschedule Options */}

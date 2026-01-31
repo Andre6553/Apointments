@@ -6,6 +6,7 @@ import { format, isSameDay } from 'date-fns';
 import { useAuth } from '../hooks/useAuth';
 import { getCache, setCache, CACHE_KEYS } from '../lib/cache';
 import { sendWhatsApp } from '../lib/notifications';
+import { logAppointment } from '../lib/logger';
 
 const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) => {
     const { user, profile } = useAuth();
@@ -521,15 +522,21 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
             alert('Cannot book: ' + slotStatus.message);
             return;
         }
+        const totalStart = performance.now();
         setLoading(true);
 
         try {
             const { data: { user } } = await supabase.auth.getUser();
-
             if (!user) throw new Error('You must be logged in to create an appointment.');
 
-            const scheduledStart = new Date(`${formData.date}T${formData.time}:00`).toISOString();
+            // Instrument: Provider Load Before
+            const { count: loadBefore } = await supabase
+                .from('appointments')
+                .select('*', { count: 'exact', head: true })
+                .eq('assigned_profile_id', targetProviderId)
+                .is('shifted_from_id', null); // only count original assignments
 
+            const scheduledStart = new Date(`${formData.date}T${formData.time}:00`).toISOString();
             const appointmentData = {
                 client_id: formData.clientId,
                 assigned_profile_id: targetProviderId,
@@ -543,15 +550,37 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
                 status: editData ? editData.status : 'pending'
             };
 
+            const dbStart = performance.now();
+            const { error, data: savedApt } = editData
+                ? await supabase.from('appointments').update(appointmentData).eq('id', editData.id).select().single()
+                : await supabase.from('appointments').insert([appointmentData]).select().single();
+            const dbMs = Math.round(performance.now() - dbStart);
+
+            if (error) throw error;
+
+            // --- Audit Logging ---
+            try {
+                const targetProv = providers.find(p => p.id === targetProviderId) || profile;
+                const targetClient = clients.find(c => c.id === formData.clientId);
+                await logAppointment(
+                    { ...appointmentData, id: savedApt?.id || editData?.id },
+                    targetProv,
+                    targetClient,
+                    profile,
+                    editData ? 'UPDATE' : 'CREATE',
+                    {
+                        db_ms: dbMs,
+                        total_ms: Math.round(performance.now() - totalStart),
+                        load: { before: loadBefore, after: (loadBefore || 0) + 1 }
+                    }
+                );
+            } catch (logErr) {
+                console.warn('Logging failed:', logErr);
+            }
+
             // Detect Changes for Notifications
             const isReschedule = editData && (editData.scheduled_start !== scheduledStart);
             const isReassign = editData && (editData.assigned_profile_id !== targetProviderId);
-
-            const { error } = editData
-                ? await supabase.from('appointments').update(appointmentData).eq('id', editData.id)
-                : await supabase.from('appointments').insert([appointmentData]);
-
-            if (error) throw error;
 
             // Handle Notifications on Update
             if (editData && (isReschedule || isReassign)) {

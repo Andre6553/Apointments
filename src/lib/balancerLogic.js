@@ -146,7 +146,8 @@ export const getSmartReassignments = async (businessId) => {
                 bestFix = {
                     providerId: provider.id,
                     providerName: provider.full_name,
-                    whatsapp: provider.whatsapp
+                    whatsapp: provider.whatsapp,
+                    providerSkills: Array.isArray(provider.skills) ? provider.skills : [] // Capture skills for telemetry
                 };
                 break; // Found a provider for this apt
             }
@@ -164,7 +165,9 @@ export const getSmartReassignments = async (businessId) => {
                 newProviderWhatsapp: bestFix.whatsapp,
                 treatmentName: apt.treatment_name,
                 scheduledTime: start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                delayMinutes: apt.delay_minutes
+                delayMinutes: apt.delay_minutes,
+                required_skills: apt.required_skills || [], // Populated for telemetry
+                newProviderSkills: bestFix.providerSkills || [] // Populated for telemetry
             });
         }
     }
