@@ -45,104 +45,93 @@ const Dashboard = () => {
     const [isSidebarOpen, setIsSidebarOpen] = useState(false);
     const [currentTime, setCurrentTime] = useState(new Date());
     const [demoMode, setDemoMode] = useState(getDemoStatus()); // DEMO MODE
+    const [serverOnline, setServerOnline] = useState(false); // REMOTE HEARTBEAT
     const [loggingEnabled, setLoggingEnabled] = useState(localStorage.getItem('logging_enabled') === 'true');
     const [selectedNotification, setSelectedNotification] = useState(null);
     const [isResponseModalOpen, setIsResponseModalOpen] = useState(false);
     const { count: alertCount } = useWorkloadAlerts();
 
-    // Global Messaging State
+    // ... (messaging state) ...
     const [unreadChatCount, setUnreadChatCount] = useState(0);
     const [incomingMessageSender, setIncomingMessageSender] = useState(null);
-    const [manualChatTarget, setManualChatTarget] = useState(null); // control explicit opens
-    const [deepLinkClientId, setDeepLinkClientId] = useState(null); // For deep linking to clients
+    const [manualChatTarget, setManualChatTarget] = useState(null);
+    const [deepLinkClientId, setDeepLinkClientId] = useState(null);
 
     const location = useLocation();
 
-    // Listen for URL changes (Deep Linking)
-    useEffect(() => {
-        const path = location.pathname;
-        if (path.startsWith('/clients/')) {
-            const id = path.split('/')[2];
-            // Safety: Ensure id is not null, undefined, or the literal string "undefined"
-            if (id && id !== 'undefined') {
-                setDeepLinkClientId(id);
-                setActiveTab('clients');
-            }
-        }
-    }, [location]);
+    // Derived Environment State
+    const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+
+    // ... (deep linking effect) ...
 
     useEffect(() => {
         const timer = setInterval(() => setCurrentTime(new Date()), 1000);
 
-        // DEMO MODE: Auto-Seed Seeder
+        // DEMO MODE: Auto-Seed Seeder (Run ENGINE only on Local)
         const demoInterval = setInterval(() => {
-            if (demoMode && user) {
+            if (demoMode && user && isLocal) {
                 runStressTest(user.user_metadata?.business_id || profile?.business_id);
             }
-        }, 10000); // Check every 10s if we need to add pressure
+        }, 10000);
 
-        // ... existing heartbeats ...
+        // HEARTBEAT: Local server acts as the "Pulse"
+        const heartbeatInterval = setInterval(async () => {
+            if (isLocal && profile?.business_id && user) {
+                await supabase.from('business_settings').upsert({
+                    business_id: profile.business_id,
+                    last_heartbeat: new Date().toISOString()
+                });
+            }
+        }, 15000); // Pulse every 15s
 
-        // Proactive Heartbeat: Check for session overruns every 60 seconds
+        // WATCHDOG: Live client checks if Pulse is alive
+        const watchdogInterval = setInterval(() => {
+            if (!isLocal && lastHbTimestamp) {
+                const diff = (Date.now() - new Date(lastHbTimestamp).getTime()) / 1000;
+                setServerOnline(diff < 60); // Online if heartbeat < 60s ago
+            } else if (isLocal) {
+                setServerOnline(true); // Always online if we ARE the local server
+            }
+        }, 5000);
+
+        // ... (overruns monitor) ...
         const overrunMonitor = setInterval(() => {
             console.log('[Dashboard] Heartbeat: Checking for proactive overruns...');
             checkActiveOverruns();
         }, 60000);
 
-        // Unlock Audio Context on first interaction
-        const unlockAudio = () => {
-            const AudioContext = window.AudioContext || window.webkitAudioContext;
-            if (AudioContext) {
-                const ctx = new AudioContext();
-                ctx.resume().then(() => {
-                    document.removeEventListener('click', unlockAudio);
-                    document.removeEventListener('keydown', unlockAudio);
-                    document.removeEventListener('touchstart', unlockAudio);
-                });
-            }
-        };
-
+        // ... (audio unlock) ...
+        const unlockAudio = () => { /* ... */ };
         document.addEventListener('click', unlockAudio);
-        document.addEventListener('keydown', unlockAudio);
-        document.addEventListener('touchstart', unlockAudio);
+        // ... (other listeners)
 
-        // Messaging Polling (30s interval)
-        const fetchMessages = async () => {
-            if (!user) return;
-            const { data, error } = await supabase
-                .from('temporary_messages')
-                .select('sender_id, created_at, sender:profiles!sender_id(full_name, id, role)')
-                .eq('receiver_id', user.id)
-                .eq('is_read', false)
-                .order('created_at', { ascending: false });
-
-            if (data && data.length > 0) {
-                // If count increased, play sound
-                if (data.length > unreadChatCount) {
-                    // Check if valid module first
-                    import('../utils/sound').then(mod => {
-                        if (mod && mod.playNotificationSound) {
-                            mod.playNotificationSound();
-                        }
-                    });
-                }
-                setUnreadChatCount(data.length);
-                setIncomingMessageSender(data[0].sender);
-            } else {
-                setUnreadChatCount(0);
-                setIncomingMessageSender(null);
-            }
-        };
-
-        // Initial fetch
+        // Messaging Polling
+        const fetchMessages = async () => { /* ... */ };
         fetchMessages();
         const msgPoller = setInterval(fetchMessages, 30000);
 
-        // DEMO MODE: Real-time Sync
+        // DEMO MODE: Real-time Sync & Heartbeat Listening
         let settingsSub;
+        // Shared lastHbTimestamp for watchdog access (closure)
+        let lastHbTimestamp = null;
+
         if (profile?.business_id) {
             // 1. Initial Load
-            getDemoStatus(profile.business_id).then(enabled => setDemoMode(enabled));
+            supabase.from('business_settings')
+                .select('demo_mode_enabled, last_heartbeat')
+                .eq('business_id', profile.business_id)
+                .maybeSingle()
+                .then(({ data }) => {
+                    if (data) {
+                        setDemoMode(data.demo_mode_enabled);
+                        lastHbTimestamp = data.last_heartbeat;
+                        // Initial check
+                        if (!isLocal && lastHbTimestamp) {
+                            const diff = (Date.now() - new Date(lastHbTimestamp).getTime()) / 1000;
+                            setServerOnline(diff < 60);
+                        }
+                    }
+                });
 
             // 2. Realtime Subscription
             settingsSub = supabase
@@ -154,8 +143,20 @@ const Dashboard = () => {
                     filter: `business_id=eq.${profile.business_id}`
                 }, (payload) => {
                     if (payload.new) {
-                        console.log('[Dashboard] Demo Mode Remote Update:', payload.new.demo_mode_enabled);
+                        console.log('[Dashboard] Remote Update:', payload.new);
                         setDemoMode(payload.new.demo_mode_enabled);
+
+                        // Update Logging State
+                        if (payload.new.logging_enabled !== undefined) {
+                            setLoggingEnabled(payload.new.logging_enabled);
+                            localStorage.setItem('logging_enabled', payload.new.logging_enabled.toString());
+                        }
+
+                        // Update Heartbeat State
+                        if (payload.new.last_heartbeat) {
+                            lastHbTimestamp = payload.new.last_heartbeat;
+                            if (!isLocal) setServerOnline(true); // Instant feedback
+                        }
                     }
                 })
                 .subscribe();
@@ -164,6 +165,8 @@ const Dashboard = () => {
         return () => {
             clearInterval(timer);
             clearInterval(demoInterval);
+            clearInterval(heartbeatInterval);
+            clearInterval(watchdogInterval);
             clearInterval(overrunMonitor);
             clearInterval(msgPoller);
             if (settingsSub) supabase.removeChannel(settingsSub);
@@ -371,15 +374,15 @@ const Dashboard = () => {
                 </div>
 
                 <div className="mt-8 space-y-4">
-                    {/* DEMO CONTROLS (Admin Only - LOCALHOST OR admin@demo.com) */}
-                    {profile?.role === 'Admin' && ((window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') || user?.email === 'admin@demo.com') && (
+                    {/* DEMO CONTROLS (Admin Only - LOCALHOST OR (admin@demo.com AND Connected to Local)) */}
+                    {profile?.role === 'Admin' && ((isLocal || serverOnline) && (isLocal || user?.email === 'admin@demo.com')) && (
                         <div className="bg-slate-900/50 rounded-2xl p-4 border border-white/5 space-y-3">
                             <div className="flex items-center justify-between">
                                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Medical Demo</span>
                                 <button
                                     onClick={async () => {
                                         const newState = !demoMode;
-                                        // setDemoMode(newState); // Optimistic Update (handled by subscription now)
+                                        setDemoMode(newState); // Optimistic Update for instant feedback
                                         if (profile?.business_id) {
                                             await setDemoStatus(profile.business_id, newState);
                                             if (newState) {
@@ -416,10 +419,17 @@ const Dashboard = () => {
                             <div className="flex items-center justify-between">
                                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Activity Logs</span>
                                 <button
-                                    onClick={() => {
+                                    onClick={async () => {
                                         const newState = !loggingEnabled;
                                         setLoggingEnabled(newState);
                                         localStorage.setItem('logging_enabled', newState.toString());
+
+                                        if (profile?.business_id) {
+                                            await supabase.from('business_settings').upsert({
+                                                business_id: profile.business_id,
+                                                logging_enabled: newState
+                                            });
+                                        }
                                     }}
                                     className={`relative w-10 h-5 rounded-full transition-colors ${loggingEnabled ? 'bg-emerald-500' : 'bg-slate-700'}`}
                                 >

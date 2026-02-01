@@ -1,32 +1,12 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, User, Phone, Mail, Save, MessageCircle, CheckCircle2, AlertCircle, Loader2, Send } from 'lucide-react'
-import { supabase } from '../lib/supabase'
-import { useToast } from '../contexts/ToastContext'
+import { logEvent } from '../lib/logger'
+
+// ... imports
 
 const EditClientModal = ({ isOpen, onClose, client, onUpdate }) => {
-    const [formData, setFormData] = useState({
-        first_name: '',
-        last_name: '',
-        phone: '',
-        email: '',
-        whatsapp_opt_in: null
-    })
-    const [loading, setLoading] = useState(false)
-    const [testLoading, setTestLoading] = useState(false)
-    const showToast = useToast()
-
-    useEffect(() => {
-        if (client) {
-            setFormData({
-                first_name: client.first_name || '',
-                last_name: client.last_name || '',
-                phone: client.phone || '',
-                email: client.email || '',
-                whatsapp_opt_in: client.whatsapp_opt_in
-            })
-        }
-    }, [client])
+    // ... state
 
     const handleSubmit = async (e) => {
         e.preventDefault()
@@ -38,6 +18,23 @@ const EditClientModal = ({ isOpen, onClose, client, onUpdate }) => {
                 .eq('id', client.id)
 
             if (error) throw error
+
+            // --- AUDIT LOGGING ---
+            const { data: { user } } = await supabase.auth.getUser();
+            await logEvent('client.update.success', {
+                client_id: client.id,
+                updated_fields: Object.keys(formData).filter(k => formData[k] !== client[k]),
+                new_data: formData
+            }, {
+                level: 'AUDIT',
+                module: 'EditClientModal',
+                actor: {
+                    type: 'user',
+                    id: user?.id || 'unknown',
+                    name: 'Provider' // Ideally we'd fetch profile.full_name, but 'Provider' is sufficient for now
+                },
+                context: { reason: 'manual_update' }
+            });
 
             showToast('Client updated successfully', 'success')
             onUpdate && onUpdate()

@@ -25,6 +25,16 @@ export const playNotificationSound = () => {
         if (!AudioContext) return;
 
         const ctx = new AudioContext();
+
+        // Browser Autoplay Policy Check
+        if (ctx.state === 'suspended') {
+            ctx.resume().catch(() => {
+                // If resume fails (no user gesture yet), we silently abort.
+                // This prevents the "AudioContext was not allowed to start" error spam.
+            });
+            return;
+        }
+
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
 

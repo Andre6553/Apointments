@@ -16,7 +16,10 @@ export const logEvent = async (action, data = {}, options = {}) => {
     const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 
     const loggingEnabled = localStorage.getItem('logging_enabled') === 'true';
-    if (!loggingEnabled) return;
+
+    // FORCE AUDIT: Critical business events (AUDIT level) must be logged regardless of the toggle.
+    // The toggle mainly controls "noise" like INFO/DEBUG/TRACE.
+    if (!loggingEnabled && options.level !== 'AUDIT') return;
 
     // 2. Stable Identifiers
     const eventId = crypto.randomUUID();
