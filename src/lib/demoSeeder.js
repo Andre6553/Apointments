@@ -57,12 +57,31 @@ const SERVICES = [
 
 // --- PUBLIC API ---
 
-export const getDemoStatus = () => {
-    return localStorage.getItem('DEMO_MODE') === 'true';
+// --- REMOTE STATE SYNC (Replaces LocalStorage) ---
+
+export const getDemoStatus = async (businessId) => {
+    if (!businessId) return false;
+    const { data } = await supabase
+        .from('business_settings')
+        .select('demo_mode_enabled')
+        .eq('business_id', businessId)
+        .maybeSingle(); // Use maybeSingle to avoid 406 errors if row missing
+    return data?.demo_mode_enabled || false;
 };
 
-export const setDemoStatus = (isEnabled) => {
-    localStorage.setItem('DEMO_MODE', isEnabled);
+export const setDemoStatus = async (businessId, isEnabled) => {
+    if (!businessId) return;
+
+    // Upsert to handle first-time creation
+    const { error } = await supabase
+        .from('business_settings')
+        .upsert({
+            business_id: businessId,
+            demo_mode_enabled: isEnabled,
+            updated_at: new Date().toISOString()
+        });
+
+    if (error) console.error('[DemoSync] Failed to update remote state:', error);
 };
 
 /**
@@ -391,9 +410,6 @@ export const runStressTest = async (businessId) => {
         return;
     }
 
-    if (!getDemoStatus()) return;
-    console.log(`🤖 [DemoSeeder] Pulse Triggered for Business: ${businessId}`);
-
     try {
         // 0. Identity Verification (Strict Isolation)
         const { data: { user } } = await supabase.auth.getUser();
@@ -401,6 +417,15 @@ export const runStressTest = async (businessId) => {
             console.warn('[DemoSeeder] ABORTED: Demo Mode only runs on admin@demo.com');
             return;
         }
+
+        // 0.5 Check Remote Status
+        const isEnabled = await getDemoStatus(businessId);
+        if (!isEnabled) {
+            // console.log('[DemoSeeder] Pulse Skipped: Demo Mode Disabled Globally'); 
+            return;
+        }
+
+        // 1. Context Collection
 
         // 1. Context Collection
         const { data: allProviders } = await supabase

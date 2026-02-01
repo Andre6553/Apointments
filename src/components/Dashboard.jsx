@@ -138,11 +138,35 @@ const Dashboard = () => {
         fetchMessages();
         const msgPoller = setInterval(fetchMessages, 30000);
 
+        // DEMO MODE: Real-time Sync
+        let settingsSub;
+        if (profile?.business_id) {
+            // 1. Initial Load
+            getDemoStatus(profile.business_id).then(enabled => setDemoMode(enabled));
+
+            // 2. Realtime Subscription
+            settingsSub = supabase
+                .channel('business_settings_sync')
+                .on('postgres_changes', {
+                    event: '*',
+                    schema: 'public',
+                    table: 'business_settings',
+                    filter: `business_id=eq.${profile.business_id}`
+                }, (payload) => {
+                    if (payload.new) {
+                        console.log('[Dashboard] Demo Mode Remote Update:', payload.new.demo_mode_enabled);
+                        setDemoMode(payload.new.demo_mode_enabled);
+                    }
+                })
+                .subscribe();
+        }
+
         return () => {
             clearInterval(timer);
             clearInterval(demoInterval);
             clearInterval(overrunMonitor);
             clearInterval(msgPoller);
+            if (settingsSub) supabase.removeChannel(settingsSub);
             document.removeEventListener('click', unlockAudio);
             document.removeEventListener('keydown', unlockAudio);
             document.removeEventListener('touchstart', unlockAudio);
@@ -347,19 +371,20 @@ const Dashboard = () => {
                 </div>
 
                 <div className="mt-8 space-y-4">
-                    {/* DEMO CONTROLS (Admin Only - LOCALHOST ONLY) */}
-                    {profile?.role === 'Admin' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') && (
+                    {/* DEMO CONTROLS (Admin Only - LOCALHOST OR admin@demo.com) */}
+                    {profile?.role === 'Admin' && ((window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') || user?.email === 'admin@demo.com') && (
                         <div className="bg-slate-900/50 rounded-2xl p-4 border border-white/5 space-y-3">
                             <div className="flex items-center justify-between">
                                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Medical Demo</span>
                                 <button
                                     onClick={async () => {
                                         const newState = !demoMode;
-                                        setDemoMode(newState);
-                                        setDemoStatus(newState);
-                                        // Auto-seed skills if enabling
-                                        if (newState && profile?.business_id) {
-                                            await seedBusinessSkills(profile.business_id);
+                                        // setDemoMode(newState); // Optimistic Update (handled by subscription now)
+                                        if (profile?.business_id) {
+                                            await setDemoStatus(profile.business_id, newState);
+                                            if (newState) {
+                                                await seedBusinessSkills(profile.business_id);
+                                            }
                                         }
                                     }}
                                     className={`relative w-10 h-5 rounded-full transition-colors ${demoMode ? 'bg-indigo-500' : 'bg-slate-700'}`}
@@ -382,9 +407,13 @@ const Dashboard = () => {
                             <p className="text-[10px] text-slate-500 leading-tight">
                                 {demoMode ? "Stress Test Active. Generates load automatically." : "System Normal."}
                             </p>
+                        </div>
+                    )}
 
-                            {/* LOGGING TOGGLE */}
-                            <div className="flex items-center justify-between pt-2 border-t border-white/5">
+                    {/* ACTIVITY LOGS (All Admins) */}
+                    {profile?.role === 'Admin' && (
+                        <div className="bg-slate-900/50 rounded-2xl p-4 border border-white/5 space-y-3">
+                            <div className="flex items-center justify-between">
                                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Activity Logs</span>
                                 <button
                                     onClick={() => {
@@ -398,22 +427,26 @@ const Dashboard = () => {
                                 </button>
                             </div>
 
-                            <button
-                                onClick={async () => {
-                                    if (confirm('Clear ALL local activity logs? This will delete all .log files in the server directory.')) {
-                                        const success = await clearLocalLogs();
-                                        if (success) {
-                                            alert('Local logs cleared successfully.');
-                                        } else {
-                                            alert('Failed to clear local logs. Is the proxy running?');
+                            {/* Local Logs Cleaning (Localhost Only) */}
+                            {(window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') && (
+                                <button
+                                    onClick={async () => {
+                                        if (confirm('Clear ALL local activity logs? This will delete all .log files in the server directory.')) {
+                                            const success = await clearLocalLogs();
+                                            if (success) {
+                                                alert('Local logs cleared successfully.');
+                                            } else {
+                                                alert('Failed to clear local logs. Is the proxy running?');
+                                            }
                                         }
-                                    }
-                                }}
-                                className="w-full py-2 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-[10px] font-bold rounded-lg border border-emerald-500/20 transition-colors uppercase tracking-widest mt-2"
-                            >
-                                Clear Local Logs
-                            </button>
+                                    }}
+                                    className="w-full py-2 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-[10px] font-bold rounded-lg border border-emerald-500/20 transition-colors uppercase tracking-widest mt-2"
+                                >
+                                    Clear Local Logs
+                                </button>
+                            )}
 
+                            {/* Production Logs Cleaning (Live Only) */}
                             {(() => {
                                 const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
                                 if (!isLocal) {

@@ -62,24 +62,36 @@ const getNewLogFilename = () => {
 
 const writeToLogFile = (data) => {
     try {
+        let entryObj = data;
+        // Parse if string (defensive)
+        if (typeof data === 'string') {
+            try { entryObj = JSON.parse(data); } catch (e) { }
+        }
+
+        // 1. Extract Organization ID for Isolation
+        // Try deep access first (normalized logEntry), then shallow (raw payload)
+        let businessId = entryObj?.payload?.business_id || entryObj?.business_id || 'global';
+
+        // Sanitize for filesystem safety
+        businessId = businessId.replace(/[^a-z0-9-]/gi, '_');
+
+        // 2. Construct Filename: organization_date.log
         const todayPrefix = format(new Date(), 'yyyy-MM-dd');
-        const isDifferentDay = currentLogFile && !path.basename(currentLogFile).startsWith(todayPrefix);
+        const filename = path.join(LOGS_DIR, `${businessId}_${todayPrefix}.log`);
 
-        if (!currentLogFile || currentLineCount >= 500 || isDifferentDay) {
-            currentLogFile = getNewLogFilename();
-            currentLineCount = 0;
-            console.log(`[Logger] Creating new log file (Reason: ${isDifferentDay ? 'Date Change' : 'Size/Init'}): ${path.basename(currentLogFile)}`);
+        // 3. Ensure Timestamp if missing
+        if (typeof entryObj === 'object' && !entryObj.ts) {
+            entryObj.ts = format(new Date(), 'yyyy-MM-dd HH:mm:ss.SSS');
         }
 
-        // Ensure data has a timestamp (ISO)
-        if (typeof data === 'object' && !data.ts) {
-            data.ts = format(new Date(), 'yyyy-MM-dd HH:mm:ss.SSS');
-        }
+        const entry = (typeof entryObj === 'object' ? JSON.stringify(entryObj) : String(data)) + '\n';
 
-        const entry = (typeof data === 'object' ? JSON.stringify(data) : data) + '\n';
+        // 4. Append
+        fs.appendFileSync(filename, entry);
 
-        fs.appendFileSync(currentLogFile, entry);
-        currentLineCount++;
+        // Console feedback for dev verification (optional, can remove to reduce noise)
+        // console.log(`[Logger] Wrote to ${path.basename(filename)}`);
+
     } catch (err) {
         console.error('[Logger] Failed to write to log:', err);
     }
