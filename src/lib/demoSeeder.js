@@ -382,10 +382,26 @@ const performBulkSeed = async (businessId, providers, treatments, clients) => {
  * 4. Books ONE appointment per 10s pulse using the Provider's OWN clients.
  */
 export const runStressTest = async (businessId) => {
+    // SECURITY: Prevent Demo Seeder from running on non-local environments
+    // This safeguards against accidental "Demo Mode" activation on the Live URL
+    // corrupting the production database (since they share the same Supabase instance).
+    const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    if (!isLocal) {
+        if (getDemoStatus()) console.warn('[DemoSeeder] ABORTED: Demo Mode is active but disabled on non-local environment for safety.');
+        return;
+    }
+
     if (!getDemoStatus()) return;
     console.log(`🤖 [DemoSeeder] Pulse Triggered for Business: ${businessId}`);
 
     try {
+        // 0. Identity Verification (Strict Isolation)
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user?.email !== 'admin@demo.com') {
+            console.warn('[DemoSeeder] ABORTED: Demo Mode only runs on admin@demo.com');
+            return;
+        }
+
         // 1. Context Collection
         const { data: allProviders } = await supabase
             .from('profiles')

@@ -62,10 +62,13 @@ const getNewLogFilename = () => {
 
 const writeToLogFile = (data) => {
     try {
-        if (!currentLogFile || currentLineCount >= 500) {
+        const todayPrefix = format(new Date(), 'yyyy-MM-dd');
+        const isDifferentDay = currentLogFile && !path.basename(currentLogFile).startsWith(todayPrefix);
+
+        if (!currentLogFile || currentLineCount >= 500 || isDifferentDay) {
             currentLogFile = getNewLogFilename();
             currentLineCount = 0;
-            console.log(`[Logger] Creating new log file: ${path.basename(currentLogFile)}`);
+            console.log(`[Logger] Creating new log file (Reason: ${isDifferentDay ? 'Date Change' : 'Size/Init'}): ${path.basename(currentLogFile)}`);
         }
 
         // Ensure data has a timestamp (ISO)

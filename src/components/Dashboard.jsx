@@ -347,8 +347,8 @@ const Dashboard = () => {
                 </div>
 
                 <div className="mt-8 space-y-4">
-                    {/* DEMO CONTROLS (Admin Only) */}
-                    {profile?.role === 'Admin' && (
+                    {/* DEMO CONTROLS (Admin Only - LOCALHOST ONLY) */}
+                    {profile?.role === 'Admin' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') && (
                         <div className="bg-slate-900/50 rounded-2xl p-4 border border-white/5 space-y-3">
                             <div className="flex items-center justify-between">
                                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Medical Demo</span>
