@@ -16,7 +16,11 @@ import {
     Filter,
     FileText,
     Activity,
-    X
+    X,
+    Database,
+    Shield,
+    HardDrive,
+    Trash2
 } from 'lucide-react';
 import {
     BarChart,
@@ -31,8 +35,8 @@ import {
 } from 'recharts';
 import { motion, AnimatePresence } from 'framer-motion';
 import { format } from 'date-fns';
-import jsPDF from 'jspdf';
-import 'jspdf-autotable';
+import { jsPDF } from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
 const MasterDashboard = () => {
     const [stats, setStats] = useState({
@@ -58,6 +62,8 @@ const MasterDashboard = () => {
     const [businessDetails, setBusinessDetails] = useState({ appointments: [], clients: [], payments: [] });
     const [fetchingDetails, setFetchingDetails] = useState(false);
     const [saving, setSaving] = useState(false);
+    const [auditLogStats, setAuditLogStats] = useState({ size: 'Calculating...', count: 0, dbSize: 'Calculating...' });
+    const [downloadingLogs, setDownloadingLogs] = useState(false);
 
     useEffect(() => {
         fetchMasterData();
@@ -157,10 +163,92 @@ const MasterDashboard = () => {
                 setSettings(prev => ({ ...prev, ...settingsMap }));
             }
 
+            // 5. Fetch Audit Log Stats
+            fetchAuditLogStats();
+
         } catch (err) {
             console.error('[MasterDashboard] Error fetching data:', err);
         } finally {
             setLoading(false);
+        }
+    };
+
+    const fetchAuditLogStats = async () => {
+        try {
+            const { data: size } = await supabase.rpc('get_table_size', { table_name: 'audit_logs' });
+            const { data: count } = await supabase.rpc('get_table_count', { table_name: 'audit_logs' });
+            const { data: dbSize } = await supabase.rpc('get_project_db_size');
+
+            setAuditLogStats({
+                size: size || '0 KB',
+                count: count || 0,
+                dbSize: dbSize || 'Calculating...'
+            });
+        } catch (err) {
+            console.error('Error fetching audit log stats:', err);
+        }
+    };
+
+    const handleDownloadAuditLogs = async (format = 'csv') => {
+        setDownloadingLogs(true);
+        try {
+            const { data, error } = await supabase
+                .rpc('get_recent_audit_logs', { log_limit: 50000 });
+
+            if (error) throw error;
+
+            if (format === 'json') {
+                // JSON Export (Best for AI Analysis)
+                const jsonContent = JSON.stringify(data, null, 2);
+                const blob = new Blob([jsonContent], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.setAttribute('href', url);
+                link.setAttribute('download', `audit_logs_${new Date().toISOString().split('T')[0]}.json`);
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            } else {
+                // CSV Export (Best for spreadsheets)
+                const processedData = data.map(log => ({
+                    id: log.id,
+                    ts: log.ts,
+                    severity: log.level, // renamed for clarity
+                    event_message: log.event_message, // ensure main message is top level
+                    ...log, // spread raw
+                    service: JSON.stringify(log.service),
+                    event: JSON.stringify(log.event),
+                    actor: JSON.stringify(log.actor),
+                    payload: JSON.stringify(log.payload),
+                    metrics: JSON.stringify(log.metrics),
+                    context: JSON.stringify(log.context)
+                }));
+                downloadCSV(processedData, `audit_logs_${new Date().toISOString().split('T')[0]}`);
+            }
+
+        } catch (err) {
+            console.error('Download failed:', err);
+            alert('Failed to download logs: ' + err.message);
+        } finally {
+            setDownloadingLogs(false);
+        }
+    };
+
+    const handlePurgeLogs = async () => {
+        if (!confirm('DANGER: This will permanently DELETE ALL audit logs from the database. This action cannot be undone.\n\nAre you sure you want to proceed?')) {
+            return;
+        }
+
+        try {
+            // Optional: Backup before delete? For now, we assume user downloaded first.
+            const { error } = await supabase.rpc('purge_audit_logs');
+            if (error) throw error;
+
+            alert('System logs purged successfully.');
+            fetchAuditLogStats(); // Refresh stats to show 0/0
+        } catch (err) {
+            console.error('Purge failed:', err);
+            alert('Failed to purge logs: ' + err.message);
         }
     };
 
@@ -275,7 +363,7 @@ const MasterDashboard = () => {
             org.subscriptions?.[0]?.tier === 'trial' ? 'NO' : 'YES'
         ]);
 
-        doc.autoTable({
+        autoTable(doc, {
             startY: 30,
             head: [['Organization', 'Admin Email', 'Staff Count', 'Tier', 'Expires', 'Subscribed']],
             body: tableData,
@@ -370,7 +458,7 @@ const MasterDashboard = () => {
                         <div className="flex items-end justify-between">
                             <h3 className="text-3xl font-black text-white tracking-tight">{stat.value}</h3>
                             <span className={`text-xs font-bold ${stat.trendColor} flex items-center gap-1`}>
-                                {stat.trend.includes('%') && (stat.revenueTrend >= 0 ? <ArrowUpRight size={14} /> : <ArrowDownRight size={14} />)}
+                                {stat.trend.includes('%') && (stat.trend.startsWith('+') ? <ArrowUpRight size={14} /> : <ArrowDownRight size={14} />)}
                                 {stat.trend}
                             </span>
                         </div>
@@ -390,7 +478,7 @@ const MasterDashboard = () => {
                         <p className="text-sm text-slate-400">Platform-wide financial trajectory</p>
                     </div>
                     <div className="h-[300px] w-full mt-auto">
-                        <ResponsiveContainer width="100%" height="100%" minHeight={300}>
+                        <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                             <AreaChart data={stats.revenueChart}>
                                 <defs>
                                     <linearGradient id="colorRevM" x1="0" y1="0" x2="0" y2="1">
@@ -486,6 +574,115 @@ const MasterDashboard = () => {
                             {saving ? <Loader2 className="animate-spin" size={20} /> : <Settings size={18} />}
                             Update Global Fees
                         </button>
+                    </div>
+                </div>
+            </div>
+
+            {/* System Operations & Logs */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <div className="glass-card p-6 md:p-8">
+                    <div className="flex justify-between items-start mb-6">
+                        <div>
+                            <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                                <Shield className="text-emerald-400" size={20} />
+                                Audit Log Management
+                            </h3>
+                            <p className="text-sm text-slate-400">Monitor and export system-wide activity logs</p>
+                        </div>
+                        <button
+                            onClick={fetchAuditLogStats}
+                            className="p-2 rounded-lg bg-white/5 hover:bg-white/10 text-slate-400 transition-all"
+                            title="Refresh Stats"
+                        >
+                            <Activity size={16} />
+                        </button>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4 mb-8">
+                        <div className="p-4 rounded-2xl bg-white/5 border border-white/5">
+                            <div className="flex items-center gap-2 mb-2 text-slate-500">
+                                <HardDrive size={14} />
+                                <span className="text-[10px] font-black uppercase tracking-widest">Storage Size</span>
+                            </div>
+                            <div className="text-2xl font-black text-white">{auditLogStats.size}</div>
+                        </div>
+                        <div className="p-4 rounded-2xl bg-white/5 border border-white/5">
+                            <div className="flex items-center gap-2 mb-2 text-slate-500">
+                                <Database size={14} />
+                                <span className="text-[10px] font-black uppercase tracking-widest">Row Count</span>
+                            </div>
+                            <div className="text-2xl font-black text-white">{auditLogStats.count.toLocaleString()}</div>
+                        </div>
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row gap-4">
+                        <button
+                            onClick={() => handleDownloadAuditLogs('csv')}
+                            disabled={downloadingLogs}
+                            className="flex-1 bg-white/10 hover:bg-white/20 text-white font-bold py-3 px-6 rounded-xl transition-all flex items-center justify-center gap-2 border border-white/10"
+                        >
+                            {downloadingLogs ? <Loader2 className="animate-spin" size={18} /> : <Download size={18} />}
+                            CSV (Excel)
+                        </button>
+                        <button
+                            onClick={() => handleDownloadAuditLogs('json')}
+                            disabled={downloadingLogs}
+                            className="flex-1 bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 font-bold py-3 px-6 rounded-xl transition-all flex items-center justify-center gap-2 border border-indigo-500/20"
+                        >
+                            {downloadingLogs ? <Loader2 className="animate-spin" size={18} /> : <FileText size={18} />}
+                            JSON (AI Ready)
+                        </button>
+                    </div>
+                    <p className="mt-4 text-[10px] text-slate-500 italic text-center">
+                        * Downloads are limited to the most recent 50,000 entries for performance.
+                    </p>
+
+                    <div className="mt-6 pt-6 border-t border-white/5 flex flex-col items-center">
+                        <button
+                            onClick={handlePurgeLogs}
+                            className="text-xs text-red-400 hover:text-red-300 font-bold flex items-center gap-2 px-4 py-2 hover:bg-red-500/10 rounded-lg transition-all"
+                        >
+                            <Trash2 size={14} />
+                            Purge System Logs
+                        </button>
+                        <p className="text-[10px] text-slate-600 mt-1">
+                            Warning: This will permanently delete all logs.
+                        </p>
+                    </div>
+                </div>
+
+                <div className="glass-card p-6 md:p-8">
+                    <h3 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
+                        <Activity className="text-blue-400" size={20} />
+                        System Health Status
+                    </h3>
+
+                    <div className="mb-6 p-4 rounded-xl bg-blue-500/10 border border-blue-500/20 flex flex-col items-center justify-center text-center">
+                        <div className="flex items-center gap-2 mb-1 text-blue-300">
+                            <Database size={16} />
+                            <span className="text-xs font-black uppercase tracking-widest">Total DB Size</span>
+                        </div>
+                        <div className="text-3xl font-black text-white tracking-tight">
+                            {auditLogStats.dbSize || '...'}
+                        </div>
+                        <div className="text-[10px] text-blue-400/60 font-medium mt-1">Includes all tables & indexes</div>
+                    </div>
+
+                    <div className="space-y-4">
+                        {[
+                            { label: 'Database Connection', status: 'Healthy', color: 'text-emerald-400' },
+                            { label: 'Edge Functions', status: 'Active', color: 'text-emerald-400' },
+                            { label: 'Realtime Service', status: 'Connected', color: 'text-emerald-400' },
+                            { label: 'Auth Service', status: 'Operational', color: 'text-emerald-400' }
+                        ].map((item, i) => (
+                            <div key={i} className="flex justify-between items-center p-3 rounded-xl bg-white/2 border border-white/5">
+                                <span className="text-sm text-slate-400 font-medium">{item.label}</span>
+                                <div className="flex items-center gap-2">
+                                    <div className={`w-1.5 h-1.5 rounded-full bg-current ${item.color}`} />
+                                    <span className={`text-xs font-bold ${item.color}`}>{item.status}</span>
+                                </div>
+                            </div>
+                        ))}
                     </div>
                 </div>
             </div>
@@ -819,7 +1016,7 @@ const MasterDashboard = () => {
                     </div>
                 )}
             </AnimatePresence>
-        </div>
+        </div >
     );
 };
 

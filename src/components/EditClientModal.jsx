@@ -1,12 +1,36 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, User, Phone, Mail, Save, MessageCircle, CheckCircle2, AlertCircle, Loader2, Send } from 'lucide-react'
+import { X, User, Phone, Mail, Save, MessageCircle, CheckCircle2, AlertCircle, Loader2, Send, Folder } from 'lucide-react'
 import { logEvent } from '../lib/logger'
-
-// ... imports
+import { supabase } from '../lib/supabase'
+import { useToast } from '../contexts/ToastContext'
 
 const EditClientModal = ({ isOpen, onClose, client, onUpdate }) => {
-    // ... state
+    const showToast = useToast()
+    const [loading, setLoading] = useState(false)
+    const [testLoading, setTestLoading] = useState(false)
+    const [formData, setFormData] = useState({
+        first_name: '',
+        last_name: '',
+        phone: '',
+        email: '',
+        file_number: '',
+        whatsapp_opt_in: false
+    })
+
+    // Sync formData when client prop changes
+    useEffect(() => {
+        if (client) {
+            setFormData({
+                first_name: client.first_name || '',
+                last_name: client.last_name || '',
+                phone: client.phone || '',
+                email: client.email || '',
+                file_number: client.file_number || '',
+                whatsapp_opt_in: client.whatsapp_opt_in || false
+            })
+        }
+    }, [client])
 
     const handleSubmit = async (e) => {
         e.preventDefault()
@@ -164,6 +188,24 @@ const EditClientModal = ({ isOpen, onClose, client, onUpdate }) => {
                                             className="glass-input w-full pl-11"
                                         />
                                     </div>
+                                </div>
+
+                                <div className="space-y-2">
+                                    <label className="text-xs font-bold text-slate-400 uppercase tracking-widest ml-1">File Number</label>
+                                    <div className="relative">
+                                        <Folder className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={16} />
+                                        <input
+                                            type="text"
+                                            value={formData.file_number}
+                                            onChange={e => setFormData({ ...formData, file_number: e.target.value ? e.target.value.toUpperCase() : '' })}
+                                            placeholder="e.g. SB4547"
+                                            maxLength={10}
+                                            className="glass-input w-full pl-11 uppercase font-mono tracking-widest"
+                                        />
+                                    </div>
+                                    <p className="text-[10px] text-slate-500 italic pl-1">
+                                        Unique file reference (Max 10 chars)
+                                    </p>
                                 </div>
 
                                 {/* WhatsApp Integration Section */}

@@ -1,12 +1,16 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../hooks/useAuth'
-import { Plus, Trash2, Clock, Coffee, Loader2, X, Sun, Moon, Save, Check, AlertTriangle } from 'lucide-react'
+import { Plus, Trash2, Clock, Coffee, Loader2, X, Sun, Moon, Save, Check, AlertTriangle, Users, ArrowRight } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { getCache, setCache, CACHE_KEYS } from '../lib/cache'
+import { useToast } from '../contexts/ToastContext'
+import { format, parseISO } from 'date-fns'
+import { logEvent } from '../lib/logger'
 
 const ScheduleSettings = () => {
-    const { user } = useAuth()
+    const { user, profile } = useAuth()
+    const showToast = useToast()
     const [breaks, setBreaks] = useState(() => {
         const cached = getCache(CACHE_KEYS.BREAKS)
         return Array.isArray(cached) ? cached : []
@@ -21,6 +25,12 @@ const ScheduleSettings = () => {
     const [isSubmitting, setIsSubmitting] = useState(false)
     const [saveStatus, setSaveStatus] = useState({}) // { dayIdx: 'saved' | 'saving' | 'error' }
     const [bufferSettings, setBufferSettings] = useState({ enabled: false, duration: 15 })
+
+    // Conflict Detection State
+    const [showConflictModal, setShowConflictModal] = useState(false)
+    const [conflictingAppointments, setConflictingAppointments] = useState([])
+    const [pendingHoursChange, setPendingHoursChange] = useState(null)
+    const [transferring, setTransferring] = useState(false)
 
     const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
@@ -66,7 +76,7 @@ const ScheduleSettings = () => {
         }
     }, [user, fetchData])
 
-    const handleUpdateHours = async (dayIdx, start, end, isActive = true) => {
+    const handleUpdateHours = async (dayIdx, start, end, isActive = true, skipConflictCheck = false) => {
         if (!user) return
 
         // 1. Optimistic UI update
@@ -90,7 +100,69 @@ const ScheduleSettings = () => {
         // If incomplete, just return without saving (but don't show error yet)
         if (start.length < 5 || end.length < 5) return
 
+        // 3. Check for appointment conflicts
+        // - When disabling a day: check ALL appointments on that day
+        // - When narrowing hours: check appointments outside the new window
+        if (!skipConflictCheck) {
+            const conflicts = isActive
+                ? await checkForConflicts(dayIdx, start, end)
+                : await checkForConflicts(dayIdx, '00:00', '00:01') // If disabling, ALL appointments conflict
+
+            if (conflicts.length > 0) {
+                setConflictingAppointments(conflicts)
+                setPendingHoursChange({ dayIdx, start, end, isActive })
+                setShowConflictModal(true)
+                return // Don't save yet - wait for user decision
+            }
+        }
+
+        await saveHoursToDb(newItem, dayIdx)
+    }
+
+    // Check for appointments that fall outside new working hours
+    const checkForConflicts = async (dayIdx, newStart, newEnd) => {
+        if (!user) return []
+
+        try {
+            // Get future pending appointments for this provider on this day of week
+            const today = new Date()
+            today.setHours(0, 0, 0, 0)
+
+            const { data: appointments } = await supabase
+                .from('appointments')
+                .select('*, client:clients(first_name, last_name, phone)')
+                .eq('assigned_profile_id', user.id)
+                .eq('status', 'pending')
+                .gte('scheduled_start', today.toISOString())
+
+            if (!appointments) return []
+
+            // Filter to appointments on this day of week that are outside new hours
+            const conflicts = appointments.filter(apt => {
+                const aptDate = new Date(apt.scheduled_start)
+                if (aptDate.getDay() !== dayIdx) return false
+
+                const aptTime = format(aptDate, 'HH:mm')
+                const aptEndTime = format(new Date(aptDate.getTime() + apt.duration_minutes * 60000), 'HH:mm')
+
+                // Check if appointment is outside new working hours
+                return aptTime < newStart || aptEndTime > newEnd
+            })
+
+            return conflicts
+        } catch (err) {
+            console.error('Error checking conflicts:', err)
+            return []
+        }
+    }
+
+    // Save hours change to database
+    const saveHoursToDb = async (newItem, dayIdx) => {
         setSaveStatus(prev => ({ ...prev, [dayIdx]: 'saving' }))
+
+        // Get old hours for logging
+        const oldHours = workingHours.find(h => h.day_of_week === dayIdx)
+        const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
         try {
             const { error } = await supabase
@@ -99,6 +171,17 @@ const ScheduleSettings = () => {
 
             if (error) throw error
 
+            // Log the change
+            await logEvent('SCHEDULE_CHANGE', {
+                provider_id: user?.id,
+                provider_name: profile?.full_name,
+                day: days[dayIdx],
+                day_index: dayIdx,
+                old_hours: oldHours ? { start: oldHours.start_time, end: oldHours.end_time, active: oldHours.is_active } : null,
+                new_hours: { start: newItem.start_time, end: newItem.end_time, active: newItem.is_active },
+                action: !newItem.is_active ? 'DAY_DISABLED' : (oldHours?.is_active === false ? 'DAY_ENABLED' : 'HOURS_CHANGED')
+            }, profile)
+
             setSaveStatus(prev => ({ ...prev, [dayIdx]: 'saved' }))
             setTimeout(() => setSaveStatus(prev => ({ ...prev, [dayIdx]: null })), 2000)
         } catch (error) {
@@ -106,6 +189,95 @@ const ScheduleSettings = () => {
             setSaveStatus(prev => ({ ...prev, [dayIdx]: 'error' }))
             fetchData()
         }
+    }
+
+    // Transfer conflicting appointments to admin and notify
+    const handleTransferToAdmin = async () => {
+        if (!pendingHoursChange || conflictingAppointments.length === 0) return
+
+        setTransferring(true)
+        try {
+            // 1. Find admin for this business
+            const { data: admins } = await supabase
+                .from('profiles')
+                .select('id, full_name')
+                .eq('business_id', profile?.business_id)
+                .ilike('role', 'admin')
+                .limit(1)
+
+            const admin = admins?.[0]
+            if (!admin) {
+                showToast('No admin found to transfer appointments to', 'error')
+                setTransferring(false)
+                return
+            }
+
+            // 2. Transfer all conflicting appointments to admin
+            const aptIds = conflictingAppointments.map(a => a.id)
+            const clientNames = conflictingAppointments.map(a =>
+                `${a.client?.first_name || 'Unknown'} ${a.client?.last_name || ''}`
+            ).join(', ')
+
+            // 2. Use RPC to transfer each appointment (bypasses RLS)
+            for (const aptId of aptIds) {
+                const { error: rpcError } = await supabase.rpc('reassign_appointment', {
+                    appt_id: aptId,
+                    new_provider_id: admin.id,
+                    note_text: 'Transferred due to working hours change - requires attention',
+                    flag_attention: true
+                })
+                if (rpcError) throw rpcError
+            }
+
+            // 3. Send internal message to admin
+            const messageContent = `Hi ${admin.full_name}, it's ${profile?.full_name || 'a provider'}. I have changed my working hours and the following clients need to be rescheduled: ${clientNames}. Please attend to this. Thank you!`
+
+            await supabase.from('temporary_messages').insert({
+                sender_id: user.id,
+                receiver_id: admin.id,
+                business_id: profile?.business_id,
+                content: messageContent,
+                is_read: false
+            })
+
+            // Log the transfers
+            const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+            await logEvent('APPOINTMENTS_TRANSFERRED', {
+                provider_id: user?.id,
+                provider_name: profile?.full_name,
+                admin_id: admin.id,
+                admin_name: admin.full_name,
+                day: days[pendingHoursChange.dayIdx],
+                reason: pendingHoursChange.isActive ? 'WORKING_HOURS_NARROWED' : 'DAY_DISABLED',
+                appointments_count: conflictingAppointments.length,
+                appointment_ids: aptIds,
+                clients_affected: clientNames
+            }, profile)
+
+            // 4. Now save the hours change
+            const { dayIdx, start, end, isActive } = pendingHoursChange
+            const newItem = { profile_id: user.id, day_of_week: dayIdx, start_time: start, end_time: end, is_active: isActive }
+            await saveHoursToDb(newItem, dayIdx)
+
+            showToast(`${conflictingAppointments.length} appointment(s) transferred to ${admin.full_name}`, 'success')
+            setShowConflictModal(false)
+            setConflictingAppointments([])
+            setPendingHoursChange(null)
+
+        } catch (err) {
+            console.error('Transfer failed:', err)
+            showToast('Failed to transfer appointments', 'error')
+        } finally {
+            setTransferring(false)
+        }
+    }
+
+    // Cancel hours change
+    const handleCancelHoursChange = () => {
+        setShowConflictModal(false)
+        setConflictingAppointments([])
+        setPendingHoursChange(null)
+        fetchData() // Revert to original hours
     }
 
     const handleToggleDay = async (dayIdx, currentHours) => {
@@ -212,6 +384,97 @@ const ScheduleSettings = () => {
 
     return (
         <div className="space-y-12">
+            {/* Conflict Warning Modal */}
+            <AnimatePresence>
+                {showConflictModal && (
+                    <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            onClick={handleCancelHoursChange}
+                            className="absolute inset-0 bg-slate-950/80 backdrop-blur-md"
+                        />
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                            className="relative w-full max-w-lg glass-card p-0 flex flex-col max-h-[85vh] overflow-hidden shadow-2xl border border-amber-500/30"
+                        >
+                            {/* Header */}
+                            <div className="p-6 border-b border-amber-500/20 bg-amber-500/10 flex items-center justify-between shrink-0">
+                                <div className="flex items-center gap-3">
+                                    <div className="p-2.5 rounded-xl bg-amber-500/20 border border-amber-500/30 text-amber-400">
+                                        <AlertTriangle size={20} />
+                                    </div>
+                                    <div>
+                                        <h3 className="text-xl font-heading font-bold text-white leading-none">Appointment Conflict</h3>
+                                        <p className="text-[10px] text-amber-400 font-bold uppercase tracking-widest mt-1.5">
+                                            {conflictingAppointments.length} CLIENT{conflictingAppointments.length !== 1 ? 'S' : ''} AFFECTED
+                                        </p>
+                                    </div>
+                                </div>
+                                <button onClick={handleCancelHoursChange} className="p-2 text-slate-500 hover:text-white hover:bg-white/5 rounded-xl transition-all">
+                                    <X size={20} />
+                                </button>
+                            </div>
+
+                            {/* Content */}
+                            <div className="flex-1 overflow-y-auto p-6 space-y-4">
+                                <p className="text-sm text-slate-300">
+                                    Changing your working hours will affect these scheduled appointments.
+                                    They will be <span className="text-amber-400 font-bold">transferred to the Admin</span> for rescheduling.
+                                </p>
+
+                                <div className="space-y-2">
+                                    {conflictingAppointments.map(apt => (
+                                        <div key={apt.id} className="bg-slate-800/50 border border-white/5 rounded-xl p-4 flex items-center gap-4">
+                                            <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center text-amber-400 font-bold text-sm">
+                                                {apt.client?.first_name?.charAt(0) || '?'}
+                                            </div>
+                                            <div className="flex-1">
+                                                <p className="font-bold text-white text-sm">
+                                                    {apt.client?.first_name} {apt.client?.last_name}
+                                                </p>
+                                                <p className="text-xs text-slate-400">
+                                                    {format(new Date(apt.scheduled_start), 'EEE, MMM d')} at {format(new Date(apt.scheduled_start), 'HH:mm')}
+                                                    <span className="mx-2">•</span>
+                                                    {apt.duration_minutes}min
+                                                </p>
+                                            </div>
+                                            <ArrowRight className="text-amber-500" size={16} />
+                                            <div className="p-2 rounded-lg bg-indigo-500/20 text-indigo-400">
+                                                <Users size={16} />
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* Actions */}
+                            <div className="p-4 border-t border-white/5 bg-white/[0.02] flex gap-3 shrink-0">
+                                <button
+                                    type="button"
+                                    onClick={handleCancelHoursChange}
+                                    className="flex-1 py-3 rounded-xl bg-surface border border-white/5 text-slate-400 font-bold hover:text-white transition-all text-sm"
+                                >
+                                    Keep Original Hours
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={handleTransferToAdmin}
+                                    disabled={transferring}
+                                    className="flex-[2] py-3 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-900 font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20 text-sm"
+                                >
+                                    {transferring ? <Loader2 size={18} className="animate-spin" /> : <ArrowRight size={18} />}
+                                    Transfer to Admin & Save
+                                </button>
+                            </div>
+                        </motion.div>
+                    </div>
+                )}
+            </AnimatePresence>
+
             {/* Working Hours Section */}
             <section className="space-y-6">
                 <div className="flex justify-between items-end">

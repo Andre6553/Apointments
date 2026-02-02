@@ -55,6 +55,8 @@ export const logEvent = async (action, data = {}, options = {}) => {
         },
         payload: {
             ...data,
+            // Ensure business_id is ALWAYS present in the payload root for the proxy-sink routing
+            business_id: data.business_id || options.actor?.business_id || options.context?.business_id || (typeof options === 'object' && options.id ? options.business_id : null),
             // Ensure scheduled end is always present if start is provided
             ...(data.scheduled_start ? {
                 scheduled: {
@@ -131,7 +133,7 @@ export const logAppointment = async (appointment, provider, client, creator, act
     const action = `appointment.${actionType.toLowerCase()}.${metrics.error ? 'fail' : 'success'}`;
 
     await logEvent(action, {
-        business_id: appointment.business_id || creator?.business_id, // DATA ISOLATION
+        business_id: appointment.business_id || provider?.business_id || client?.business_id || creator?.business_id, // DATA ISOLATION
         appointment_id: appointment.id,
         provider_id: provider?.id,
         client_id: client?.id,

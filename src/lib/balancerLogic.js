@@ -5,7 +5,7 @@ import { supabase } from './supabase'
  * Only considers providers who are currently ONLINE.
  * Optimized to use BATCH fetching to prevent N+1 DB query disasters.
  */
-export const getSmartReassignments = async (businessId) => {
+export const getSmartReassignments = async (businessId, forceAllOnline = false) => {
     if (!businessId) {
         console.warn('[Autopilot] Missing businessId, skipping.');
         return [];
@@ -37,12 +37,17 @@ export const getSmartReassignments = async (businessId) => {
     }
 
     // 2. Fetch all ONLINE providers in the same business
-    const { data: onlineProviders } = await supabase
+    const onlineQuery = supabase
         .from('profiles')
         .select('*')
         .eq('business_id', businessId)
-        .eq('is_online', true)
         .eq('role', 'Provider');
+
+    if (!forceAllOnline) {
+        onlineQuery.eq('is_online', true);
+    }
+
+    const { data: onlineProviders } = await onlineQuery;
 
     if (!onlineProviders?.length) return [];
 
@@ -183,7 +188,7 @@ export const getSmartReassignments = async (businessId) => {
  * - Yellow: 80% - 100% Capacity used
  * - Red: > 100% (Mathematically impossible to finish w/o overtime)
  */
-export const analyzeSystemHealth = async (businessId) => {
+export const analyzeSystemHealth = async (businessId, forceAllOnline = false) => {
     if (!businessId) {
         console.warn('[SystemHealth] Missing businessId, skipping.');
         return null;
@@ -194,12 +199,17 @@ export const analyzeSystemHealth = async (businessId) => {
     const dayOfWeek = now.getDay();
 
     // 1. Fetch Online Providers & Their Constraints
-    const { data: onlineProviders } = await supabase
+    const onlineQuery = supabase
         .from('profiles')
         .select('id, full_name, whatsapp')
         .eq('business_id', businessId)
-        .eq('is_online', true)
         .eq('role', 'Provider');
+
+    if (!forceAllOnline) {
+        onlineQuery.eq('is_online', true);
+    }
+
+    const { data: onlineProviders } = await onlineQuery;
 
     if (!onlineProviders?.length) return { status: 'Critical', load: 100, message: 'No providers online!' };
 

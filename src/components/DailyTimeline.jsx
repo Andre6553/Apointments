@@ -81,7 +81,7 @@ const DailyTimeline = ({ selectedDate = new Date() }) => {
 
             const timelineEvents = [
                 ...(aptsRes.data?.map(a => {
-                    const start = new Date(a.scheduled_start)
+                    const start = new Date((a.status === 'active' || a.status === 'completed') && a.actual_start ? a.actual_start : a.scheduled_start)
                     const aptStartMins = start.getHours() * 60 + start.getMinutes()
                     const duration = parseInt(a.duration_minutes) || 0
                     const aptEndMins = aptStartMins + duration
@@ -229,10 +229,10 @@ const DailyTimeline = ({ selectedDate = new Date() }) => {
                         {timelineHours.map(m => (
                             <div
                                 key={m}
-                                className={`absolute left-0 right-0 border-t flex items-center ${m === startMinutes && isToday ? 'border-primary/50' : 'border-white/5'}`}
+                                className={`absolute left-0 right-0 border-t flex items-center transition-colors duration-500 ${m === startMinutes && isToday ? 'border-primary/40' : 'border-white/[0.03]'}`}
                                 style={{ top: `${((m - startMinutes) / totalMinutes) * 100}%` }}
                             >
-                                <span className={`absolute -left-12 text-[10px] font-bold w-10 text-right ${m === startMinutes && isToday ? 'text-primary' : 'text-slate-600'}`}>
+                                <span className={`absolute -left-12 text-[9px] font-black w-10 text-right tracking-tighter ${m === startMinutes && isToday ? 'text-primary' : 'text-slate-700'}`}>
                                     {Math.floor(m / 60).toString().padStart(2, '0')}:{Math.floor(m % 60).toString().padStart(2, '0')}
                                 </span>
                             </div>
@@ -267,108 +267,98 @@ const DailyTimeline = ({ selectedDate = new Date() }) => {
                             </div>
                         )}
 
-                        {/* Events (Filtered for today) */}
-                        {events
-                            .filter(event => {
-                                if (!isToday) return true;
-                                const startDate = new Date(event.start);
-                                const eventEnd = new Date(startDate.getTime() + event.duration * 60000);
-                                return eventEnd > now;
-                            })
-                            .map(event => (
-                                <motion.div
-                                    key={event.id}
-                                    initial={{ opacity: 0, x: -10 }}
-                                    animate={{ opacity: 1, x: 0 }}
-                                    className={`absolute left-2 right-2 rounded-xl border p-2 flex flex-col shadow-lg transition-all hover:scale-[1.01] cursor-pointer group
-                                    ${event.isOutOfBounds ? 'saturate-0 opacity-20 brightness-50 border-white/5 z-0' : 'z-[5]'}
-                                    ${event.type === 'appointment'
-                                            ? 'bg-indigo-500/20 border-indigo-500/30 text-white'
-                                            : 'bg-orange-600/20 border-orange-500/30 text-white'
-                                        }`}
-                                    style={{
-                                        top: `${getPosition(event.start)}%`,
-                                        height: `${getDurationHeight(
-                                            isToday && new Date(event.start) < now
-                                                ? Math.max(0, event.duration - (now - new Date(event.start)) / 60000)
-                                                : event.duration
-                                        )}%`,
-                                        zIndex: 5
-                                    }}
-                                >
-                                    <div className="flex items-center gap-1 overflow-hidden min-h-[14px]">
-                                        {event.type === 'appointment' ? <User size={9} className="shrink-0" /> : <Coffee size={9} className="shrink-0" />}
-                                        <span className="text-[9px] font-extrabold truncate leading-none">{event.label}</span>
-                                        {event.isOutOfBounds && <span className="text-[7px] font-bold text-slate-500 ml-auto shrink-0">OUTSIDE SHIFT</span>}
-                                    </div>
-                                    {event.duration >= 15 && (
-                                        <span className="text-[8px] font-bold opacity-60 leading-none mt-0.5">
-                                            {format(event.start, 'HH:mm')} ({event.duration}m)
-                                        </span>
-                                    )}
+                        {(() => {
+                            const filtered = events
+                                .filter(event => {
+                                    if (!isToday) return true;
+                                    const startDate = new Date(event.start);
+                                    const eventEnd = new Date(startDate.getTime() + event.duration * 60000);
+                                    return eventEnd > now;
+                                })
+                                .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
 
-                                    {/* Buffer Block Indicator */}
-                                    {event.type === 'appointment' && bufferSettings.enabled && bufferSettings.duration > 0 && (
-                                        <div
-                                            className="absolute left-0 right-0 border-t border-dashed border-emerald-500/30 bg-emerald-500/10 -z-10 flex items-center justify-center backdrop-blur-[1px]"
-                                            style={{
-                                                top: '100%',
-                                                height: `${(bufferSettings.duration / event.duration) * 100}%`
-                                            }}
-                                        >
-                                            <span className="text-[7px] font-bold text-emerald-500/80 uppercase tracking-tighter">+{bufferSettings.duration}m Buffer</span>
-                                        </div>
-                                    )}
+                            // 2. Column Distribution Logic (Standard Calendar Slotting)
+                            const columns = [];
+                            filtered.forEach(event => {
+                                const start = new Date(event.start).getTime();
+                                let placed = false;
+                                for (let i = 0; i < columns.length; i++) {
+                                    const lastInCol = columns[i][columns[i].length - 1];
+                                    const lastEnd = new Date(lastInCol.start).getTime() + lastInCol.duration * 60000;
+                                    if (start >= lastEnd) {
+                                        columns[i].push(event);
+                                        event.colIndex = i;
+                                        placed = true;
+                                        break;
+                                    }
+                                }
+                                if (!placed) {
+                                    event.colIndex = columns.length;
+                                    columns.push([event]);
+                                }
+                            });
 
-                                    {event.type === 'appointment' && (
-                                        <div className="absolute top-2 right-2 flex items-center gap-3">
-                                            <button
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    const aptData = rawAppointments.find(a => a.id === event.id);
-                                                    setEditData(aptData);
-                                                    setIsEditOpen(true);
-                                                }}
-                                                className="p-2.5 rounded-lg bg-white/10 opacity-0 group-hover:opacity-100 transition-all hover:bg-amber-500 hover:text-white"
-                                                title="Edit"
-                                            >
-                                                <Edit2 size={14} />
-                                            </button>
-                                            <button
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    setSelectedApt({
-                                                        id: event.id,
-                                                        scheduled_start: event.start.toISOString(),
-                                                        duration_minutes: event.duration,
-                                                        client: {
-                                                            first_name: event.label.split(' ')[0],
-                                                            last_name: event.label.split(' ')[1] || ''
-                                                        }
-                                                    });
-                                                    setIsTransferOpen(true);
-                                                }}
-                                                className="p-2.5 rounded-lg bg-white/10 opacity-0 group-hover:opacity-100 transition-all hover:bg-primary hover:text-white"
-                                                title="Transfer"
-                                            >
-                                                <ArrowRight size={14} />
-                                            </button>
-                                            <button
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    const aptData = rawAppointments.find(a => a.id === event.id);
-                                                    setSelectedCancelApt(aptData);
-                                                    setIsCancelOpen(true);
-                                                }}
-                                                className="p-2.5 rounded-lg bg-white/10 opacity-0 group-hover:opacity-100 transition-all hover:bg-red-500 hover:text-white"
-                                                title="Cancel"
-                                            >
-                                                <Trash2 size={14} />
-                                            </button>
+                            const maxCols = columns.length || 1;
+
+                            return filtered.map((event, idx) => {
+                                const colWidth = 100 / maxCols;
+                                const left = event.colIndex * colWidth;
+                                const isActive = event.status === 'active';
+
+                                return (
+                                    <motion.div
+                                        key={event.id}
+                                        initial={{ opacity: 0, scale: 0.98 }}
+                                        animate={{ opacity: 1, scale: 1 }}
+                                        whileHover={{ zIndex: 50, scale: 1.01 }}
+                                        className={`absolute rounded-xl border flex flex-col shadow-xl transition-all cursor-pointer group backdrop-blur-md overflow-hidden
+                                        ${event.isOutOfBounds ? 'opacity-20 saturate-0 grayscale border-white/5' : 'opacity-100 border-white/10'}
+                                        ${isActive ? 'ring-2 ring-primary/40 shadow-glow shadow-primary/20' : ''}
+                                        ${event.type === 'appointment' ? 'bg-slate-900/90' : 'bg-slate-900/60'}
+                                        `}
+                                        style={{
+                                            top: `${getPosition(event.start)}%`,
+                                            height: `${getDurationHeight(
+                                                isToday && new Date(event.start) < now ? Math.max(15, event.duration - (now - new Date(event.start)) / 60000) : event.duration
+                                            )}%`,
+                                            left: `${left}%`,
+                                            width: `${colWidth - 0.5}%`,
+                                            minHeight: '35px',
+                                            zIndex: isActive ? 40 : 10
+                                        }}
+                                    >
+                                        <div className={`absolute left-0 top-0 bottom-0 w-1 ${event.type === 'appointment' ? 'bg-indigo-500' : 'bg-amber-500'} ${isActive ? 'animate-pulse' : ''}`} />
+
+                                        <div className="flex flex-col h-full p-2 relative z-10">
+                                            <div className="flex items-start justify-between gap-1 overflow-hidden">
+                                                <div className="flex flex-col min-w-0">
+                                                    <span className={`font-black uppercase tracking-tight leading-none truncate ${maxCols > 2 ? 'text-[8px]' : 'text-[10px] sm:text-xs'} ${isActive ? 'text-primary' : 'text-white'}`}>
+                                                        {event.label}
+                                                    </span>
+                                                    <div className={`flex items-center gap-1.5 mt-1 opacity-60 font-bold ${maxCols > 3 ? 'text-[7px]' : 'text-[9px]'}`}>
+                                                        <span>{format(event.start, 'HH:mm')}</span>
+                                                        <span>•</span>
+                                                        <span>{event.duration}m</span>
+                                                    </div>
+                                                </div>
+
+                                                {isActive && (
+                                                    <div className="w-1.5 h-1.5 rounded-full bg-primary animate-ping shrink-0" />
+                                                )}
+                                            </div>
+
+                                            {/* Minimal Buffer Indicator in card footer */}
+                                            {event.type === 'appointment' && bufferSettings.enabled && bufferSettings.duration > 0 && event.duration > 20 && (
+                                                <div className="mt-auto pt-1 flex items-center gap-1 opacity-30">
+                                                    <div className="h-[1px] flex-grow bg-emerald-500/20" />
+                                                    <span className="text-[6px] font-black text-emerald-400 uppercase tracking-widest whitespace-nowrap">+{bufferSettings.duration}m</span>
+                                                </div>
+                                            )}
                                         </div>
-                                    )}
-                                </motion.div>
-                            ))}
+                                    </motion.div>
+                                );
+                            });
+                        })()}
 
                         {/* Current Time Indicator */}
                         {format(now, 'yyyy-MM-dd') === format(selectedDate, 'yyyy-MM-dd') && (

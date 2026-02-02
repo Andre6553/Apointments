@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../hooks/useAuth';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -15,7 +15,9 @@ import ProfileSettings from './ProfileSettings';
 import OrganizationSettings from './OrganizationSettings';
 import ErrorBoundary from './ErrorBoundary';
 import { useWorkloadAlerts } from '../hooks/useWorkloadAlerts';
+import { useWakeLock } from '../hooks/useWakeLock';
 import { checkActiveOverruns } from '../lib/delayEngine';
+import { runVirtualAssistantCycle } from '../lib/appointmentService';
 import logo from '../assets/logo.png';
 import {
     Users,
@@ -41,21 +43,26 @@ import { clearLocalLogs } from '../lib/logger';
 
 const Dashboard = () => {
     const { user, profile, signOut } = useAuth();
+    const navigate = useNavigate();
     const [activeTab, setActiveTab] = useState('appointments');
     const [isSidebarOpen, setIsSidebarOpen] = useState(false);
     const [currentTime, setCurrentTime] = useState(new Date());
     const [demoMode, setDemoMode] = useState(getDemoStatus()); // DEMO MODE
     const [serverOnline, setServerOnline] = useState(false); // REMOTE HEARTBEAT
     const [loggingEnabled, setLoggingEnabled] = useState(localStorage.getItem('logging_enabled') === 'true');
+    const [virtualAssistantEnabled, setVirtualAssistantEnabled] = useState(localStorage.getItem('virtual_assistant_enabled') === 'true');
     const [selectedNotification, setSelectedNotification] = useState(null);
     const [isResponseModalOpen, setIsResponseModalOpen] = useState(false);
     const { count: alertCount } = useWorkloadAlerts();
+    const isAwake = useWakeLock(virtualAssistantEnabled);
 
     // ... (messaging state) ...
     const [unreadChatCount, setUnreadChatCount] = useState(0);
+    const [assistantCountdown, setAssistantCountdown] = useState(60);
     const [incomingMessageSender, setIncomingMessageSender] = useState(null);
     const [manualChatTarget, setManualChatTarget] = useState(null);
     const [deepLinkClientId, setDeepLinkClientId] = useState(null);
+    const [isAssistantLeader, setIsAssistantLeader] = useState(false);
 
     const location = useLocation();
 
@@ -66,13 +73,6 @@ const Dashboard = () => {
 
     useEffect(() => {
         const timer = setInterval(() => setCurrentTime(new Date()), 1000);
-
-        // DEMO MODE: Auto-Seed Seeder (Run ENGINE only on Local)
-        const demoInterval = setInterval(() => {
-            if (demoMode && user && isLocal) {
-                runStressTest(user.user_metadata?.business_id || profile?.business_id);
-            }
-        }, 10000);
 
         // HEARTBEAT: Local server acts as the "Pulse"
         const heartbeatInterval = setInterval(async () => {
@@ -164,7 +164,6 @@ const Dashboard = () => {
 
         return () => {
             clearInterval(timer);
-            clearInterval(demoInterval);
             clearInterval(heartbeatInterval);
             clearInterval(watchdogInterval);
             clearInterval(overrunMonitor);
@@ -175,6 +174,59 @@ const Dashboard = () => {
             document.removeEventListener('touchstart', unlockAudio);
         };
     }, [user, unreadChatCount]);
+
+    // DEMO MODE: Dedicated effect for stress test (must depend on demoMode)
+    useEffect(() => {
+        if (!demoMode || !user || !isLocal) return;
+
+        const businessId = user.user_metadata?.business_id || profile?.business_id;
+        if (!businessId) return;
+
+        console.log('[Dashboard] Demo Mode Active - Starting stress test interval');
+
+        // Run immediately, then every 10s
+        runStressTest(businessId);
+        const demoInterval = setInterval(() => runStressTest(businessId), 10000);
+
+        return () => clearInterval(demoInterval);
+    }, [demoMode, user, profile?.business_id]);
+
+    // VIRTUAL ASSISTANT: Persistent Background Loop
+    useEffect(() => {
+        if (!virtualAssistantEnabled || !profile?.business_id) return;
+
+        console.log('[Dashboard] Virtual Assistant Persistent Loop Active');
+
+        // Initial run
+        runVirtualAssistantCycle(profile.business_id, profile);
+        setAssistantCountdown(30);
+
+        // Initial leader check
+        import('../lib/appointmentService').then(m => {
+            setIsAssistantLeader(m.isLeader());
+        });
+
+        const timer = setInterval(() => {
+            setAssistantCountdown(prev => {
+                if (prev <= 1) {
+                    console.log('[Dashboard] Assistant Heartbeat: Timer reached zero. Triggering logic...');
+                    runVirtualAssistantCycle(profile.business_id, profile);
+
+                    // Sync leadership display
+                    import('../lib/appointmentService').then(m => {
+                        setIsAssistantLeader(m.isLeader());
+                    });
+
+                    return 30;
+                }
+                return prev - 1;
+            });
+        }, 1000);
+
+        return () => {
+            clearInterval(timer);
+        };
+    }, [virtualAssistantEnabled, profile?.business_id]);
 
     // Sync active_tab to database for Do Not Disturb (DND) logic
     useEffect(() => {
@@ -195,6 +247,33 @@ const Dashboard = () => {
             setActiveTab('subscription');
         }
     }, []);
+
+    // Handle Deep Linking via Pathname (e.g. /clients/:id)
+    useEffect(() => {
+        if (location.pathname.startsWith('/clients/')) {
+            const clientId = location.pathname.split('/clients/')[1];
+            if (clientId) {
+                setDeepLinkClientId(clientId);
+                setActiveTab('clients');
+            }
+        } else if (location.pathname === '/clients') {
+            setActiveTab('clients');
+        } else if (location.pathname === '/balancer') {
+            setActiveTab('balancer');
+        } else if (location.pathname === '/reports') {
+            setActiveTab('reports');
+        } else if (location.pathname === '/schedule') {
+            setActiveTab('schedule');
+        } else if (location.pathname === '/organization') {
+            setActiveTab('organization');
+        } else if (location.pathname === '/subscription') {
+            setActiveTab('subscription');
+        } else if (location.pathname === '/profile') {
+            setActiveTab('profile');
+        } else if (location.pathname === '/' || location.pathname === '/appointments') {
+            setActiveTab('appointments');
+        }
+    }, [location.pathname]);
 
     const subscription = profile?.subscription;
     const expiresAt = subscription?.expires_at ? new Date(subscription.expires_at) : null;
@@ -252,7 +331,11 @@ const Dashboard = () => {
             appointments: (
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
                     <div className="lg:col-span-8">
-                        <AppointmentList />
+                        <AppointmentList
+                            virtualAssistantEnabled={virtualAssistantEnabled && user?.email === 'admin@demo.com'}
+                            assistantCountdown={assistantCountdown}
+                            isAssistantLeader={isAssistantLeader}
+                        />
                     </div>
                     <div className="lg:col-span-4">
                         <DailyTimeline />
@@ -261,7 +344,7 @@ const Dashboard = () => {
             ),
             clients: <ClientList initialClientId={deepLinkClientId} onClientModalClose={() => setDeepLinkClientId(null)} />,
             schedule: <ScheduleSettings />,
-            balancer: <WorkloadBalancer initialChatSender={manualChatTarget} onChatHandled={() => setManualChatTarget(null)} />,
+            balancer: <WorkloadBalancer virtualAssistantEnabled={virtualAssistantEnabled} initialChatSender={manualChatTarget} onChatHandled={() => setManualChatTarget(null)} />,
             reports: <Reports />,
             organization: <OrganizationSettings />,
             profile: <ProfileSettings />,
@@ -351,7 +434,10 @@ const Dashboard = () => {
                     {filteredTabs.map((tab) => (
                         <button
                             key={tab.id}
-                            onClick={() => { setActiveTab(tab.id); setIsSidebarOpen(false); }}
+                            onClick={() => {
+                                navigate(`/${tab.id === 'appointments' ? '' : tab.id}`);
+                                setIsSidebarOpen(false);
+                            }}
                             className={`
                                 w-full flex items-center gap-4 px-4 py-4 rounded-2xl transition-all duration-300 group relative overflow-hidden
                                 ${activeTab === tab.id
@@ -396,6 +482,32 @@ const Dashboard = () => {
                                 </button>
                             </div>
 
+                            {/* VIRTUAL ASSISTANT TOGGLE */}
+                            {user?.email === 'admin@demo.com' && (
+                                <div className="flex items-center justify-between">
+                                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                                        Virtual Assistant
+                                        {virtualAssistantEnabled && (
+                                            <div className="flex items-center gap-1.5">
+                                                <span className="flex h-2 w-2 rounded-full bg-green-500 animate-pulse" />
+                                                <span className="text-[8px] text-indigo-400 font-bold bg-indigo-500/10 px-1 rounded border border-indigo-500/20">{assistantCountdown}s</span>
+                                                {isAwake && <span className="text-[8px] text-emerald-500 font-bold border border-emerald-500/20 px-1 rounded bg-emerald-500/5">KEEP-AWAKE ON</span>}
+                                            </div>
+                                        )}
+                                    </span>
+                                    <button
+                                        onClick={() => {
+                                            const newState = !virtualAssistantEnabled;
+                                            setVirtualAssistantEnabled(newState);
+                                            localStorage.setItem('virtual_assistant_enabled', newState.toString());
+                                        }}
+                                        className={`relative w-10 h-5 rounded-full transition-colors ${virtualAssistantEnabled ? 'bg-indigo-500' : 'bg-slate-700'}`}
+                                    >
+                                        <div className={`absolute top-1 left-1 w-3 h-3 rounded-full bg-white transition-transform ${virtualAssistantEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                                    </button>
+                                </div>
+                            )}
+
                             <button
                                 onClick={async () => {
                                     if (confirm('RESET DATABASE? This will wipe all appointments and re-initialize providers/treatments.')) {
@@ -410,6 +522,11 @@ const Dashboard = () => {
                             <p className="text-[10px] text-slate-500 leading-tight">
                                 {demoMode ? "Stress Test Active. Generates load automatically." : "System Normal."}
                             </p>
+                            {virtualAssistantEnabled && (
+                                <p className="text-[10px] text-indigo-400 leading-tight font-bold animate-pulse">
+                                    Assistant is monitoring schedule...
+                                </p>
+                            )}
                         </div>
                     )}
 

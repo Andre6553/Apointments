@@ -79,3 +79,7 @@ build/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Temporary files
+*.csv
+*.html

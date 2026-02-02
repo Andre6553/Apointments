@@ -63,35 +63,34 @@ const getNewLogFilename = () => {
 const writeToLogFile = (data) => {
     try {
         let entryObj = data;
-        // Parse if string (defensive)
         if (typeof data === 'string') {
             try { entryObj = JSON.parse(data); } catch (e) { }
         }
 
-        // 1. Extract Organization ID for Isolation
-        // Try deep access first (normalized logEntry), then shallow (raw payload)
         let businessId = entryObj?.payload?.business_id || entryObj?.business_id || 'global';
-
-        // Sanitize for filesystem safety
         businessId = businessId.replace(/[^a-z0-9-]/gi, '_');
 
-        // 2. Construct Filename: organization_date.log
         const todayPrefix = format(new Date(), 'yyyy-MM-dd');
-        const filename = path.join(LOGS_DIR, `${businessId}_${todayPrefix}.log`);
 
-        // 3. Ensure Timestamp if missing
+        // --- LOG ROTATION LOGIC (10,000 Line Cap) ---
+        let rotationPart = 1;
+        let filename = path.join(LOGS_DIR, `${businessId}_${todayPrefix}.log`);
+
+        // Find the latest active part
+        while (fs.existsSync(filename)) {
+            const content = fs.readFileSync(filename, 'utf8');
+            const lines = content.split('\n').length;
+            if (lines < 10000) break; // This file has room
+            rotationPart++;
+            filename = path.join(LOGS_DIR, `${businessId}_${todayPrefix}_part${rotationPart}.log`);
+        }
+
         if (typeof entryObj === 'object' && !entryObj.ts) {
             entryObj.ts = format(new Date(), 'yyyy-MM-dd HH:mm:ss.SSS');
         }
 
         const entry = (typeof entryObj === 'object' ? JSON.stringify(entryObj) : String(data)) + '\n';
-
-        // 4. Append
         fs.appendFileSync(filename, entry);
-
-        // Console feedback for dev verification (optional, can remove to reduce noise)
-        // console.log(`[Logger] Wrote to ${path.basename(filename)}`);
-
     } catch (err) {
         console.error('[Logger] Failed to write to log:', err);
     }
@@ -159,17 +158,18 @@ const checkReminders = async () => {
         const startPath = addMinutes(now, 25).toISOString(); // Look ahead 25 mins
         const endPath = addMinutes(now, 35).toISOString();   // Look ahead 35 mins (window of 10m)
 
+        console.log(`[ReminderCron] Time Check | System: ${now.toLocaleString()} | ISO: ${now.toISOString()} | Window: ${startPath} -> ${endPath}`);
+
         const { data: apts, error } = await supabase
             .from('appointments')
             .select(`
                 id, scheduled_start, 
-                client:clients(first_name, phone, whatsapp_opt_in),
+                client:clients(first_name, last_name, phone, whatsapp_opt_in),
                 provider:profiles!appointments_assigned_profile_id_fkey(full_name),
                 notifications_sent
             `)
             .eq('status', 'pending')
             .is('reminder_sent', false) // Only unsent reminders
-            .eq('notifications_sent', 0) // Only if NO delay notification sent
             .gte('scheduled_start', startPath)
             .lte('scheduled_start', endPath);
 
@@ -184,8 +184,7 @@ const checkReminders = async () => {
             for (const apt of apts) {
                 if (!apt.client?.phone || !apt.client?.whatsapp_opt_in) continue;
 
-                const scheduledDate = new Date(apt.scheduled_start);
-                const localDate = new Date(scheduledDate.getTime() + (2 * 60 * 60 * 1000));
+                const localDate = new Date(apt.scheduled_start);
 
                 const dateStr = format(localDate, 'MMM do');
                 const timeStr = format(localDate, 'HH:mm');

@@ -4,8 +4,11 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { X, AlertTriangle, UserMinus, Clock, CalendarX, Loader2 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useToast } from '../contexts/ToastContext';
+import { logAppointment } from '../lib/logger';
+import { useAuth } from '../hooks/useAuth';
 
 const CancelAppointmentModal = ({ isOpen, onClose, appointment, onRefresh }) => {
+    const { profile } = useAuth();
     const [loading, setLoading] = useState(false);
     const [reason, setReason] = useState('Client cancel');
     const showToast = useToast();
@@ -33,6 +36,20 @@ const CancelAppointmentModal = ({ isOpen, onClose, appointment, onRefresh }) => 
                 .eq('id', appointment.id);
 
             if (error) throw error;
+
+            // Audit Logging
+            try {
+                await logAppointment(
+                    appointment,
+                    appointment.provider || profile,
+                    appointment.client,
+                    profile,
+                    status.toUpperCase(),
+                    { reason: reason }
+                );
+            } catch (logErr) {
+                console.warn('[CancelModal] Logging failed:', logErr);
+            }
 
             showToast(`Appointment ${status === 'noshow' ? 'marked as no-show' : 'cancelled'}`, 'success');
             onRefresh && onRefresh();

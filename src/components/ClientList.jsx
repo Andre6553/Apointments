@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
-import { Search, Plus, Trash2, Phone, Mail, User, AlertCircle, Loader2, X, Edit2, MessageCircle } from 'lucide-react';
+import { Search, Plus, Trash2, Phone, Mail, User, AlertCircle, Loader2, X, Edit2, MessageCircle, CheckCircle2, Folder } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../hooks/useAuth';
 import EditClientModal from './EditClientModal';
@@ -13,6 +13,8 @@ const ClientList = ({ initialClientId, onClientModalClose }) => {
     const [page, setPage] = useState(0);
     const [hasMore, setHasMore] = useState(true);
     const [newClient, setNewClient] = useState({ firstName: '', lastName: '', phone: '', email: '' });
+    const [useFileNumber, setUseFileNumber] = useState(false);
+    const [fileNumber, setFileNumber] = useState('');
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [editingClient, setEditingClient] = useState(null);
     const [isEditOpen, setIsEditOpen] = useState(false);
@@ -42,7 +44,7 @@ const ClientList = ({ initialClientId, onClientModalClose }) => {
             if (debouncedSearch) {
                 // Server-side search
                 const term = `%${debouncedSearch}%`;
-                query = query.or(`first_name.ilike.${term},last_name.ilike.${term},phone.ilike.${term}`);
+                query = query.or(`first_name.ilike.${term},last_name.ilike.${term},phone.ilike.${term},file_number.ilike.${term}`);
             }
 
             const { data, error } = await query;
@@ -131,18 +133,36 @@ const ClientList = ({ initialClientId, onClientModalClose }) => {
                 throw new Error('You must be logged in to add a client.');
             }
 
+            // File Number Validation
+            if (useFileNumber) {
+                if (!fileNumber.trim()) {
+                    alert('Please enter a File Number or uncheck the box.');
+                    setIsSubmitting(false);
+                    return;
+                }
+                if (fileNumber.length > 10) {
+                    alert('File Number cannot exceed 10 characters.');
+                    setIsSubmitting(false);
+                    return;
+                }
+            }
+
             const { error } = await supabase.from('clients').insert([{
                 owner_id: user.id,
                 first_name: newClient.firstName,
                 last_name: newClient.lastName,
                 phone: newClient.phone,
-                email: newClient.email
+                email: newClient.email,
+                file_number: useFileNumber ? fileNumber : null
             }]);
 
             if (error) throw error;
 
             setNewClient({ firstName: '', lastName: '', phone: '', email: '' });
+            setUseFileNumber(false);
+            setFileNumber('');
             setShowAdd(false);
+
             // Reset and refetch
             setPage(0);
             if (page === 0) fetchClients();
@@ -169,7 +189,7 @@ const ClientList = ({ initialClientId, onClientModalClose }) => {
                 <div className="relative w-full sm:max-w-md group">
                     <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-primary transition-colors" size={20} />
                     <input
-                        placeholder="Search clients by name..."
+                        placeholder="Search by name, phone, or file number..."
                         className="glass-input w-full pl-12 py-3.5"
                         value={search}
                         onChange={e => setSearch(e.target.value)}
@@ -239,6 +259,51 @@ const ClientList = ({ initialClientId, onClientModalClose }) => {
                                         onChange={e => setNewClient({ ...newClient, email: e.target.value })}
                                     />
                                 </div>
+
+                                <div className="md:col-span-2 space-y-4 pt-4 border-t border-white/5">
+                                    <div className="flex items-center gap-3 select-none cursor-pointer" onClick={() => setUseFileNumber(!useFileNumber)}>
+                                        <div className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${useFileNumber ? 'bg-primary border-primary text-white' : 'border-slate-600 bg-slate-800'}`}>
+                                            {useFileNumber && <CheckCircle2 size={14} strokeWidth={4} />}
+                                        </div>
+                                        <span className="text-sm font-bold text-slate-400">
+                                            Assign Custom File Number
+                                        </span>
+                                    </div>
+
+                                    <AnimatePresence>
+                                        {useFileNumber && (
+                                            <motion.div
+                                                initial={{ opacity: 0, height: 0 }}
+                                                animate={{ opacity: 1, height: 'auto' }}
+                                                exit={{ opacity: 0, height: 0 }}
+                                                className="overflow-hidden"
+                                            >
+                                                <div className="space-y-2 bg-slate-900/50 p-4 rounded-xl border border-white/5">
+                                                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1 block mb-2">
+                                                        File Reference Number <span className="text-red-400">*</span>
+                                                    </label>
+                                                    <div className="flex items-center gap-2">
+                                                        <div className="p-2 bg-white/5 rounded-lg text-slate-500 border border-white/5">
+                                                            <Folder size={16} />
+                                                        </div>
+                                                        <input
+                                                            type="text"
+                                                            placeholder="e.g. A123"
+                                                            maxLength={10}
+                                                            className="glass-input w-full bg-slate-800 uppercase font-mono tracking-widest text-sm"
+                                                            value={fileNumber}
+                                                            onChange={e => setFileNumber(e.target.value.toUpperCase())}
+                                                        />
+                                                    </div>
+                                                    <p className="text-[10px] text-slate-500 italic mt-2 pl-1">
+                                                        Maximum 10 characters. Must be unique per client.
+                                                    </p>
+                                                </div>
+                                            </motion.div>
+                                        )}
+                                    </AnimatePresence>
+                                </div>
+
                                 <button
                                     disabled={isSubmitting}
                                     className="md:col-span-2 bg-primary hover:bg-indigo-600 text-white py-4 rounded-xl font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-primary/25 mt-2 hover:-translate-y-1"
@@ -276,18 +341,34 @@ const ClientList = ({ initialClientId, onClientModalClose }) => {
                                 className="group relative glass-card p-6 hover:border-primary/30 transition-all duration-300 hover:shadow-glow group"
                             >
                                 <div className="flex justify-between items-start mb-6">
-                                    <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary/20 to-indigo-500/10 flex items-center justify-center text-primary font-bold text-2xl border border-primary/20 group-hover:scale-105 transition-transform">
+                                    <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary/20 to-indigo-500/10 flex items-center justify-center text-primary font-bold text-2xl border border-primary/20 group-hover:scale-105 transition-transform shadow-inner text-shadow-glow">
                                         {c.first_name[0]}{c.last_name[0]}
                                     </div>
-                                    <button
-                                        onClick={() => deleteClient(c.id)}
-                                        className="p-2.5 text-slate-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all rounded-xl hover:bg-red-500/10"
-                                    >
-                                        <Trash2 size={18} />
-                                    </button>
+                                    <div className="flex flex-col items-end gap-2">
+                                        {c.file_number && (
+                                            <div className="px-2.5 py-1 rounded-lg bg-surface/80 border border-white/10 text-[10px] font-black tracking-widest text-slate-400 font-mono shadow-sm">
+                                                {c.file_number}
+                                            </div>
+                                        )}
+                                        <button
+                                            onClick={() => deleteClient(c.id)}
+                                            className="p-2.5 text-slate-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all rounded-xl hover:bg-red-500/10 active:scale-95"
+                                        >
+                                            <Trash2 size={16} />
+                                        </button>
+                                    </div>
                                 </div>
 
-                                <h3 className="text-xl font-heading font-bold text-white mb-6 group-hover:text-primary transition-colors">{c.first_name} {c.last_name}</h3>
+                                <div className="mb-6">
+                                    <h3 className="text-xl font-heading font-bold text-white group-hover:text-primary transition-colors truncate pr-2">
+                                        {c.first_name} {c.last_name}
+                                    </h3>
+                                    {c.file_number && (
+                                        <p className="text-[10px] text-slate-600 font-bold uppercase tracking-widest mt-1 group-hover:text-slate-500 transition-colors">
+                                            Ref: {c.file_number}
+                                        </p>
+                                    )}
+                                </div>
 
                                 <div className="space-y-4">
                                     <a href={`tel:${c.phone}`} className="flex items-center gap-4 text-slate-400 group/item hover:text-white transition-colors cursor-pointer p-2 hover:bg-white/5 rounded-lg -mx-2">

@@ -1,5 +1,6 @@
 import { supabase } from './supabase'
 import { sendWhatsApp } from './notifications'
+import { logEvent } from './logger'
 
 /**
  * Calculates and applies delays to subsequent appointments.
@@ -16,7 +17,10 @@ export const calculateAndApplyDelay = async (appointmentId, actualTime, type = '
         .eq('id', appointmentId)
         .single()
 
-    if (fetchError || !currentApt) return
+    if (fetchError || !currentApt) return;
+
+    // AVOID FEEDBACK LOOPS: If this appointment already has a set delay close to what we're calculating, skip.
+    const currentRecordedDelay = currentApt.delay_minutes || 0;
 
     const scheduledStart = new Date(currentApt.scheduled_start)
     const scheduledEnd = new Date(new Date(currentApt.scheduled_start).getTime() + (currentApt.duration_minutes * 60000))
@@ -35,12 +39,25 @@ export const calculateAndApplyDelay = async (appointmentId, actualTime, type = '
     // SAFE Percentage-based threshold: 25% of the session duration, with a 10-MINUTE MINIMUM floor
     const threshold = Math.max(10, Math.floor(currentApt.duration_minutes * 0.25))
 
-    if (delayMinutes <= threshold) {
-        console.log(`[DelayEngine] Delay of ${delayMinutes}m is within ${threshold}m threshold (25% of ${currentApt.duration_minutes}m). Skipping update.`);
+    // AVOID REDUNDANT PROPAGATION: 
+    // If the change is tiny (< 2 mins), skip to save DB writes.
+    // If catching up (delay decreasing), we ALWAYS propagate if change >= 2 mins to help the Assistant.
+    const delayChange = Math.abs(delayMinutes - currentRecordedDelay);
+    const isCatchingUp = delayMinutes < currentRecordedDelay;
+
+    if (delayChange < 2) {
+        console.log(`[DelayEngine] Delay change (${delayChange}m) is negligible. Skipping.`);
+        return;
+    }
+
+    // THRESHOLD: Only apply NEW delays to clients if they breach the 25%/10m floor.
+    // BUT: If catching up, we bypass the threshold to clear the board for the Assistant.
+    if (!isCatchingUp && delayMinutes <= threshold) {
+        console.log(`[DelayEngine] New delay of ${delayMinutes}m is within ${threshold}m threshold. Skipping.`);
         return
     }
 
-    console.log(`[DelayEngine] Threshold breached (${delayMinutes}m > ${threshold}m). Propagating delay...`);
+    console.log(`[DelayEngine] ${isCatchingUp ? 'Catch-up detected' : 'Threshold breached'} (${delayMinutes}m). Propagating ripple...`);
 
     // 2. Find all subsequent PENDING appointments for this provider TODAY ONLY
     const startOfDay = new Date(currentApt.scheduled_start);
@@ -57,78 +74,103 @@ export const calculateAndApplyDelay = async (appointmentId, actualTime, type = '
         .lte('scheduled_start', endOfDay.toISOString()) // LIMIT TO SAME DAY
         .order('scheduled_start', { ascending: true })
 
-    if (subError || !subsequentApts.length) return
-
-    // 3. Update delays in Database
-    console.log(`[DelayEngine] Propagating ${delayMinutes}m delay to ${subsequentApts.length} appointments (Batch Update)...`);
-
-    // Batch update via Promise.all (or single query if IDs collected)
-    // Using single query is better: .in('id', ids).update(...)
-    const ids = subsequentApts.map(a => a.id);
-    const { error: batchError } = await supabase
-        .from('appointments')
-        .update({ delay_minutes: delayMinutes })
-        .in('id', ids);
-
-    if (batchError) {
-        console.error('[DelayEngine] Batch update failed:', batchError);
+    if (subError) {
+        console.error('[DelayEngine] Failed to fetch subsequent appointments:', subError);
+        return;
     }
 
-    // 4. Notify Clients or Fallback to Provider
+    // 3. RIPPLE CALCULATION: Project the timeline forward
+    // If starting: the provider is free after this session ends (actual + duration)
+    // If ending: the provider is free NOW (actual)
+    let projectedFreeTime = type === 'start'
+        ? new Date(actual.getTime() + currentApt.duration_minutes * 60000)
+        : actual;
+
+    console.log(`[DelayEngine] Propagating ripple from ${type.toUpperCase()}. Projected free time: ${projectedFreeTime.toLocaleTimeString()}`);
+
+    const updatePromises = [];
+    const notificationApts = [];
+
     for (const apt of subsequentApts) {
+        const scheduledStart = new Date(apt.scheduled_start);
+
+        // The delay for THIS specific appointment is the delta between when the provider is free 
+        // and when it was originally scheduled.
+        const newDelay = Math.max(0, Math.floor((projectedFreeTime - scheduledStart) / 60000));
+
+        // Only update if the delay has changed significantly (> 2 mins)
+        const oldDelay = apt.delay_minutes || 0;
+        if (Math.abs(newDelay - oldDelay) >= 2) {
+            console.log(`[DelayEngine] Updating ${apt.id}: ${oldDelay}m -> ${newDelay}m`);
+
+            updatePromises.push(
+                supabase.from('appointments').update({ delay_minutes: newDelay }).eq('id', apt.id)
+            );
+
+            // If it's a significant delay (or a significant change), prep a notification
+            if (newDelay >= 10 || (oldDelay >= 10 && newDelay < 5)) {
+                notificationApts.push({ ...apt, newDelay });
+            }
+        }
+
+        // Project when the provider will be free AFTER this appointment
+        projectedFreeTime = new Date(scheduledStart.getTime() + (newDelay * 60000) + (apt.duration_minutes * 60000));
+    }
+
+    // Also update the triggering appointment's delay if type is 'start'
+    if (type === 'start') {
+        const startDelay = Math.max(0, Math.floor((actual - scheduledStart) / 60000));
+        updatePromises.push(
+            supabase.from('appointments').update({ delay_minutes: startDelay }).eq('id', appointmentId)
+        );
+    }
+
+    if (updatePromises.length > 0) {
+        console.log(`[DelayEngine] Executing ${updatePromises.length} ripple updates...`);
+        await Promise.all(updatePromises);
+
+        // Audit Logging
+        try {
+            await logEvent('delay.ripple', {
+                business_id: currentApt.business_id,
+                trigger_id: currentApt.id,
+                trigger_type: type,
+                affected_count: updatePromises.length
+            }, { level: 'INFO', module: 'DelayEngine' });
+        } catch (e) { }
+    }
+
+    // 4. Notify Clients of the NEW Projected Times
+    for (const apt of notificationApts) {
+        const delayMinutes = apt.newDelay;
         const sentCount = apt.notifications_sent || 0;
         const wantsMsg = apt.client?.whatsapp_opt_in === true;
         const bizName = "[Your Business Name]";
 
+        // If catching up (delay cleared), maybe send a "Good News" message?
+        // For now, let's keep it simple: Only notify for delays >= 10 mins
+        if (delayMinutes < 10) continue;
+
         if (!wantsMsg) {
-            console.log(`[DelayEngine] Client ${apt.client?.first_name} opted out. FALLBACK to Provider.`);
-
-            // Only send fallback if we haven't already bothered the provider for this apt
             if (sentCount === 0 && apt.provider?.whatsapp) {
-                const fallbackMsg = `⚠️ FALLBACK: ${apt.client?.first_name} ${apt.client?.last_name} is NOT opted into WhatsApp. Their appointment is running ${delayMinutes} mins late. Please call them at ${apt.client?.phone} to inform them manually. - ${bizName}`;
-
+                const fallbackMsg = `⚠️ FALLBACK: ${apt.client?.first_name} is NOT opted into WhatsApp. They are ${delayMinutes} mins late. Please call them at ${apt.client?.phone}.`;
                 try {
-                    const { success } = await sendWhatsApp(apt.provider.whatsapp, fallbackMsg);
-                    // Always update to prevent loop
+                    await sendWhatsApp(apt.provider.whatsapp, fallbackMsg);
                     await supabase.from('appointments').update({ notifications_sent: 1 }).eq('id', apt.id);
-                } catch (err) {
-                    console.error('[DelayEngine] Fallback provider msg failed:', err);
-                    await supabase.from('appointments').update({ notifications_sent: 1 }).eq('id', apt.id);
-                }
+                } catch (err) { }
             }
             continue;
         }
 
-        // Standard Client Notification (Max 2)
-        let shouldSend = false;
-        if (sentCount === 0) {
-            shouldSend = true;
-        } else if (sentCount === 1 && delayMinutes > 30) {
-            shouldSend = true;
-        }
+        // Standard Client Notification logic...
+        let shouldSend = (sentCount === 0);
+        if (sentCount === 1 && delayMinutes > 30) shouldSend = true;
 
         if (shouldSend) {
             try {
                 const success = await sendDelayNotification(apt.client, delayMinutes, apt.scheduled_start, sentCount + 1);
-
-                // CRITICAL FIX: Always increment counter to prevent infinite retry loops on failure
-                // If it failed, we log it, but we stop bothering the system.
-                await supabase
-                    .from('appointments')
-                    .update({ notifications_sent: sentCount + 1 })
-                    .eq('id', apt.id);
-
-                if (!success) {
-                    console.warn(`[DelayEngine] Notification failed for ${apt.id}, but counter incremented to stop looping.`);
-                }
-            } catch (err) {
-                console.error(`[DelayEngine] Error sending notification for ${apt.id}:`, err);
-                // Force update to stop loop
-                await supabase
-                    .from('appointments')
-                    .update({ notifications_sent: sentCount + 1 })
-                    .eq('id', apt.id);
-            }
+                await supabase.from('appointments').update({ notifications_sent: sentCount + 1 }).eq('id', apt.id);
+            } catch (err) { }
         }
     }
 
@@ -199,6 +241,16 @@ export const notifyAdminOfCrisis = async (businessId, providerId, providerName, 
 
         console.log(`[CrisisMonitor] Sending WhatsApp alert to Admin: ${admin.full_name}`);
         await sendWhatsApp(admin.whatsapp, message);
+
+        // Individual log for each admin alerted
+        await logEvent('delay.crisis.notified', {
+            business_id: businessId,
+            admin_id: admin.id,
+            admin_name: admin.full_name,
+            provider_id: providerId,
+            provider_name: providerName,
+            delay_minutes: delayMinutes
+        }, { level: 'AUDIT', module: 'CrisisMonitor' });
     }
 
     // 4. Update the provider's throttling record
@@ -232,6 +284,11 @@ export const checkActiveOverruns = async () => {
             const threshold = Math.max(10, Math.floor(apt.duration_minutes * 0.25));
 
             if (overrunMinutes > threshold) {
+                // Check if we already propagated a similar delay for this ACTIVE session
+                if (Math.abs(overrunMinutes - (apt.delay_minutes || 0)) < 10) {
+                    continue; // Skip if it hasn't worsened by at least 10 more minutes
+                }
+
                 console.log(`[Proactive] Active session ${apt.id} is overrunning by ${overrunMinutes}m (Threshold: ${threshold}m). Predicting delays...`);
                 await calculateAndApplyDelay(apt.id, now.toISOString(), 'end');
             }

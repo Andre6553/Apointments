@@ -288,22 +288,44 @@ export const initializeMedicalDemo = async (businessId) => {
 
     // 6. Create Dummy Clients (10 per provider for testing)
     console.log('[Demo] Generating 100 dummy clients (10 per provider with specific naming)...');
-    const surnameMap = ['Zero', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten'];
+    // 6. Create Dummy Clients (10 per provider for testing)
+    console.log('[Demo] Generating 100 unique real clients (10 per provider)...');
+
+    const REAL_FIRST_NAMES = [
+        "Liam", "Noah", "Oliver", "James", "Elijah", "William", "Henry", "Lucas", "Benjamin", "Theodore",
+        "Mateo", "Levi", "Sebastian", "Daniel", "Jack", "Wyatt", "Owen", "Asher", "Christopher", "Julian",
+        "Hudson", "Thomas", "Charles", "Caleb", "Isaac", "Ryan", "Nathan", "Adrian", "Miles", "Eli",
+        "Nolan", "Christian", "Aaron", "Cameron", "Ezekiel", "Colton", "Luca", "Landon", "Hunter", "Jonathan",
+        "Santiago", "Axel", "Easton", "Cooper", "Jeremiah", "Angel", "Roman", "Connor", "Jameson", "Robert",
+        "Emma", "Olivia", "Charlotte", "Amelia", "Sophia", "Mia", "Isabella", "Ava", "Evelyn", "Luna",
+        "Harper", "Sofia", "Gianna", "Eleanor", "Ella", "Abigail", "Hazel", "Nora", "Chloe", "Layla",
+        "Lily", "Aria", "Zoey", "Penelope", "Hannah", "Maya", "Scarlett", "Stella", "Victoria", "Aurora",
+        "Savannah", "Willow", "Hazel", "Violet", "Alice", "Lucy", "Grace", "Ivy", "Audrey", "Claire",
+        "Anna", "Caroline", "Ruby", "Sophie", "Sarah", "Eleanor", "Cora", "Genesis", "Eliana", "Adeline"
+    ];
+
     const dummyClients = [];
+    let nameIdx = 0;
 
     providers.forEach((provider, pIdx) => {
         const providerNum = pIdx + 1;
-        const surname = surnameMap[providerNum] || `P${providerNum}`;
+        // Use Doctor's surname for the group (e.g., P1-House, P2-Grey)
+        const docNameParts = provider.full_name.split(' ');
+        const docSurname = docNameParts[docNameParts.length - 1];
+        const groupSurname = `P${providerNum}-${docSurname}`;
 
         for (let i = 1; i <= 10; i++) {
+            if (nameIdx >= REAL_FIRST_NAMES.length) break;
+
             dummyClients.push({
-                first_name: `Patient${i}`,
-                last_name: surname,
+                first_name: REAL_FIRST_NAMES[nameIdx],
+                last_name: groupSurname,
                 phone: '+27761963997', // Constant for messaging tests
                 business_id: businessId,
                 owner_id: provider.id,
                 whatsapp_opt_in: Math.random() < 0.8 // 80% opt-in rate
             });
+            nameIdx++;
         }
     });
 
@@ -464,7 +486,7 @@ export const runStressTest = async (businessId) => {
         const { data: allBreaks } = await supabase.from('breaks').select('*').in('profile_id', pIds);
 
         const pulseId = crypto.randomUUID();
-        await logEvent('seeder.pulse.start', { target_provider_count: pIds.length }, {
+        await logEvent('seeder.pulse.start', { business_id: businessId, target_provider_count: pIds.length }, {
             level: 'INFO',
             trace_id: pulseId,
             module: 'DemoSeeder'
@@ -628,6 +650,7 @@ export const runStressTest = async (businessId) => {
                             });
 
                             await logEvent('seeder.selection.success', {
+                                business_id: businessId,
                                 provider_id: provider.id,
                                 attempts: 0,
                                 slot_start: slotStart.toISOString()
@@ -647,6 +670,7 @@ export const runStressTest = async (businessId) => {
                     } else {
                         // No valid gaps for this provider-day
                         await logEvent('seeder.selection.fail', {
+                            business_id: businessId,
                             provider_id: provider.id,
                             reason: 'PROVIDER_SATURATED',
                             attempts: 0
@@ -661,6 +685,7 @@ export const runStressTest = async (businessId) => {
                 } catch (loopErr) {
                     console.error('[DemoSeeder] Loop Error:', loopErr);
                     await logEvent('seeder.loop.error', {
+                        business_id: businessId,
                         error: loopErr.message,
                         provider_id: provider.id,
                         day: d

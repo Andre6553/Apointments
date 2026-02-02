@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../lib/supabase'
-import { ArrowLeftRight, UserCheck, AlertTriangle, CheckCircle2, Clock, BarChart3, Loader2, Globe, User, Sparkles, ChevronRight, Check, CheckCheck } from 'lucide-react'
+import { ArrowLeftRight, ArrowRightLeft, UserCheck, AlertTriangle, CheckCircle2, Clock, BarChart3, Loader2, Globe, User, Users, Sparkles, ChevronRight, Check, CheckCheck } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { format } from 'date-fns'
 import { sendWhatsApp } from '../lib/notifications'
@@ -10,10 +10,11 @@ import { useNavigate } from 'react-router-dom'
 import AddAppointmentModal from './AddAppointmentModal'
 import { logEvent, logAppointment } from '../lib/logger'
 
-const WorkloadBalancer = ({ initialChatSender, onChatHandled }) => {
+const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEnabled }) => {
     const { user, profile } = useAuth()
 
     const [delayedApts, setDelayedApts] = useState([])
+    const [needsAttentionApts, setNeedsAttentionApts] = useState([])
     const [freeProviders, setFreeProviders] = useState([])
     const [allProviders, setAllProviders] = useState([])
     const [loading, setLoading] = useState(true)
@@ -91,6 +92,18 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled }) => {
             });
             setDelayedApts(filtered)
 
+            // 1b. Fetch appointments that need attention (Admin only)
+            if (profile?.role?.toLowerCase() === 'admin') {
+                const { data: attentionApts } = await supabase
+                    .from('appointments')
+                    .select('*, client:clients(first_name, last_name, phone), profile:profiles!appointments_assigned_profile_id_fkey(full_name, id, is_online), shifted_from:profiles!appointments_shifted_from_id_fkey(full_name)')
+                    .eq('requires_attention', true)
+                    .eq('status', 'pending')
+                    .order('scheduled_start', { ascending: true })
+
+                setNeedsAttentionApts(attentionApts || [])
+            }
+
             // 2. Fetch free providers
             const { data: allProviders } = await supabase
                 .from('profiles')
@@ -122,9 +135,13 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled }) => {
 
             // Filter out busy, but log who is busy
             // NEW: Don't filter out busy providers, just mark them so Admin can see them
-            const free = providersWithHeartbeat.filter(p => p.is_online).map(p => {
+            const free = providersWithHeartbeat.filter(p => p.is_online || virtualAssistantEnabled).map(p => {
                 const isBusy = busyIds.includes(p.id);
-                return { ...p, is_busy: isBusy };
+                return {
+                    ...p,
+                    is_online: virtualAssistantEnabled ? true : p.is_online,
+                    is_busy: isBusy
+                };
             });
 
             console.log(`[Balancer] Online & Free Providers:`, free.map(f => f.full_name));
@@ -135,8 +152,8 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled }) => {
             if (profile?.role?.toLowerCase() === 'admin' && profile?.business_id) {
                 const { getSmartReassignments, analyzeSystemHealth } = await import('../lib/balancerLogic')
                 const [smart, health] = await Promise.all([
-                    getSmartReassignments(profile.business_id),
-                    analyzeSystemHealth(profile.business_id)
+                    getSmartReassignments(profile.business_id, virtualAssistantEnabled),
+                    analyzeSystemHealth(profile.business_id, virtualAssistantEnabled)
                 ])
                 setSuggestions(smart)
                 setSystemHealth(health)
@@ -221,8 +238,12 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled }) => {
             const { error } = await supabase.rpc('reassign_appointment', {
                 appt_id: aptId,
                 new_provider_id: newProviderId,
-                note_text: 'Shifted via Workload Balancer'
+                note_text: 'Shifted via Workload Balancer',
+                flag_attention: false // Clear attention flag on reassign
             });
+
+            // Also remove from needs attention list
+            setNeedsAttentionApts(prev => prev.filter(a => a.id !== aptId))
 
             if (!error) {
                 // Log high-fidelity event with Skill Match verification
@@ -263,16 +284,21 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled }) => {
         }
     }
 
-    const approveSuggestion = async (sug) => {
+    const approveSuggestion = async (sug, skipRefresh = false) => {
         try {
             const { error } = await supabase
                 .from('appointments')
                 .update({
                     assigned_profile_id: sug.newProviderId,
                     shifted_from_id: sug.currentProviderId,
-                    notes: 'Auto-pilot reassignment due to delay'
+                    notes: 'Auto-pilot reassignment due to delay',
+                    requires_attention: false, // Clear attention flag
+                    delay_minutes: 0 // Reset delay for the new provider
                 })
                 .eq('id', sug.appointmentId)
+
+            // Also remove from needs attention list
+            setNeedsAttentionApts(prev => prev.filter(a => a.id !== sug.appointmentId))
 
             if (error) throw error
 
@@ -288,14 +314,13 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled }) => {
             });
 
             // Notify Client & New Provider
-            const bizName = "[Your Business Name]"
             if (sug.newProviderWhatsapp) {
                 await sendWhatsApp(sug.newProviderWhatsapp, `Hi ${sug.newProviderName}, you have a new appointment shifted to you: ${sug.clientName} at ${sug.scheduledTime}.`)
             }
 
             // Trigger feedback
             setSuggestions(prev => prev.filter(s => s.appointmentId !== sug.appointmentId))
-            fetchData(true)
+            if (!skipRefresh) fetchData(true)
         } catch (err) {
             console.error('Failed to approve suggestion:', err)
             alert('Action failed. Check logs.')
@@ -305,11 +330,18 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled }) => {
     const approveAllSuggestions = async () => {
         if (!confirm(`Apply all ${suggestions.length} smart reassignments?`)) return
         setProcessing(true)
-        for (const sug of suggestions) {
-            await approveSuggestion(sug)
+        try {
+            // Process sequentially to avoid DB lock/contention issues
+            for (const sug of suggestions) {
+                await approveSuggestion(sug, true) // Skip individual refresh
+            }
+            alert('Autopilot complete: All suggested shifts applied!')
+        } catch (e) {
+            console.error('Bulk approve error:', e)
+        } finally {
+            setProcessing(false)
+            fetchData(true) // Single refresh at the end
         }
-        setProcessing(false)
-        alert('Autopilot complete: All suggested shifts applied!')
     }
 
     const handleDeleteAppointment = async () => {
@@ -365,6 +397,190 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled }) => {
     const openActionModal = (apt) => {
         setSelectedAptForAction(apt)
         setShowActionModal(true)
+    }
+
+    // Mark an attention-requiring appointment as handled
+    const handleMarkAsHandled = async (aptId) => {
+        try {
+            await supabase
+                .from('appointments')
+                .update({ requires_attention: false })
+                .eq('id', aptId)
+
+            // Audit Logging
+            try {
+                const apt = [...delayedApts, ...needsAttentionApts].find(a => a.id === aptId);
+                await logAppointment(
+                    apt || { id: aptId },
+                    apt?.provider || profile,
+                    apt?.client,
+                    profile,
+                    'MARK_HANDLED',
+                    { trigger: 'admin_manual_clear' }
+                );
+            } catch (logErr) {
+                console.warn('[Balancer] Logging failed:', logErr);
+            }
+
+            setNeedsAttentionApts(prev => prev.filter(a => a.id !== aptId))
+        } catch (err) {
+            console.error('Failed to mark as handled:', err)
+        }
+    }
+
+    // Auto-assign all needs-attention appointments to best available providers
+    const [autoAssigning, setAutoAssigning] = useState(false)
+
+    const handleAutoAssignAll = async () => {
+        if (!confirm(`Auto-assign ${needsAttentionApts.length} appointment(s) to the soonest available providers with matching skills?`)) return
+
+        setAutoAssigning(true)
+        let successCount = 0
+
+        // Fetch ALL providers in the organization (not just free ones)
+        // Note: 'role' is usually in the subscriptions table, so we fetch everyone in the business
+        const { data: allOrgProfiles, error: fetchError } = await supabase
+            .from('profiles')
+            .select(`
+                id, 
+                full_name, 
+                skills, 
+                is_online, 
+                accepts_transfers, 
+                whatsapp,
+                subscription:subscriptions(role)
+            `)
+            .eq('business_id', profile?.business_id)
+
+        if (fetchError) {
+            console.error('[AutoAssign] Error fetching org providers:', fetchError)
+            setAutoAssigning(false)
+            alert('Failed to fetch providers: ' + fetchError.message)
+            return
+        }
+
+        // Flatten roles and format providers
+        const allOrgProviders = (allOrgProfiles || []).map(p => ({
+            ...p,
+            // Extract role from the latest subscription if available
+            role: p.subscription?.[0]?.role || 'staff'
+        }))
+
+        console.log('[AutoAssign] Total providers in business:', allOrgProviders.length)
+
+        for (const apt of needsAttentionApts) {
+            try {
+                // Find matching providers based on required skills
+                const reqSkills = apt.required_skills || []
+
+                // Filter ALL organization providers for skill match
+                // Exclude: current assignee, original provider, providers who don't accept transfers
+                const matchingProviders = allOrgProviders.filter(p => {
+                    if (p.id === apt.assigned_profile_id) return false // Skip current assignee (admin)
+                    if (p.id === apt.shifted_from_id) return false // Skip provider who caused transfer
+                    if (!p.accepts_transfers) return false // Skip if Transfers Disabled
+
+                    // Filter by role (staff, provider, or admin)
+                    const allowedRoles = ['staff', 'provider', 'admin']
+                    if (!allowedRoles.includes(p.role?.toLowerCase())) return false
+
+                    if (reqSkills.length === 0) return true // No skills required
+
+                    const providerSkills = (p.skills || []).map(s => typeof s === 'object' ? s.code : s)
+                    return reqSkills.every(skill => providerSkills.includes(skill))
+                })
+
+                // SORT: Prioritize Online doctors
+                const sortedMatches = [...matchingProviders].sort((a, b) => {
+                    if (a.is_online && !b.is_online) return -1
+                    if (!a.is_online && b.is_online) return 1
+                    return 0
+                })
+
+                console.log(`[AutoAssign] ${apt.client?.first_name}: ${sortedMatches.length} matching providers (Online first: ${sortedMatches.map(p => `${p.full_name}${p.is_online ? ' (Online)' : ''}`).join(', ')}), Req. Skills:`, reqSkills)
+
+                if (sortedMatches.length === 0) {
+                    console.log(`[AutoAssign] No matching provider for ${apt.client?.first_name} with skills:`, reqSkills)
+                    continue
+                }
+
+                // Pick the best available (Online first)
+                const bestProvider = sortedMatches[0]
+
+                // Reassign using RPC
+                const { error } = await supabase.rpc('reassign_appointment', {
+                    appt_id: apt.id,
+                    new_provider_id: bestProvider.id,
+                    note_text: `Auto-assigned to ${bestProvider.full_name} (skill match)`,
+                    flag_attention: false // Clear the attention flag
+                })
+
+                if (!error) {
+                    successCount++
+                    console.log(`[AutoAssign] ${apt.client?.first_name} → ${bestProvider.full_name}`)
+
+                    // Log the action
+                    await logAppointment(apt, bestProvider, null, profile, 'AUTO_REASSIGN', {
+                        previous_provider_id: apt.assigned_profile_id,
+                        trigger: 'auto_assign_needs_attention',
+                        skill_match: {
+                            required: reqSkills,
+                            provider_skills: bestProvider.skills || []
+                        }
+                    })
+
+                    // Extract common details for notifications
+                    const clientFullName = `${apt.client?.first_name || ''} ${apt.client?.last_name || ''}`.trim() || 'Valued Client'
+                    const aptDate = format(new Date(apt.scheduled_start), 'EEEE, MMMM d')
+                    const aptTime = format(new Date(apt.scheduled_start), 'HH:mm')
+                    const duration = apt.duration_minutes || 30
+
+                    // 1. Notify client via WhatsApp
+                    if (apt.client?.phone) {
+                        const clientMessage = `Hi ${apt.client.first_name || 'there'}, this is to inform you that your appointment has been reassigned to ${bestProvider.full_name}.\n\n📅 Date: ${aptDate}\n🕐 Time: ${aptTime}\n⏱️ Duration: ${duration} minutes\n\nIf you have any concerns or wish to reschedule, please contact our reception. We look forward to seeing you!`
+                        await sendWhatsApp(apt.client.phone, clientMessage)
+                    }
+
+                    // 2. Notify receiving provider via WhatsApp and Internal Inbox
+                    const providerMessage = `[Auto-Assignment] Hi ${bestProvider.full_name}, an appointment for ${clientFullName} has been auto-assigned to you.\n\n📅 Date: ${aptDate}\n🕐 Time: ${aptTime}\n⏱️ Duration: ${duration} minutes.\n\nThis was transferred due to a schedule change.`
+
+                    if (bestProvider.whatsapp) {
+                        await sendWhatsApp(bestProvider.whatsapp, providerMessage)
+                    }
+
+                    // Internal Inbox Message
+                    await supabase.from('temporary_messages').insert({
+                        sender_id: user.id,
+                        receiver_id: bestProvider.id,
+                        business_id: profile?.business_id,
+                        content: providerMessage,
+                        is_read: false
+                    })
+                }
+            } catch (err) {
+                console.error(`Failed to auto-assign ${apt.id}:`, err)
+            }
+        }
+
+        setAutoAssigning(false)
+
+        // Audit Logging
+        try {
+            await logEvent('balancer.auto_assign_all', {
+                business_id: profile?.business_id,
+                total_attempted: needsAttentionApts.length,
+                success_count: successCount,
+            }, {
+                level: 'AUDIT',
+                module: 'WorkloadBalancer',
+                actor: { type: 'user', id: user.id, name: profile.full_name }
+            });
+        } catch (logErr) {
+            console.warn('[Balancer] Bulk logging failed:', logErr);
+        }
+
+        alert(`Successfully auto-assigned ${successCount} of ${needsAttentionApts.length} appointments!`)
+        fetchData() // Refresh data
     }
 
     // Messaging Logic
@@ -838,6 +1054,89 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled }) => {
                 </div>
             )}
 
+            {/* NEEDS ATTENTION SECTION - Transferred from providers who changed hours */}
+            {profile?.role?.toLowerCase() === 'admin' && needsAttentionApts.length > 0 && (
+                <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="glass-card border-none bg-amber-500/10 border-amber-500/20 p-8 rounded-[2rem] shadow-xl overflow-hidden relative"
+                >
+                    <div className="absolute top-0 right-0 p-16 opacity-5">
+                        <Users size={160} />
+                    </div>
+
+                    <div className="relative z-10">
+                        <div className="flex items-center justify-between mb-6">
+                            <div className="flex items-center gap-4">
+                                <div className="p-3 bg-amber-500 rounded-2xl shadow-glow shadow-amber-500/40">
+                                    <AlertTriangle size={24} className="text-slate-900" />
+                                </div>
+                                <div>
+                                    <h3 className="text-2xl font-bold text-white tracking-tight">Needs Your Attention</h3>
+                                    <p className="text-amber-300/80 font-medium text-sm">
+                                        {needsAttentionApts.length} appointment{needsAttentionApts.length !== 1 ? 's' : ''} transferred from providers who changed their working hours
+                                    </p>
+                                </div>
+                            </div>
+                            <button
+                                onClick={handleAutoAssignAll}
+                                disabled={autoAssigning || freeProviders.filter(p => !p.is_busy).length === 0}
+                                className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 disabled:bg-slate-700 disabled:text-slate-500 text-slate-900 font-bold rounded-xl transition-all flex items-center gap-2 shadow-lg shadow-amber-500/20 text-sm"
+                            >
+                                {autoAssigning ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+                                {autoAssigning ? 'Assigning...' : 'Auto-Assign All'}
+                            </button>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {needsAttentionApts.map(apt => (
+                                <div key={apt.id} className="bg-white/5 border border-amber-500/20 rounded-2xl p-5 flex flex-col gap-3 hover:bg-amber-500/10 transition-colors group">
+                                    <div className="flex justify-between items-start">
+                                        <div className="flex items-center gap-3">
+                                            <div className="w-11 h-11 rounded-xl bg-amber-500/20 flex items-center justify-center text-amber-400 font-bold text-lg">
+                                                {apt.client?.first_name?.charAt(0) || '?'}
+                                            </div>
+                                            <div>
+                                                <h4 className="font-bold text-white text-base">{apt.client?.first_name} {apt.client?.last_name}</h4>
+                                                <p className="text-xs text-slate-400">
+                                                    {format(new Date(apt.scheduled_start), 'EEE, MMM d')} at {format(new Date(apt.scheduled_start), 'HH:mm')}
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <span className="px-2 py-1 bg-amber-500/20 text-amber-400 text-[9px] font-black uppercase tracking-widest rounded-md border border-amber-500/30">
+                                            Reschedule
+                                        </span>
+                                    </div>
+
+                                    {apt.shifted_from && (
+                                        <p className="text-[10px] text-slate-500 font-medium italic">
+                                            Transferred from: {apt.shifted_from.full_name}
+                                        </p>
+                                    )}
+
+                                    <div className="flex gap-2 mt-auto pt-2">
+                                        <button
+                                            onClick={() => handleMarkAsHandled(apt.id)}
+                                            className="flex-1 py-2 rounded-xl bg-emerald-500/10 hover:bg-emerald-500 text-emerald-400 hover:text-white text-xs font-bold border border-emerald-500/20 transition-all flex items-center justify-center gap-1.5"
+                                        >
+                                            <CheckCircle2 size={14} />
+                                            Handled
+                                        </button>
+                                        <button
+                                            onClick={() => openActionModal(apt)}
+                                            className="flex-1 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500 text-amber-400 hover:text-slate-900 text-xs font-bold border border-amber-500/20 transition-all flex items-center justify-center gap-1.5"
+                                        >
+                                            <ArrowRightLeft size={14} />
+                                            Reassign
+                                        </button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </motion.div>
+            )}
+
             {profile?.role?.toLowerCase() === 'admin' && suggestions.length > 0 && (
                 <div className="glass-card border-none bg-indigo-500/10 border-indigo-500/20 p-8 rounded-[2rem] shadow-xl overflow-hidden relative group">
                     <div className="absolute top-0 right-0 p-8 opacity-10 group-hover:scale-110 transition-transform">
@@ -1167,7 +1466,12 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled }) => {
                             <div className="space-y-3">
                                 <button
                                     onClick={() => {
-                                        navigate(`/clients/${selectedAptForAction.client_id}`)
+                                        if (selectedAptForAction.client_id) {
+                                            setShowActionModal(false)
+                                            navigate(`/clients/${selectedAptForAction.client_id}`)
+                                        } else {
+                                            alert('Client ID not found for this appointment.')
+                                        }
                                     }}
                                     className="w-full p-4 bg-slate-800 hover:bg-slate-700 rounded-2xl flex items-center justify-between text-white font-bold transition-colors group"
                                 >

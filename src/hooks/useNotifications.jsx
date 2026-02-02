@@ -61,6 +61,7 @@ export const useNotifications = () => {
             setNotifications(data || [])
             setUnreadCount(data?.filter(n => !n.is_read).length || 0)
         } catch (error) {
+            if (error?.name === 'AbortError' || error?.message?.includes('AbortError')) return; // Silently ignore aborts
             console.error('Error fetching notifications:', error)
         } finally {
             setLoading(false)
@@ -144,7 +145,7 @@ export const useNotifications = () => {
 
         const interval = setInterval(() => {
             fetchNotifications()
-        }, 30000)
+        }, 60000)
 
         return () => {
             if (subscription) supabase.removeChannel(subscription)
