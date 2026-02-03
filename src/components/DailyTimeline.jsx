@@ -308,13 +308,13 @@ const DailyTimeline = ({ selectedDate = new Date() }) => {
                                 return (
                                     <motion.div
                                         key={event.id}
-                                        initial={{ opacity: 0, scale: 0.98 }}
-                                        animate={{ opacity: 1, scale: 1 }}
+                                        initial={{ opacity: 0 }}
+                                        animate={{ opacity: 1 }}
                                         whileHover={{ zIndex: 50, scale: 1.01 }}
-                                        className={`absolute rounded-xl border flex flex-col shadow-xl transition-all cursor-pointer group backdrop-blur-md overflow-hidden
+                                        className={`absolute rounded-xl border flex flex-col shadow-xl transition-all cursor-pointer group backdrop-blur-sm overflow-hidden optimize-gpu
                                         ${event.isOutOfBounds ? 'opacity-20 saturate-0 grayscale border-white/5' : 'opacity-100 border-white/10'}
                                         ${isActive ? 'ring-2 ring-primary/40 shadow-glow shadow-primary/20' : ''}
-                                        ${event.type === 'appointment' ? 'bg-slate-900/90' : 'bg-slate-900/60'}
+                                        ${event.type === 'appointment' ? 'bg-slate-900/95' : 'bg-slate-900/70'}
                                         `}
                                         style={{
                                             top: `${getPosition(event.start)}%`,

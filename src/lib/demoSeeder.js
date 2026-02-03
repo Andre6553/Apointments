@@ -248,7 +248,8 @@ export const initializeMedicalDemo = async (businessId) => {
                     profile_id: p.id,
                     day_of_week: day,
                     start_time: '00:00:00',
-                    end_time: '23:59:59'
+                    end_time: '23:59:59',
+                    is_active: true
                 });
             }
             await supabase.from('working_hours').insert(schedule);

@@ -9,7 +9,7 @@ import { format, parseISO } from 'date-fns'
 import { logEvent } from '../lib/logger'
 
 const ScheduleSettings = () => {
-    const { user, profile } = useAuth()
+    const { user, profile, updateProfile } = useAuth()
     const showToast = useToast()
     const [breaks, setBreaks] = useState(() => {
         const cached = getCache(CACHE_KEYS.BREAKS)
@@ -31,6 +31,7 @@ const ScheduleSettings = () => {
     const [conflictingAppointments, setConflictingAppointments] = useState([])
     const [pendingHoursChange, setPendingHoursChange] = useState(null)
     const [transferring, setTransferring] = useState(false)
+    const [showTransferReminder, setShowTransferReminder] = useState(false)
 
     const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
@@ -181,6 +182,36 @@ const ScheduleSettings = () => {
                 new_hours: { start: newItem.start_time, end: newItem.end_time, active: newItem.is_active },
                 action: !newItem.is_active ? 'DAY_DISABLED' : (oldHours?.is_active === false ? 'DAY_ENABLED' : 'HOURS_CHANGED')
             }, profile)
+
+            // NEW: Logic to auto-disable transfers if all days are off
+            if (!newItem.is_active) {
+                const { data: allHours } = await supabase
+                    .from('working_hours')
+                    .select('is_active')
+                    .eq('profile_id', user.id);
+
+                const activeCount = (allHours || []).filter(h => h.is_active).length;
+                const totalRows = (allHours || []).length;
+
+                // Only auto-disable if every single day (7) is explicitly set to inactive
+                if (activeCount === 0 && totalRows === 7) {
+                    await supabase.from('profiles')
+                        .update({ accepts_transfers: false })
+                        .eq('id', user.id);
+
+                    showToast('All working days closed. Transfers automatically disabled.', 'info');
+
+                    await logEvent('TRANSFERS_AUTO_DISABLED', {
+                        provider_id: user.id,
+                        reason: 'all_working_days_disabled'
+                    }, profile);
+                }
+            } else {
+                // REVERSE Logic: If turning a day ON, and transfers are currently OFF, show reminder popup
+                if (profile && profile.accepts_transfers === false) {
+                    setShowTransferReminder(true);
+                }
+            }
 
             setSaveStatus(prev => ({ ...prev, [dayIdx]: 'saved' }))
             setTimeout(() => setSaveStatus(prev => ({ ...prev, [dayIdx]: null })), 2000)
@@ -468,6 +499,65 @@ const ScheduleSettings = () => {
                                 >
                                     {transferring ? <Loader2 size={18} className="animate-spin" /> : <ArrowRight size={18} />}
                                     Transfer to Admin & Save
+                                </button>
+                            </div>
+                        </motion.div>
+                    </div>
+                )}
+            </AnimatePresence>
+
+            {/* Transfer Reminder Modal */}
+            <AnimatePresence>
+                {showTransferReminder && (
+                    <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            onClick={() => setShowTransferReminder(false)}
+                            className="absolute inset-0 bg-slate-950/80 backdrop-blur-md"
+                        />
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                            className="relative w-full max-w-md glass-card p-8 flex flex-col items-center text-center shadow-2xl border border-indigo-500/30"
+                        >
+                            <div className="w-20 h-20 rounded-2xl bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400 mb-6">
+                                <ArrowRight size={40} />
+                            </div>
+
+                            <h3 className="text-2xl font-bold text-white mb-2">Transfers are Disabled</h3>
+                            <p className="text-slate-400 mb-8">
+                                You've activated a working day, but your <span className="text-indigo-400 font-bold">Accept Transfers</span> setting is currently off. You won't receive clients from other providers until you turn it back on.
+                            </p>
+
+                            <div className="flex flex-col w-full gap-3">
+                                <button
+                                    onClick={async () => {
+                                        try {
+                                            await updateProfile({ accepts_transfers: true });
+                                            showToast('Transfers reactivated!', 'success');
+                                            setShowTransferReminder(false);
+                                        } catch (err) {
+                                            console.error('Failed to reactivate transfers:', err);
+                                            // Fallback
+                                            await supabase.from('profiles')
+                                                .update({ accepts_transfers: true })
+                                                .eq('id', user.id);
+                                            showToast('Transfers reactivated!', 'success');
+                                            setShowTransferReminder(false);
+                                        }
+                                    }}
+                                    className="w-full py-4 rounded-xl bg-indigo-500 hover:bg-indigo-600 text-white font-bold transition-all shadow-lg shadow-indigo-500/20"
+                                >
+                                    Reactivate Transfers Now
+                                </button>
+                                <button
+                                    onClick={() => setShowTransferReminder(false)}
+                                    className="w-full py-4 rounded-xl bg-white/5 border border-white/10 text-slate-400 font-bold hover:text-white transition-all"
+                                >
+                                    Keep Transfers Disabled
                                 </button>
                             </div>
                         </motion.div>

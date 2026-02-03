@@ -41,7 +41,8 @@ export const getSmartReassignments = async (businessId, forceAllOnline = false) 
         .from('profiles')
         .select('*')
         .eq('business_id', businessId)
-        .eq('role', 'Provider');
+        .eq('role', 'Provider')
+        .eq('accepts_transfers', true);
 
     if (!forceAllOnline) {
         onlineQuery.eq('is_online', true);
@@ -299,3 +300,238 @@ export const analyzeSystemHealth = async (businessId, forceAllOnline = false) =>
         atRiskAppointments: atRisk
     };
 }
+
+/**
+ * CRISIS RECOVERY ENGINE
+ * "Clever Way to Upset Minimal Clients"
+ * 
+ * Strategy:
+ * 1. Identify 'Crisis Providers' (Delay > 45m or Pressure > 1.2)
+ * 2. Tactic A: "Load Shedding" -> Aggressively move appointments to *anyone* with skills (even if imperfect time match, better than 2h late).
+ * 3. Tactic B: "Strategic Deferral" -> If no one can take them, find the *last* appointment and suggest postponing to tomorrow to save the others.
+ */
+export const generateCrisisRecoveryPlan = async (businessId) => {
+    if (!businessId) return [];
+    console.log('[CrisisEngine] scanning for schedule anomalies...');
+
+    const today = new Date().toISOString().split('T')[0];
+    const { data: activeWorkload } = await supabase
+        .from('appointments')
+        .select(`
+            id, scheduled_start, duration_minutes, delay_minutes, status, treatment_name, required_skills,
+            client:clients(id, first_name, last_name, phone),
+            provider:profiles!appointments_assigned_profile_id_fkey(id, full_name, whatsapp, skills)
+        `)
+        .eq('business_id', businessId)
+        .in('status', ['pending', 'active'])
+        .gte('scheduled_start', `${today}T00:00:00`)
+        .order('scheduled_start', { ascending: true });
+
+    if (!activeWorkload?.length) return [];
+
+    // Group by Provider
+    const providerQueues = {}; // { providerId: [Tasks] }
+    activeWorkload.forEach(task => {
+        const pid = task.provider.id;
+        if (!providerQueues[pid]) providerQueues[pid] = [];
+        providerQueues[pid].push(task);
+    });
+
+    const crisisPlans = [];
+
+    // Analyze each Provider
+    for (const [providerId, queue] of Object.entries(providerQueues)) {
+        if (queue.length === 0) continue;
+
+        const providerName = queue[0].provider.full_name;
+
+        // Get provider's priority skill codes from their profile
+        const providerSkills = queue[0].provider.skills || [];
+        const prioritySkillCodes = providerSkills
+            .filter(s => typeof s === 'object' && s.priority === true)
+            .map(s => (s.code || '').toUpperCase());
+
+        console.log(`[CrisisEngine] Provider ${providerName} priority skills:`, prioritySkillCodes);
+
+        // Calculate "Head of Line" Delay (The accumulated cascading delay)
+        // We estimate true delay based on the *first* pending item.
+        const firstPending = queue.find(t => t.status === 'pending');
+        if (!firstPending) continue; // Only active task? Can't do much.
+
+        // True cascading delay is roughly the delay of the first pending item
+        const cascadeDelay = firstPending.delay_minutes || 0;
+
+        // --- ENHANCED: Priority Check (DB-Driven + Keyword Fallback) ---
+        const criticalKeywords = ['surgery', 'theater', 'priority', 'vip', 'critical', 'complex'];
+
+        const criticalAppt = queue.find(t => {
+            // 1. Check if appointment's required_skills include any of the provider's priority skills
+            const apptSkills = (t.required_skills || []).map(s => s.toUpperCase());
+            const hasDbPriority = apptSkills.some(skill => prioritySkillCodes.includes(skill));
+            if (hasDbPriority) return true;
+
+            // 2. Fallback: Keyword matching for treatment names (legacy support)
+            const txt = (t.treatment_name + ' ' + (t.required_skills || []).join(' ')).toLowerCase();
+            return criticalKeywords.some(k => txt.includes(k));
+        });
+
+        // Trigger if delay is high OR if a Critical Appt is present (lower barrier to act)
+        const threshold = criticalAppt ? 20 : 45;
+
+        if (cascadeDelay < threshold) continue;
+
+        // --- PRIORITY STRATEGY: Path Clearing ---
+        if (criticalAppt) {
+            console.log(`[CrisisEngine] 🛡️ Protecting Critical Appt: ${criticalAppt.treatment_name}`);
+            const actions = [];
+            let minutesToRecover = cascadeDelay;
+
+            // Move anyone who is NOT the VIP
+            const moveable = queue.filter(t => t.id !== criticalAppt.id && t.status === 'pending')
+                .sort((a, b) => b.duration_minutes - a.duration_minutes);
+
+            for (const item of moveable) {
+                if (minutesToRecover <= 0) break;
+                actions.push({
+                    type: 'TRANSFER_RECOMMENDATION',
+                    appointment: item,
+                    reason: `EMERGENCY CLEARANCE: Moving to ensure priority '${criticalAppt.treatment_name}' proceeds.`,
+                    impact_score: item.duration_minutes
+                });
+                minutesToRecover -= item.duration_minutes;
+            }
+
+            if (actions.length > 0) {
+                crisisPlans.push({
+                    providerId,
+                    providerName,
+                    delayMinutes: cascadeDelay,
+                    recommendedActions: actions
+                });
+            }
+            continue; // <--- SKIP STANDARD STRATEGY
+        }
+
+        console.log(`[CrisisEngine] 🚨 CRISIS DETECTED: ${providerName} is ${cascadeDelay}m behind.`);
+
+        // Strategy A: Load Shedding (Move tasks to others)
+        // We reuse getSmartReassignments logic partially here but focused on this provider's queue
+        // For simplicity in this "Clever" logic, we just tag who needs moving.
+
+        // Find "Sacrificial" or "Movable" candidates
+        // It is often best to move the Longest active blocks to clear the most time
+        const candidates = [...queue.filter(t => t.status === 'pending')].sort((a, b) => b.duration_minutes - a.duration_minutes); // Longest first
+
+        let minutesToRecover = cascadeDelay;
+        const actions = [];
+
+        for (const candidate of candidates) {
+            if (minutesToRecover <= 15) break; // Manageable
+
+            // Action: Shed
+            actions.push({
+                type: 'TRANSFER_RECOMMENDATION',
+                appointment: candidate,
+                reason: `Shedding this ${candidate.duration_minutes}m task recovers ${candidate.duration_minutes}m for the queue.`,
+                impact_score: candidate.duration_minutes
+            });
+            minutesToRecover -= candidate.duration_minutes;
+        }
+
+        // Strategy B: Strategic Deferral (If still behind)
+        if (minutesToRecover > 30) {
+            // Even after shedding (theoretical), we are behind. 
+            // Suggest moving the LAST client to the *Next Available Slot* (Smart Check)
+            const lastClient = queue[queue.length - 1];
+
+            if (lastClient.status === 'pending') {
+                let suggestedDate = 'Tomorrow';
+                let suggestionDetails = 'Checking availability...';
+
+                // --- INTELLIGENT FUTURE SCAN ---
+                try {
+                    // Check next 14 days for THIS provider
+                    const startSearch = new Date(); startSearch.setDate(startSearch.getDate() + 1);
+                    const endSearch = new Date(); endSearch.setDate(startSearch.getDate() + 14);
+
+                    const { data: futureApts } = await supabase
+                        .from('appointments')
+                        .select('scheduled_start, duration_minutes')
+                        .eq('assigned_profile_id', providerId)
+                        .in('status', ['pending', 'active'])
+                        .gte('scheduled_start', startSearch.toISOString())
+                        .lte('scheduled_start', endSearch.toISOString());
+
+                    const { data: futureHours } = await supabase
+                        .from('working_hours')
+                        .select('*')
+                        .eq('profile_id', providerId)
+                        .eq('is_active', true);
+
+                    // Find first day with capacity
+                    let foundDate = null;
+                    const neededMin = lastClient.duration_minutes || 30;
+
+                    for (let d = 0; d < 14; d++) {
+                        const checkDate = new Date(startSearch);
+                        checkDate.setDate(checkDate.getDate() + d);
+                        const dayOfWeek = checkDate.getDay();
+
+                        const shifts = futureHours?.filter(h => h.day_of_week === dayOfWeek) || [];
+                        if (!shifts.length) continue;
+
+                        // Simple Capacity Heuristic for Speed:
+                        // TotalShiftMinutes - ExistingLoad > neededMin
+                        let dailyCap = 0;
+                        shifts.forEach(s => {
+                            const [hS, mS] = s.start_time.split(':').map(Number);
+                            const [hE, mE] = s.end_time.split(':').map(Number);
+                            dailyCap += (hE * 60 + mE) - (hS * 60 + mS);
+                        });
+
+                        const dayStr = checkDate.toISOString().split('T')[0];
+                        const dayLoad = futureApts
+                            ?.filter(a => a.scheduled_start.startsWith(dayStr))
+                            .reduce((sum, a) => sum + a.duration_minutes, 0) || 0;
+
+                        // Leave 10% buffer
+                        if ((dailyCap * 0.9) - dayLoad > neededMin) {
+                            foundDate = checkDate;
+                            break;
+                        }
+                    }
+
+                    if (foundDate) {
+                        suggestedDate = foundDate.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+                        suggestionDetails = `First opening found on ${suggestedDate}`;
+                    } else {
+                        // Original provider full?
+                        suggestionDetails = `Provider fully booked (14d). Suggest Transfer & Defer.`;
+                        suggestedDate = 'Waitlist / Other Provider';
+                    }
+
+                } catch (e) {
+                    console.error('[CrisisEngine] Availability Check Failed', e);
+                }
+
+                actions.push({
+                    type: 'DEFERRAL_RECOMMENDATION',
+                    appointment: lastClient,
+                    reason: `Postpone to ${suggestedDate} (${suggestionDetails}). Saves team overtime today.`,
+                    impact_score: 100
+                });
+            }
+        }
+
+        if (actions.length > 0) {
+            crisisPlans.push({
+                providerId,
+                providerName,
+                delayMinutes: cascadeDelay,
+                recommendedActions: actions
+            });
+        }
+    }
+
+    return crisisPlans;
+};

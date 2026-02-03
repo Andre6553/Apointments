@@ -8,10 +8,15 @@ const PROXY_URL = 'http://localhost:3001/log';
 const APP_VERSION = '1.1.0';
 const SCHEMA_VERSION = 'lat.audit.v1.3.0';
 
+import { getCache, CACHE_KEYS } from './cache';
+
 /**
  * Core log capture logic. Optimized for machine-learning and forensic auditing.
  */
 export const logEvent = async (action, data = {}, options = {}) => {
+    // Attempt to get business name for better log naming
+    const cachedProfile = getCache(CACHE_KEYS.PROFILE);
+    const businessName = data.business_name || options.context?.business_name || cachedProfile?.business?.name;
     // 1. Connectivity & Environment Checks
     const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 
@@ -23,7 +28,7 @@ export const logEvent = async (action, data = {}, options = {}) => {
 
     // 2. Stable Identifiers
     const eventId = crypto.randomUUID();
-    const isDemo = localStorage.getItem('DEMO_MODE') === 'true';
+    const isDemo = localStorage.getItem('medical_demo_enabled') === 'true';
 
     // Support for distributed tracing (trace_id and parent_id)
     if (!window.__LAT_TRACE_ID__) window.__LAT_TRACE_ID__ = eventId;
@@ -55,6 +60,7 @@ export const logEvent = async (action, data = {}, options = {}) => {
         },
         payload: {
             ...data,
+            business_name: businessName,
             // Ensure business_id is ALWAYS present in the payload root for the proxy-sink routing
             business_id: data.business_id || options.actor?.business_id || options.context?.business_id || (typeof options === 'object' && options.id ? options.business_id : null),
             // Ensure scheduled end is always present if start is provided

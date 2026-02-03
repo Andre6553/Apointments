@@ -87,6 +87,7 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
         if (isOpen && targetProviderId) {
             fetchProviderBaseData();
             fetchTargetProviderSkills();
+            fetchTreatments(); // Fetch provider-specific treatments with their pricing
         }
     }, [isOpen, targetProviderId, formData.date]);
 
@@ -469,13 +470,15 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
     };
 
     const fetchTreatments = async () => {
-        if (!user?.id) return;
+        if (!targetProviderId) return;
         setFetchingTreatments(true);
         try {
+            // Fetch treatments specific to the selected provider (not business-wide)
+            // This ensures provider-specific pricing and duration is used
             const { data } = await supabase
                 .from('treatments')
                 .select('*')
-                .eq('business_id', profile?.business_id)
+                .eq('profile_id', targetProviderId)
                 .order('name');
             if (data) setTreatments(data);
         } catch (err) {

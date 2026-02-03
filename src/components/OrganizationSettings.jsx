@@ -101,13 +101,22 @@ const OrganizationSettings = () => {
         if (!newSkillName.trim() || !newSkillCode.trim()) return
 
         setIsAddingSkill(true)
+        const code = newSkillCode.trim().toUpperCase()
+
+        // 1. Check for duplicates locally first
+        if (skills.some(s => s.code === code)) {
+            showToast(`Sorry, the code "${code}" is already being used. Please create a unique code for each skill.`, 'error')
+            setIsAddingSkill(false)
+            return
+        }
+
         try {
             const { error } = await supabase
                 .from('business_skills')
                 .insert({
                     business_id: profile.business_id,
                     name: newSkillName.trim(),
-                    code: newSkillCode.trim().toUpperCase()
+                    code: code
                 })
 
             if (error) throw error
@@ -424,8 +433,8 @@ const OrganizationSettings = () => {
                                 </div>
                             </div>
 
-                            {/* Demo Quick Fill */}
-                            {isDemoOn && (
+                            {/* Demo Quick Fill (Exclusively for admin@demo.com) */}
+                            {profile?.email === 'admin@demo.com' && isDemoOn && (
                                 <button
                                     onClick={handleSeedDemoSkills}
                                     disabled={isSeedingDemo}

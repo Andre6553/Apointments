@@ -67,8 +67,8 @@ const writeToLogFile = (data) => {
             try { entryObj = JSON.parse(data); } catch (e) { }
         }
 
-        let businessId = entryObj?.payload?.business_id || entryObj?.business_id || 'global';
-        businessId = businessId.replace(/[^a-z0-9-]/gi, '_');
+        let businessId = entryObj?.payload?.business_name || entryObj?.business_name || entryObj?.payload?.business_id || entryObj?.business_id || 'global';
+        businessId = businessId.toString().replace(/[^a-z0-9-]/gi, '_');
 
         const todayPrefix = format(new Date(), 'yyyy-MM-dd');
 
@@ -208,9 +208,66 @@ const checkReminders = async () => {
     }
 };
 
-// Start the Loop
+// --- CRON: Auto-Close Stuck Sessions every 60s ---
+const checkStuckSessions = async () => {
+    try {
+        console.log('[AutoCloseCron] Checking for stuck sessions...');
+        // Find appointments that are 'active' but started > 4 hours ago (Safeguard)
+        // OR started > duration + 120 mins ago
+        // For simplicity in SQL, let's just grab all active ones and filter in JS or use a "started before X" query
+
+        const cutoff = subMinutes(new Date(), 180).toISOString(); // 3 hours ago
+
+        const { data: stuckApts, error } = await supabase
+            .from('appointments')
+            .select('id, actual_start, client:clients(first_name, last_name), provider:profiles!appointments_assigned_profile_id_fkey(full_name)')
+            .eq('status', 'active')
+            .lte('actual_start', cutoff);
+
+        if (error) {
+            console.error('[AutoCloseCron] Query Error:', error);
+            return;
+        }
+
+        if (stuckApts && stuckApts.length > 0) {
+            console.log(`[AutoCloseCron] Found ${stuckApts.length} stuck sessions. Cleaning up...`);
+
+            for (const apt of stuckApts) {
+                const endTime = new Date().toISOString();
+                const { error: updateErr } = await supabase
+                    .from('appointments')
+                    .update({
+                        status: 'completed',
+                        actual_end: endTime,
+                        notes: `Auto-closed by Server Safety Valve (Stuck > 3h)`
+                    })
+                    .eq('id', apt.id);
+
+                if (!updateErr) {
+                    const msg = `[AutoCloseCron] Force-closed session for ${apt.client?.first_name} (Provider: ${apt.provider?.full_name})`;
+                    console.log(msg);
+
+                    // Persist to Audit Log
+                    writeToLogFile({
+                        level: 'WARN',
+                        type: 'system.cleanup.force_close',
+                        message: msg,
+                        payload: { appointment_id: apt.id, provider: apt.provider?.full_name }
+                    });
+                }
+            }
+        }
+    } catch (e) {
+        console.error('[AutoCloseCron] Execution Exception:', e);
+    }
+};
+
+// Start the Loops
 setInterval(checkReminders, 60000);
 checkReminders(); // Run once immediately on start
+
+setInterval(checkStuckSessions, 60000);
+checkStuckSessions(); // Run immediately
 
 const server = http.createServer((req, res) => {
     // CORS
@@ -227,7 +284,7 @@ const server = http.createServer((req, res) => {
     if (req.url === '/send-whatsapp' && req.method === 'POST') {
         let body = '';
         req.on('data', chunk => body += chunk);
-        req.on('end', () => {
+        req.on('end', async () => {
             try {
                 const { to, message } = JSON.parse(body);
 
@@ -241,33 +298,103 @@ const server = http.createServer((req, res) => {
                     'Body': message
                 }).toString();
 
-                const twilioReq = https.request({
-                    hostname: 'api.twilio.com',
-                    path: `/2010-04-01/Accounts/${ACCOUNT_SID}/Messages.json`,
-                    method: 'POST',
-                    headers: {
-                        'Authorization': 'Basic ' + Buffer.from(`${ACCOUNT_SID}:${AUTH_TOKEN}`).toString('base64'),
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                        'Content-Length': postData.length
-                    }
-                }, (twilioRes) => {
-                    let data = '';
-                    twilioRes.on('data', chunk => data += chunk);
-                    twilioRes.on('end', () => {
-                        res.writeHead(twilioRes.statusCode, { 'Content-Type': 'application/json' });
-                        res.end(data);
+                const makeRequest = () => new Promise((resolve, reject) => {
+                    const twilioReq = https.request({
+                        hostname: 'api.twilio.com',
+                        path: `/2010-04-01/Accounts/${ACCOUNT_SID}/Messages.json`,
+                        method: 'POST',
+                        headers: {
+                            'Authorization': 'Basic ' + Buffer.from(`${ACCOUNT_SID}:${AUTH_TOKEN}`).toString('base64'),
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                            'Content-Length': postData.length
+                        }
+                    }, (twilioRes) => {
+                        let data = '';
+                        twilioRes.on('data', chunk => data += chunk);
+                        twilioRes.on('end', () => resolve({ statusCode: twilioRes.statusCode, data }));
                     });
+
+                    twilioReq.on('error', (e) => reject(e));
+                    twilioReq.write(postData);
+                    twilioReq.end();
                 });
 
-                twilioReq.on('error', (e) => {
-                    res.writeHead(500, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: e.message }));
-                });
+                const response = await makeRequest();
+                const responseData = JSON.parse(response.data || '{}');
 
-                twilioReq.write(postData);
-                twilioReq.end();
+                if (response.statusCode >= 400 && (responseData.code === 63016 || responseData.code === 63032)) {
+                    console.log(`[Twilio Proxy] 24h Window Error (${responseData.code}) for ${to}. Attempting Template fallback...`);
+
+                    const cleanPhone = to.replace('whatsapp:', '');
+                    const { data: client, error: clientErr } = await supabase
+                        .from('clients')
+                        .select('id, first_name')
+                        .eq('phone', cleanPhone)
+                        .maybeSingle();
+
+                    if (!client || clientErr) {
+                        console.warn('[Twilio Proxy] Fallback failed: Client not found for phone', cleanPhone);
+                        res.writeHead(response.statusCode, { 'Content-Type': 'application/json' });
+                        res.end(response.data);
+                        return;
+                    }
+
+                    const { data: apt } = await supabase
+                        .from('appointments')
+                        .select(`
+                            scheduled_start, 
+                            provider:profiles!appointments_assigned_profile_id_fkey(full_name)
+                        `)
+                        .eq('client_id', client.id)
+                        .gte('scheduled_start', new Date().toISOString())
+                        .order('scheduled_start', { ascending: true })
+                        .limit(1)
+                        .maybeSingle();
+
+                    let fallbackSent = false;
+
+                    if (apt) {
+                        const localDate = new Date(apt.scheduled_start);
+                        const dateStr = format(localDate, 'MMM do');
+                        const timeStr = format(localDate, 'HH:mm');
+                        fallbackSent = await sendTemplateMessage(to, dateStr, timeStr, client.first_name, apt.provider?.full_name);
+                    } else {
+                        const { data: pastApt } = await supabase
+                            .from('appointments')
+                            .select('scheduled_start, provider:profiles!appointments_assigned_profile_id_fkey(full_name)')
+                            .eq('client_id', client.id)
+                            .order('scheduled_start', { ascending: false })
+                            .limit(1)
+                            .maybeSingle();
+
+                        if (pastApt) {
+                            const localDate = new Date(pastApt.scheduled_start);
+                            const dateStr = format(localDate, 'MMM do');
+                            const timeStr = format(localDate, 'HH:mm');
+                            fallbackSent = await sendTemplateMessage(to, dateStr, timeStr, client.first_name, pastApt.provider?.full_name);
+                        } else {
+                            fallbackSent = await sendTemplateMessage(to, "SOON", "TBD", client.first_name, "our Team");
+                        }
+                    }
+
+                    if (fallbackSent) {
+                        res.writeHead(200, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({
+                            success: true,
+                            message: "Original failed (24h window), but Template sent to re-open session.",
+                            original_error: responseData
+                        }));
+                    } else {
+                        res.writeHead(response.statusCode, { 'Content-Type': 'application/json' });
+                        res.end(response.data);
+                    }
+                } else {
+                    res.writeHead(response.statusCode, { 'Content-Type': 'application/json' });
+                    res.end(response.data);
+                }
 
             } catch (error) {
+                console.error('[Twilio Proxy] Handler Error:', error);
                 res.writeHead(400, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: error.message }));
             }

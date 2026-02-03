@@ -20,6 +20,7 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
     const [loading, setLoading] = useState(true)
     const [globalView, setGlobalView] = useState(profile?.role?.toLowerCase() === 'admin')
     const [suggestions, setSuggestions] = useState([])
+    const [crisisPlans, setCrisisPlans] = useState([])
     const [systemHealth, setSystemHealth] = useState(null)
     const [processing, setProcessing] = useState(false)
     const navigate = useNavigate()
@@ -104,11 +105,18 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                 setNeedsAttentionApts(attentionApts || [])
             }
 
-            // 2. Fetch free providers
             const { data: allProviders } = await supabase
                 .from('profiles')
                 .select('*')
                 .eq('business_id', profile?.business_id)
+
+            // 2b. Fetch today's working hours to determine scheduled availability (for Demo Mode)
+            const dayOfWeek = new Date().getDay();
+            const { data: todayHours } = await supabase
+                .from('working_hours')
+                .select('profile_id, is_active')
+                .eq('day_of_week', dayOfWeek)
+                .in('profile_id', allProviders?.map(p => p.id) || []);
 
             // 3. Fetch Busy Providers (Using Secure RPC to bypass RLS visibility issues)
             const { data: busyProviderData, error: busyError } = await supabase
@@ -126,20 +134,33 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                 const lastSeen = p.last_seen ? new Date(p.last_seen) : null
                 const isStale = !lastSeen || (now - lastSeen > FIVE_MINUTES)
 
+                let isOnline = p.is_online;
+
                 if (isStale) {
-                    console.log(`[Balancer] Provider ${p.full_name} marked OFFLINE (Stale: ${lastSeen ? Math.round((now - lastSeen) / 1000) + 's ago' : 'Never'})`)
-                    return { ...p, is_online: false }
+                    isOnline = false;
                 }
-                return p
+
+                // VIRTUAL ASSISTANT LOGIC: Force online if they have a schedule today
+                if (virtualAssistantEnabled) {
+                    const schedule = todayHours?.find(h => h.profile_id === p.id);
+                    const hasWorkToday = schedule ? schedule.is_active : null;
+
+                    // If schedule is explicitly active, or if we are in demo mode and can't find schedule 
+                    // (RLS might block providers from seeing others' schedules, so we fallback to assuming true for doctors in demo)
+                    if (hasWorkToday === true || (hasWorkToday === null && p.full_name?.startsWith('Dr.'))) {
+                        isOnline = true;
+                    }
+                }
+
+                return { ...p, is_online: isOnline }
             }) || []
 
             // Filter out busy, but log who is busy
             // NEW: Don't filter out busy providers, just mark them so Admin can see them
-            const free = providersWithHeartbeat.filter(p => p.is_online || virtualAssistantEnabled).map(p => {
+            const free = providersWithHeartbeat.filter(p => p.is_online).map(p => {
                 const isBusy = busyIds.includes(p.id);
                 return {
                     ...p,
-                    is_online: virtualAssistantEnabled ? true : p.is_online,
                     is_busy: isBusy
                 };
             });
@@ -148,15 +169,17 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
             setFreeProviders(free)
             setAllProviders(providersWithHeartbeat)
 
-            // 3. Fetch Smart Recommendations (Autopilot)
+            // 3. Fetch Smart Recommendations (Autopilot) & Crisis Plans
             if (profile?.role?.toLowerCase() === 'admin' && profile?.business_id) {
-                const { getSmartReassignments, analyzeSystemHealth } = await import('../lib/balancerLogic')
-                const [smart, health] = await Promise.all([
+                const { getSmartReassignments, analyzeSystemHealth, generateCrisisRecoveryPlan } = await import('../lib/balancerLogic')
+                const [smart, health, crisis] = await Promise.all([
                     getSmartReassignments(profile.business_id, virtualAssistantEnabled),
-                    analyzeSystemHealth(profile.business_id, virtualAssistantEnabled)
+                    analyzeSystemHealth(profile.business_id, virtualAssistantEnabled),
+                    generateCrisisRecoveryPlan(profile.business_id)
                 ])
                 setSuggestions(smart)
                 setSystemHealth(health)
+                setCrisisPlans(crisis || [])
             }
         } catch (error) {
             console.error('Balancer Data Error:', error)
@@ -194,7 +217,7 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                 supabase.removeChannel(channel)
             }
         }
-    }, [user, profile, globalView])
+    }, [user, profile, globalView, virtualAssistantEnabled])
 
     const notifyAdminsOfOfflineProviders = async (apt, offlineQualified) => {
         try {
@@ -582,6 +605,55 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
         alert(`Successfully auto-assigned ${successCount} of ${needsAttentionApts.length} appointments!`)
         fetchData() // Refresh data
     }
+
+    // Crisis Handler
+    const handleCrisisAction = async (plan, action) => {
+        if (!confirm(`Confirm Emergency Action for ${action.appointment.client?.first_name}?\n\nType: ${action.type}\nReason: ${action.reason}`)) return;
+
+        try {
+            if (action.type === 'TRANSFER_RECOMMENDATION') {
+                // Find ANY capable provider (even busy is better than 2h late)
+                // Filter allProviders for skills
+                const reqSkills = action.appointment.required_skills || [];
+                const capable = allProviders.filter(p => {
+                    if (p.id === plan.providerId) return false;
+                    const pSkills = (p.skills || []).map(s => typeof s === 'object' ? s.code : s);
+                    return reqSkills.every(qs => pSkills.includes(qs));
+                });
+
+                // Sort by online + LEAST busy
+                // (Simple heuristic: pick first online, or first anyone)
+                const target = capable.find(p => p.is_online) || capable[0];
+
+                if (!target) {
+                    alert('CRISIS FALIED: No capable provider found to take this load.');
+                    return;
+                }
+
+                await shiftClient(action.appointment.id, target.id, plan.providerId);
+
+                // Extra Log
+                await logEvent('crisis.load_shed', {
+                    from: plan.providerName,
+                    to: target.full_name,
+                    minutes_saved: action.impact_score
+                }, { level: 'WARN' });
+
+            } else if (action.type === 'DEFERRAL_RECOMMENDATION') {
+                // Open Reschedule Modal for this specific client
+                setSelectedAptForAction(action.appointment);
+                setShowRescheduleModal(true);
+
+                await logEvent('crisis.deferral_proposed', {
+                    client: action.appointment.client?.first_name,
+                    provider: plan.providerName
+                }, { level: 'WARN' });
+            }
+        } catch (e) {
+            console.error('Crisis Action Failed:', e);
+            alert('Failed to execute crisis plan.');
+        }
+    };
 
     // Messaging Logic
     const startChat = (provider) => {
@@ -1054,393 +1126,509 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                 </div>
             )}
 
-            {/* NEEDS ATTENTION SECTION - Transferred from providers who changed hours */}
-            {profile?.role?.toLowerCase() === 'admin' && needsAttentionApts.length > 0 && (
-                <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="glass-card border-none bg-amber-500/10 border-amber-500/20 p-8 rounded-[2rem] shadow-xl overflow-hidden relative"
-                >
-                    <div className="absolute top-0 right-0 p-16 opacity-5">
-                        <Users size={160} />
-                    </div>
 
-                    <div className="relative z-10">
-                        <div className="flex items-center justify-between mb-6">
-                            <div className="flex items-center gap-4">
-                                <div className="p-3 bg-amber-500 rounded-2xl shadow-glow shadow-amber-500/40">
-                                    <AlertTriangle size={24} className="text-slate-900" />
-                                </div>
-                                <div>
-                                    <h3 className="text-2xl font-bold text-white tracking-tight">Needs Your Attention</h3>
-                                    <p className="text-amber-300/80 font-medium text-sm">
-                                        {needsAttentionApts.length} appointment{needsAttentionApts.length !== 1 ? 's' : ''} transferred from providers who changed their working hours
-                                    </p>
-                                </div>
-                            </div>
-                            <button
-                                onClick={handleAutoAssignAll}
-                                disabled={autoAssigning || freeProviders.filter(p => !p.is_busy).length === 0}
-                                className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 disabled:bg-slate-700 disabled:text-slate-500 text-slate-900 font-bold rounded-xl transition-all flex items-center gap-2 shadow-lg shadow-amber-500/20 text-sm"
-                            >
-                                {autoAssigning ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
-                                {autoAssigning ? 'Assigning...' : 'Auto-Assign All'}
-                            </button>
-                        </div>
 
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            {needsAttentionApts.map(apt => (
-                                <div key={apt.id} className="bg-white/5 border border-amber-500/20 rounded-2xl p-5 flex flex-col gap-3 hover:bg-amber-500/10 transition-colors group">
-                                    <div className="flex justify-between items-start">
-                                        <div className="flex items-center gap-3">
-                                            <div className="w-11 h-11 rounded-xl bg-amber-500/20 flex items-center justify-center text-amber-400 font-bold text-lg">
-                                                {apt.client?.first_name?.charAt(0) || '?'}
-                                            </div>
-                                            <div>
-                                                <h4 className="font-bold text-white text-base">{apt.client?.first_name} {apt.client?.last_name}</h4>
-                                                <p className="text-xs text-slate-400">
-                                                    {format(new Date(apt.scheduled_start), 'EEE, MMM d')} at {format(new Date(apt.scheduled_start), 'HH:mm')}
-                                                </p>
-                                            </div>
-                                        </div>
-                                        <span className="px-2 py-1 bg-amber-500/20 text-amber-400 text-[9px] font-black uppercase tracking-widest rounded-md border border-amber-500/30">
-                                            Reschedule
-                                        </span>
-                                    </div>
-
-                                    {apt.shifted_from && (
-                                        <p className="text-[10px] text-slate-500 font-medium italic">
-                                            Transferred from: {apt.shifted_from.full_name}
-                                        </p>
-                                    )}
-
-                                    <div className="flex gap-2 mt-auto pt-2">
-                                        <button
-                                            onClick={() => handleMarkAsHandled(apt.id)}
-                                            className="flex-1 py-2 rounded-xl bg-emerald-500/10 hover:bg-emerald-500 text-emerald-400 hover:text-white text-xs font-bold border border-emerald-500/20 transition-all flex items-center justify-center gap-1.5"
-                                        >
-                                            <CheckCircle2 size={14} />
-                                            Handled
-                                        </button>
-                                        <button
-                                            onClick={() => openActionModal(apt)}
-                                            className="flex-1 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500 text-amber-400 hover:text-slate-900 text-xs font-bold border border-amber-500/20 transition-all flex items-center justify-center gap-1.5"
-                                        >
-                                            <ArrowRightLeft size={14} />
-                                            Reassign
-                                        </button>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                </motion.div>
-            )}
-
-            {profile?.role?.toLowerCase() === 'admin' && suggestions.length > 0 && (
-                <div className="glass-card border-none bg-indigo-500/10 border-indigo-500/20 p-8 rounded-[2rem] shadow-xl overflow-hidden relative group">
-                    <div className="absolute top-0 right-0 p-8 opacity-10 group-hover:scale-110 transition-transform">
-                        <Sparkles size={120} className="text-indigo-400" />
-                    </div>
-
-                    <div className="relative z-10">
-                        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-8">
-                            <div className="flex items-center gap-4">
-                                <div className="p-3 bg-indigo-500 rounded-2xl shadow-glow shadow-indigo-500/40">
-                                    <Sparkles size={24} className="text-white animate-pulse" />
-                                </div>
-                                <div>
-                                    <h3 className="text-2xl font-bold text-white tracking-tight">Smart Autopilot</h3>
-                                    <p className="text-indigo-300/80 font-medium text-sm">Found {suggestions.length} optimal re-assignments to fix delays</p>
-                                </div>
-                            </div>
-                            <button
-                                onClick={approveAllSuggestions}
-                                className="w-full md:w-auto bg-white text-indigo-600 hover:bg-indigo-50 px-8 py-3.5 rounded-2xl font-black text-sm transition-all shadow-xl active:scale-95 flex items-center justify-center gap-3 group/btn"
-                            >
-                                <CheckCircle2 size={18} />
-                                Approve All Solutions
-                                <ChevronRight size={16} className="group-hover:translate-x-1 transition-transform" />
-                            </button>
-                        </div>
-
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            {suggestions.map(sug => (
-                                <div key={sug.appointmentId} className="bg-white/5 border border-white/10 rounded-2xl p-4 flex justify-between items-center hover:bg-white/10 transition-colors">
-                                    <div className="space-y-1">
-                                        <h4 className="font-bold text-white text-sm">{sug.clientName}</h4>
-                                        <p className="text-[10px] text-indigo-300 font-bold uppercase tracking-widest">
-                                            {sug.currentProviderName} → {sug.newProviderName}
-                                        </p>
-                                    </div>
-                                    <button
-                                        onClick={() => approveSuggestion(sug)}
-                                        className="p-2.5 bg-indigo-500/20 hover:bg-indigo-500 text-indigo-400 hover:text-white rounded-xl transition-all border border-indigo-500/30"
-                                    >
-                                        <CheckCircle2 size={16} />
-                                    </button>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {profile?.role?.toLowerCase() === 'admin' && (
-                <div className="flex bg-slate-800/40 p-1 rounded-2xl border border-white/5 w-fit">
-                    <button
-                        onClick={() => setGlobalView(false)}
-                        className={`
-                            flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all
-                            ${!globalView ? 'bg-primary text-white shadow-lg' : 'text-slate-400 hover:text-white'}
-                        `}
+            {/* CRISIS MODE SECTION */}
+            {
+                crisisPlans.length > 0 && (
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="mb-8"
                     >
-                        <User size={14} /> My Clients
-                    </button>
-                    <button
-                        onClick={() => setGlobalView(true)}
-                        className={`
-                            flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all
-                            ${globalView ? 'bg-indigo-500 text-white shadow-lg' : 'text-slate-400 hover:text-white'}
-                        `}
-                    >
-                        <Globe size={14} /> Global Facility
-                    </button>
-                </div>
-            )}
-
-            {loading ? (
-                <div className="flex flex-col items-center py-32 text-slate-500">
-                    <Loader2 className="w-10 h-10 animate-spin mb-4 text-primary" />
-                    <p className="font-medium animate-pulse">Analyzing system workload...</p>
-                </div>
-            ) : delayedApts.length === 0 ? (
-                <motion.div
-                    initial={{ opacity: 0, scale: 0.95 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    className="glass-card border-none bg-gradient-to-br from-emerald-500/10 to-teal-500/10 border-emerald-500/20 p-12 rounded-[2.5rem] text-center"
-                >
-                    <div className="w-20 h-20 bg-emerald-500/10 rounded-full flex items-center justify-center mx-auto mb-6 shadow-glow shadow-emerald-500/20">
-                        <CheckCircle2 size={40} className="text-emerald-400" />
-                    </div>
-                    <h3 className="text-2xl font-bold text-white mb-2">All Systems Operational</h3>
-                    <p className="text-emerald-400/80 font-medium">No significant schedule delays detected across the facility.</p>
-                </motion.div>
-            ) : (
-                <>
-                    {/* FAIL-SAFE AUTOPILOT UI */}
-                    {suggestions.length > 0 && (
-                        <div className="p-1 rounded-[2.5rem] bg-gradient-to-r from-indigo-500 via-purple-500 to-indigo-500 animate-gradient-x shadow-2xl shadow-indigo-500/20 mb-10">
-                            <div className="bg-slate-900/90 backdrop-blur-xl rounded-[2.4rem] p-8 relative overflow-hidden">
-                                <div className="absolute top-0 right-0 p-32 bg-indigo-500/10 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2 pointer-events-none" />
-
-                                <div className="relative z-10 flex flex-col md:flex-row items-center justify-between gap-8">
-                                    <div className="flex items-center gap-6">
-                                        <div className="w-16 h-16 rounded-2xl bg-indigo-500 flex items-center justify-center text-white shadow-lg shadow-indigo-500/30">
-                                            <Sparkles size={32} />
+                        <div className="rounded-[2rem] border border-red-500/30 bg-red-500/10 overflow-hidden relative">
+                            <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-20 brightness-100 contrast-150 mix-blend-overlay"></div>
+                            <div className="relative p-8">
+                                <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-8">
+                                    <div className="flex items-center gap-4">
+                                        <div className="p-3 bg-red-500 rounded-2xl shadow-lg shadow-red-500/40 animate-pulse">
+                                            <AlertTriangle className="text-white" size={24} strokeWidth={3} />
                                         </div>
                                         <div>
-                                            <h3 className="text-2xl font-black text-white tracking-tight mb-1">
-                                                Optimization Available
-                                            </h3>
-                                            <p className="text-slate-400 font-medium text-lg">
-                                                Found <span className="text-white font-bold">{suggestions.length} delayed sessions</span> that can be rebalanced.
-                                            </p>
+                                            <h2 className="text-2xl font-black text-white uppercase tracking-tight flex items-center gap-3">
+                                                Crisis Mode Active
+                                                <span className="text-xs bg-red-500 text-white px-2 py-0.5 rounded-full font-bold tracking-widest animate-pulse border border-white/20">LIVE</span>
+                                            </h2>
+                                            <p className="text-red-200 font-medium">Critical schedule delays detected. Immediate action recommended to prevent cascade failure.</p>
                                         </div>
                                     </div>
-
-                                    <button
-                                        onClick={approveAllSuggestions}
-                                        disabled={processing}
-                                        className="group relative px-8 py-4 bg-white text-slate-900 rounded-2xl font-black text-lg tracking-tight hover:scale-105 active:scale-95 transition-all shadow-xl shadow-white/10 overflow-hidden"
-                                    >
-                                        <div className="absolute inset-0 bg-gradient-to-r from-transparent via-slate-200/50 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000" />
-                                        <span className="relative z-10 flex items-center gap-3">
-                                            {processing ? <Loader2 className="animate-spin" /> : <Sparkles className="w-5 h-5" />}
-                                            {processing ? 'Processing...' : 'AUTO-FIX SCHEDULE'}
-                                        </span>
-                                    </button>
                                 </div>
 
-                                {/* Preview of Fixes */}
-                                <div className="mt-8 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                                    {suggestions.slice(0, 3).map((sug, i) => (
-                                        <div key={i} className="p-4 rounded-xl bg-white/5 border border-white/5 flex items-center justify-between">
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                    {crisisPlans.map((plan, idx) => (
+                                        <div key={idx} className="bg-slate-900/80 backdrop-blur-md rounded-2xl p-6 border border-red-500/30 shadow-xl">
+                                            <div className="flex justify-between items-start mb-6 border-b border-white/5 pb-4">
+                                                <div>
+                                                    <h3 className="font-bold text-xl text-white mb-1">{plan.providerName}</h3>
+                                                    <div className="flex items-center gap-2">
+                                                        <span className="text-xs font-black uppercase tracking-widest text-red-400 bg-red-500/10 px-2 py-1 rounded border border-red-500/20">
+                                                            {plan.delayMinutes}m Delayed
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                                <div className="w-12 h-12 rounded-full bg-red-500/10 flex items-center justify-center border border-red-500/20">
+                                                    <Clock className="text-red-500" size={24} />
+                                                </div>
+                                            </div>
+
+                                            <div className="space-y-4">
+                                                {plan.recommendedActions.map((action, actionIdx) => {
+                                                    const isEmergency = action.reason?.includes('EMERGENCY');
+                                                    return (
+                                                        <div key={actionIdx} className={`bg-slate-800/50 rounded-xl p-4 border transition-colors group ${isEmergency ? 'border-red-500/30 hover:border-red-500' : 'border-white/5 hover:border-red-500/30'}`}>
+                                                            <div className="flex justify-between items-start gap-4 mb-3">
+                                                                <div>
+                                                                    <div className="flex items-center gap-2 mb-1.5">
+                                                                        <span className={`text-[10px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border ${isEmergency
+                                                                            ? 'bg-red-500/10 text-red-500 border-red-500/20'
+                                                                            : action.type === 'TRANSFER_RECOMMENDATION'
+                                                                                ? 'bg-amber-500/10 text-amber-500 border-amber-500/20'
+                                                                                : 'bg-purple-500/10 text-purple-500 border-purple-500/20'
+                                                                            }`}>
+                                                                            {isEmergency
+                                                                                ? 'EMERGENCY CLEAR'
+                                                                                : action.type === 'TRANSFER_RECOMMENDATION' ? 'Load Shed' : 'Deferral'
+                                                                            }
+                                                                        </span>
+                                                                        <span className="text-sm font-bold text-white">
+                                                                            {action.appointment.client.first_name} {action.appointment.client.last_name}
+                                                                        </span>
+                                                                    </div>
+                                                                    <p className="text-xs text-slate-400 italic leading-tight">"{action.reason}"</p>
+                                                                </div>
+                                                                <div className="bg-slate-900 rounded-lg px-2.5 py-1.5 text-center min-w-[50px] border border-white/5">
+                                                                    <span className={`block text-lg font-black leading-none ${isEmergency
+                                                                        ? 'text-red-500'
+                                                                        : action.type === 'TRANSFER_RECOMMENDATION' ? 'text-amber-500' : 'text-purple-500'
+                                                                        }`}>
+                                                                        {action.impact_score}
+                                                                    </span>
+                                                                    <span className="text-[8px] text-slate-500 font-bold uppercase tracking-tighter">Impact</span>
+                                                                </div>
+                                                            </div>
+
+                                                            <button
+                                                                onClick={() => handleCrisisAction(plan, action)}
+                                                                className={`w-full py-3 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition-all active:scale-95 shadow-lg ${isEmergency
+                                                                    ? 'bg-red-500 hover:bg-red-400 text-white shadow-red-500/20'
+                                                                    : action.type === 'TRANSFER_RECOMMENDATION'
+                                                                        ? 'bg-amber-500 hover:bg-amber-400 text-slate-900 shadow-amber-500/20'
+                                                                        : 'bg-purple-500 hover:bg-purple-400 text-white shadow-purple-500/20'
+                                                                    }`}
+                                                            >
+                                                                {action.type === 'TRANSFER_RECOMMENDATION' ? <ArrowRightLeft size={16} /> : <Clock size={16} />}
+                                                                {isEmergency ? 'Approve Clear' : (action.type === 'TRANSFER_RECOMMENDATION' ? 'Approve Transfer' : 'Approve Postpone')}
+                                                            </button>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    </motion.div>
+                )
+            }
+
+            {/* NEEDS ATTENTION SECTION - Transferred from providers who changed hours */}
+            {
+                profile?.role?.toLowerCase() === 'admin' && needsAttentionApts.length > 0 && (
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="glass-card border-none bg-amber-500/10 border-amber-500/20 p-8 rounded-[2rem] shadow-xl overflow-hidden relative"
+                    >
+                        <div className="absolute top-0 right-0 p-16 opacity-5">
+                            <Users size={160} />
+                        </div>
+
+                        <div className="relative z-10">
+                            <div className="flex items-center justify-between mb-6">
+                                <div className="flex items-center gap-4">
+                                    <div className="p-3 bg-amber-500 rounded-2xl shadow-glow shadow-amber-500/40">
+                                        <AlertTriangle size={24} className="text-slate-900" />
+                                    </div>
+                                    <div>
+                                        <h3 className="text-2xl font-bold text-white tracking-tight">Needs Your Attention</h3>
+                                        <p className="text-amber-300/80 font-medium text-sm">
+                                            {needsAttentionApts.length} appointment{needsAttentionApts.length !== 1 ? 's' : ''} transferred from providers who changed their working hours
+                                        </p>
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={handleAutoAssignAll}
+                                    disabled={autoAssigning || freeProviders.filter(p => !p.is_busy).length === 0}
+                                    className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 disabled:bg-slate-700 disabled:text-slate-500 text-slate-900 font-bold rounded-xl transition-all flex items-center gap-2 shadow-lg shadow-amber-500/20 text-sm"
+                                >
+                                    {autoAssigning ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+                                    {autoAssigning ? 'Assigning...' : 'Auto-Assign All'}
+                                </button>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                {needsAttentionApts.map(apt => (
+                                    <div key={apt.id} className="bg-white/5 border border-amber-500/20 rounded-2xl p-5 flex flex-col gap-3 hover:bg-amber-500/10 transition-colors group">
+                                        <div className="flex justify-between items-start">
                                             <div className="flex items-center gap-3">
-                                                <div className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-[10px] text-slate-400 font-bold border border-white/10">
-                                                    <ArrowLeftRight size={14} />
+                                                <div className="w-11 h-11 rounded-xl bg-amber-500/20 flex items-center justify-center text-amber-400 font-bold text-lg">
+                                                    {apt.client?.first_name?.charAt(0) || '?'}
                                                 </div>
                                                 <div>
-                                                    <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">{sug.clientName}</p>
-                                                    <p className="text-sm font-bold text-slate-300">
-                                                        {sug.treatmentName || 'Session'} • {sug.currentProviderName} <span className="text-slate-600">→</span> {sug.newProviderName}
+                                                    <h4 className="font-bold text-white text-base">{apt.client?.first_name} {apt.client?.last_name}</h4>
+                                                    <p className="text-xs text-slate-400">
+                                                        {format(new Date(apt.scheduled_start), 'EEE, MMM d')} at {format(new Date(apt.scheduled_start), 'HH:mm')}
                                                     </p>
                                                 </div>
                                             </div>
-                                            <span className="text-xs font-bold text-emerald-400">+{sug.delayMinutes}m Saved</span>
+                                            <span className="px-2 py-1 bg-amber-500/20 text-amber-400 text-[9px] font-black uppercase tracking-widest rounded-md border border-amber-500/30">
+                                                Reschedule
+                                            </span>
                                         </div>
-                                    ))}
-                                    {suggestions.length > 3 && (
-                                        <div className="flex items-center justify-center text-sm font-bold text-slate-500">
-                                            +{suggestions.length - 3} more optimizations
-                                        </div>
-                                    )}
-                                </div>
-                            </div>
-                        </div>
-                    )}
 
-                    {/* Existing Cards (Manual Control) */}
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                        <AnimatePresence>
-                            {delayedApts.map((apt, index) => (
-                                <motion.div
-                                    layout
-                                    initial={{ opacity: 0, y: 20 }}
-                                    animate={{ opacity: 1, y: 0 }}
-                                    exit={{ opacity: 0, scale: 0.9 }}
-                                    transition={{ delay: index * 0.1 }}
-                                    key={apt.id}
-                                    className="glass-card p-0 overflow-hidden group relative"
-                                >
-                                    <div
-                                        onClick={() => openActionModal(apt)}
-                                        className="p-6 border-b border-white/5 bg-gradient-to-r from-red-500/5 to-transparent flex justify-between items-start cursor-pointer hover:bg-white/5 transition-colors"
-                                    >
-                                        <div className="flex items-center gap-4">
-                                            <div className="w-12 h-12 rounded-2xl bg-red-500/10 flex items-center justify-center text-red-500 border border-red-500/20 shadow-glow shadow-red-500/10">
-                                                <AlertTriangle size={24} />
-                                            </div>
-                                            <div>
-                                                <h3 className="font-bold text-xl text-white">{apt.client?.first_name} {apt.client?.last_name}</h3>
-                                                <div className="text-slate-400 text-sm font-medium flex items-center gap-2">
-                                                    <Sparkles size={14} className="text-primary" />
-                                                    {apt.treatment_name || 'Standard Session'}
-                                                </div>
-                                                <div className="text-slate-500 text-[10px] font-bold uppercase tracking-widest flex items-center gap-2 mt-1">
-                                                    <UserCheck size={12} />
-                                                    Assigned to {apt.profile?.full_name}
-                                                    <div className={`w-1.5 h-1.5 rounded-full ${apt.profile?.is_online ? 'bg-emerald-500 shadow-[0_0_5px_rgba(16,185,129,0.5)]' : 'bg-slate-600'}`} title={apt.profile?.is_online ? 'Online' : 'Offline'} />
-                                                </div>
-                                            </div>
-                                        </div>
-                                        <div className="bg-red-500/10 text-red-400 px-3 py-1.5 rounded-lg text-xs font-bold border border-red-500/20 flex items-center gap-1.5">
-                                            <Clock size={12} />
-                                            {apt.delay_minutes}m Delay
+                                        {apt.shifted_from && (
+                                            <p className="text-[10px] text-slate-500 font-medium italic">
+                                                Transferred from: {apt.shifted_from.full_name}
+                                            </p>
+                                        )}
+
+                                        <div className="flex gap-2 mt-auto pt-2">
+                                            <button
+                                                onClick={() => handleMarkAsHandled(apt.id)}
+                                                className="flex-1 py-2 rounded-xl bg-emerald-500/10 hover:bg-emerald-500 text-emerald-400 hover:text-white text-xs font-bold border border-emerald-500/20 transition-all flex items-center justify-center gap-1.5"
+                                            >
+                                                <CheckCircle2 size={14} />
+                                                Handled
+                                            </button>
+                                            <button
+                                                onClick={() => openActionModal(apt)}
+                                                className="flex-1 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500 text-amber-400 hover:text-slate-900 text-xs font-bold border border-amber-500/20 transition-all flex items-center justify-center gap-1.5"
+                                            >
+                                                <ArrowRightLeft size={14} />
+                                                Reassign
+                                            </button>
                                         </div>
                                     </div>
+                                ))}
+                            </div>
+                        </div>
+                    </motion.div>
+                )
+            }
 
-                                    <div className="p-6 space-y-4">
-                                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 ml-1">
-                                            {apt.required_skills?.length > 0 ? `Qualified Reassignment (${(typeof apt.required_skills === 'string' ? [apt.required_skills] : apt.required_skills).join(', ')})` : 'Recommended Reassignment'}
-                                        </p>
-                                        <div className="space-y-3">
-                                            {freeProviders.length === 0 ? (
-                                                <div className="p-4 rounded-xl bg-slate-800/50 border border-white/5 text-center">
-                                                    <p className="text-sm text-slate-500 italic">No free providers available at the moment.</p>
+            {
+                profile?.role?.toLowerCase() === 'admin' && suggestions.length > 0 && (
+                    <div className="glass-card border-none bg-indigo-500/10 border-indigo-500/20 p-8 rounded-[2rem] shadow-xl overflow-hidden relative group">
+                        <div className="absolute top-0 right-0 p-8 opacity-10 group-hover:scale-110 transition-transform">
+                            <Sparkles size={120} className="text-indigo-400" />
+                        </div>
+
+                        <div className="relative z-10">
+                            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-8">
+                                <div className="flex items-center gap-4">
+                                    <div className="p-3 bg-indigo-500 rounded-2xl shadow-glow shadow-indigo-500/40">
+                                        <Sparkles size={24} className="text-white animate-pulse" />
+                                    </div>
+                                    <div>
+                                        <h3 className="text-2xl font-bold text-white tracking-tight">Smart Autopilot</h3>
+                                        <p className="text-indigo-300/80 font-medium text-sm">Found {suggestions.length} optimal re-assignments to fix delays</p>
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={approveAllSuggestions}
+                                    className="w-full md:w-auto bg-white text-indigo-600 hover:bg-indigo-50 px-8 py-3.5 rounded-2xl font-black text-sm transition-all shadow-xl active:scale-95 flex items-center justify-center gap-3 group/btn"
+                                >
+                                    <CheckCircle2 size={18} />
+                                    Approve All Solutions
+                                    <ChevronRight size={16} className="group-hover:translate-x-1 transition-transform" />
+                                </button>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                {suggestions.map(sug => (
+                                    <div key={sug.appointmentId} className="bg-white/5 border border-white/10 rounded-2xl p-4 flex justify-between items-center hover:bg-white/10 transition-colors">
+                                        <div className="space-y-1">
+                                            <h4 className="font-bold text-white text-sm">{sug.clientName}</h4>
+                                            <p className="text-[10px] text-indigo-300 font-bold uppercase tracking-widest">
+                                                {sug.currentProviderName} → {sug.newProviderName}
+                                            </p>
+                                        </div>
+                                        <button
+                                            onClick={() => approveSuggestion(sug)}
+                                            className="p-2.5 bg-indigo-500/20 hover:bg-indigo-500 text-indigo-400 hover:text-white rounded-xl transition-all border border-indigo-500/30"
+                                        >
+                                            <CheckCircle2 size={16} />
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                )
+            }
+
+            {
+                profile?.role?.toLowerCase() === 'admin' && (
+                    <div className="flex bg-slate-800/40 p-1 rounded-2xl border border-white/5 w-fit">
+                        <button
+                            onClick={() => setGlobalView(false)}
+                            className={`
+                            flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all
+                            ${!globalView ? 'bg-primary text-white shadow-lg' : 'text-slate-400 hover:text-white'}
+                        `}
+                        >
+                            <User size={14} /> My Clients
+                        </button>
+                        <button
+                            onClick={() => setGlobalView(true)}
+                            className={`
+                            flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all
+                            ${globalView ? 'bg-indigo-500 text-white shadow-lg' : 'text-slate-400 hover:text-white'}
+                        `}
+                        >
+                            <Globe size={14} /> Global Facility
+                        </button>
+                    </div>
+                )
+            }
+
+            {
+                loading ? (
+                    <div className="flex flex-col items-center py-32 text-slate-500">
+                        <Loader2 className="w-10 h-10 animate-spin mb-4 text-primary" />
+                        <p className="font-medium animate-pulse">Analyzing system workload...</p>
+                    </div>
+                ) : delayedApts.length === 0 ? (
+                    <motion.div
+                        initial={{ opacity: 0, scale: 0.95 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        className="glass-card border-none bg-gradient-to-br from-emerald-500/10 to-teal-500/10 border-emerald-500/20 p-12 rounded-[2.5rem] text-center"
+                    >
+                        <div className="w-20 h-20 bg-emerald-500/10 rounded-full flex items-center justify-center mx-auto mb-6 shadow-glow shadow-emerald-500/20">
+                            <CheckCircle2 size={40} className="text-emerald-400" />
+                        </div>
+                        <h3 className="text-2xl font-bold text-white mb-2">All Systems Operational</h3>
+                        <p className="text-emerald-400/80 font-medium">No significant schedule delays detected across the facility.</p>
+                    </motion.div>
+                ) : (
+                    <>
+                        {/* FAIL-SAFE AUTOPILOT UI */}
+                        {suggestions.length > 0 && (
+                            <div className="p-1 rounded-[2.5rem] bg-gradient-to-r from-indigo-500 via-purple-500 to-indigo-500 animate-gradient-x shadow-2xl shadow-indigo-500/20 mb-10">
+                                <div className="bg-slate-900/90 backdrop-blur-xl rounded-[2.4rem] p-8 relative overflow-hidden">
+                                    <div className="absolute top-0 right-0 p-32 bg-indigo-500/10 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2 pointer-events-none" />
+
+                                    <div className="relative z-10 flex flex-col md:flex-row items-center justify-between gap-8">
+                                        <div className="flex items-center gap-6">
+                                            <div className="w-16 h-16 rounded-2xl bg-indigo-500 flex items-center justify-center text-white shadow-lg shadow-indigo-500/30">
+                                                <Sparkles size={32} />
+                                            </div>
+                                            <div>
+                                                <h3 className="text-2xl font-black text-white tracking-tight mb-1">
+                                                    Optimization Available
+                                                </h3>
+                                                <p className="text-slate-400 font-medium text-lg">
+                                                    Found <span className="text-white font-bold">{suggestions.length} delayed sessions</span> that can be rebalanced.
+                                                </p>
+                                            </div>
+                                        </div>
+
+                                        <button
+                                            onClick={approveAllSuggestions}
+                                            disabled={processing}
+                                            className="group relative px-8 py-4 bg-white text-slate-900 rounded-2xl font-black text-lg tracking-tight hover:scale-105 active:scale-95 transition-all shadow-xl shadow-white/10 overflow-hidden"
+                                        >
+                                            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-slate-200/50 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000" />
+                                            <span className="relative z-10 flex items-center gap-3">
+                                                {processing ? <Loader2 className="animate-spin" /> : <Sparkles className="w-5 h-5" />}
+                                                {processing ? 'Processing...' : 'AUTO-FIX SCHEDULE'}
+                                            </span>
+                                        </button>
+                                    </div>
+
+                                    {/* Preview of Fixes */}
+                                    <div className="mt-8 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                        {suggestions.slice(0, 3).map((sug, i) => (
+                                            <div key={i} className="p-4 rounded-xl bg-white/5 border border-white/5 flex items-center justify-between">
+                                                <div className="flex items-center gap-3">
+                                                    <div className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-[10px] text-slate-400 font-bold border border-white/10">
+                                                        <ArrowLeftRight size={14} />
+                                                    </div>
+                                                    <div>
+                                                        <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">{sug.clientName}</p>
+                                                        <p className="text-sm font-bold text-slate-300">
+                                                            {sug.treatmentName || 'Session'} • {sug.currentProviderName} <span className="text-slate-600">→</span> {sug.newProviderName}
+                                                        </p>
+                                                    </div>
                                                 </div>
-                                            ) : (() => {
-                                                const req = (typeof apt.required_skills === 'string' ? [apt.required_skills] : apt.required_skills) || [];
-                                                const qualified = freeProviders.filter(provider => {
-                                                    if (provider.id === apt.assigned_profile_id) return false;
-                                                    if (req.length === 0) return true;
-                                                    const pSkills = (provider.skills || []).map(s => typeof s === 'object' ? s.code : s);
-                                                    return req.every(r => pSkills.includes(r));
-                                                });
+                                                <span className="text-xs font-bold text-emerald-400">+{sug.delayMinutes}m Saved</span>
+                                            </div>
+                                        ))}
+                                        {suggestions.length > 3 && (
+                                            <div className="flex items-center justify-center text-sm font-bold text-slate-500">
+                                                +{suggestions.length - 3} more optimizations
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
 
-                                                if (qualified.length === 0) {
-                                                    const offlineQualified = allProviders.filter(p => {
-                                                        if (p.is_online) return false;
+                        {/* Existing Cards (Manual Control) */}
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                            <AnimatePresence>
+                                {delayedApts.map((apt, index) => (
+                                    <motion.div
+                                        layout
+                                        initial={{ opacity: 0, y: 20 }}
+                                        animate={{ opacity: 1, y: 0 }}
+                                        exit={{ opacity: 0, scale: 0.9 }}
+                                        transition={{ delay: index * 0.1 }}
+                                        key={apt.id}
+                                        className="glass-card p-0 overflow-hidden group relative"
+                                    >
+                                        <div
+                                            onClick={() => openActionModal(apt)}
+                                            className="p-6 border-b border-white/5 bg-gradient-to-r from-red-500/5 to-transparent flex justify-between items-start cursor-pointer hover:bg-white/5 transition-colors"
+                                        >
+                                            <div className="flex items-center gap-4">
+                                                <div className="w-12 h-12 rounded-2xl bg-red-500/10 flex items-center justify-center text-red-500 border border-red-500/20 shadow-glow shadow-red-500/10">
+                                                    <AlertTriangle size={24} />
+                                                </div>
+                                                <div>
+                                                    <h3 className="font-bold text-xl text-white">{apt.client?.first_name} {apt.client?.last_name}</h3>
+                                                    <div className="text-slate-400 text-sm font-medium flex items-center gap-2">
+                                                        <Sparkles size={14} className="text-primary" />
+                                                        {apt.treatment_name || 'Standard Session'}
+                                                    </div>
+                                                    <div className="text-slate-500 text-[10px] font-bold uppercase tracking-widest flex items-center gap-2 mt-1">
+                                                        <UserCheck size={12} />
+                                                        Assigned to {apt.profile?.full_name}
+                                                        <div className={`w-1.5 h-1.5 rounded-full ${apt.profile?.is_online ? 'bg-emerald-500 shadow-[0_0_5px_rgba(16,185,129,0.5)]' : 'bg-slate-600'}`} title={apt.profile?.is_online ? 'Online' : 'Offline'} />
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div className="bg-red-500/10 text-red-400 px-3 py-1.5 rounded-lg text-xs font-bold border border-red-500/20 flex items-center gap-1.5">
+                                                <Clock size={12} />
+                                                {apt.delay_minutes}m Delay
+                                            </div>
+                                        </div>
+
+                                        <div className="p-6 space-y-4">
+                                            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 ml-1">
+                                                {apt.required_skills?.length > 0 ? `Qualified Reassignment (${(typeof apt.required_skills === 'string' ? [apt.required_skills] : apt.required_skills).join(', ')})` : 'Recommended Reassignment'}
+                                            </p>
+                                            <div className="space-y-3">
+                                                {freeProviders.length === 0 ? (
+                                                    <div className="p-4 rounded-xl bg-slate-800/50 border border-white/5 text-center">
+                                                        <p className="text-sm text-slate-500 italic">No free providers available at the moment.</p>
+                                                    </div>
+                                                ) : (() => {
+                                                    const req = (typeof apt.required_skills === 'string' ? [apt.required_skills] : apt.required_skills) || [];
+                                                    const qualified = freeProviders.filter(provider => {
+                                                        if (provider.id === apt.assigned_profile_id) return false;
+                                                        if (!provider.accepts_transfers) return false; // Skip if Transfers Disabled
                                                         if (req.length === 0) return true;
-                                                        const pSkills = (p.skills || []).map(s => typeof s === 'object' ? s.code : s);
+                                                        const pSkills = (provider.skills || []).map(s => typeof s === 'object' ? s.code : s);
                                                         return req.every(r => pSkills.includes(r));
                                                     });
 
-                                                    return (
-                                                        <div className="space-y-4">
-                                                            <div className="p-4 rounded-xl bg-orange-500/5 border border-orange-500/20 text-center">
-                                                                <p className="text-sm text-orange-400 font-medium">No qualified providers currently online for this treatment.</p>
-                                                            </div>
-                                                            {offlineQualified.length > 0 && (
-                                                                <div className="bg-slate-900/40 rounded-xl border border-white/5 p-4 space-y-3">
-                                                                    <div className="flex justify-between items-center">
-                                                                        <h4 className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Qualified Offline Staff</h4>
-                                                                        <button
-                                                                            onClick={() => notifyAdminsOfOfflineProviders(apt, offlineQualified)}
-                                                                            className="text-[10px] bg-red-500/10 hover:bg-red-500/20 text-red-400 px-2 py-1 rounded border border-red-500/20 transition-colors font-bold uppercase tracking-wider flex items-center gap-1"
-                                                                        >
-                                                                            <AlertTriangle size={10} /> Notify Admins
-                                                                        </button>
-                                                                    </div>
-                                                                    <div className="space-y-2">
-                                                                        {offlineQualified.map(p => (
-                                                                            <div key={p.id} className="flex justify-between items-center text-xs">
-                                                                                <span className="text-slate-300 font-medium">{p.full_name}</span>
-                                                                                <span className="text-slate-500">{p.phone || 'No phone'}</span>
-                                                                            </div>
-                                                                        ))}
-                                                                    </div>
-                                                                </div>
-                                                            )}
-                                                        </div>
-                                                    );
-                                                }
+                                                    if (qualified.length === 0) {
+                                                        const offlineQualified = allProviders.filter(p => {
+                                                            if (p.is_online) return false;
+                                                            if (!p.accepts_transfers) return false; // Skip if Transfers Disabled
+                                                            if (req.length === 0) return true;
+                                                            const pSkills = (p.skills || []).map(s => typeof s === 'object' ? s.code : s);
+                                                            return req.every(r => pSkills.includes(r));
+                                                        });
 
-                                                return qualified.map(provider => (
-                                                    <div key={provider.id} className={`
+                                                        return (
+                                                            <div className="space-y-4">
+                                                                <div className="p-4 rounded-xl bg-orange-500/5 border border-orange-500/20 text-center">
+                                                                    <p className="text-sm text-orange-400 font-medium">No qualified providers currently online for this treatment.</p>
+                                                                </div>
+                                                                {offlineQualified.length > 0 && (
+                                                                    <div className="bg-slate-900/40 rounded-xl border border-white/5 p-4 space-y-3">
+                                                                        <div className="flex justify-between items-center">
+                                                                            <h4 className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Qualified Offline Staff</h4>
+                                                                            <button
+                                                                                onClick={() => notifyAdminsOfOfflineProviders(apt, offlineQualified)}
+                                                                                className="text-[10px] bg-red-500/10 hover:bg-red-500/20 text-red-400 px-2 py-1 rounded border border-red-500/20 transition-colors font-bold uppercase tracking-wider flex items-center gap-1"
+                                                                            >
+                                                                                <AlertTriangle size={10} /> Notify Admins
+                                                                            </button>
+                                                                        </div>
+                                                                        <div className="space-y-2">
+                                                                            {offlineQualified.map(p => (
+                                                                                <div key={p.id} className="flex justify-between items-center text-xs">
+                                                                                    <span className="text-slate-300 font-medium">{p.full_name}</span>
+                                                                                    <span className="text-slate-500">{p.phone || 'No phone'}</span>
+                                                                                </div>
+                                                                            ))}
+                                                                        </div>
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        );
+                                                    }
+
+                                                    return qualified.map(provider => (
+                                                        <div key={provider.id} className={`
                                                             flex justify-between items-center p-4 rounded-xl transition-all border group/provider
                                                             ${provider.is_online
-                                                            ? 'bg-slate-800/40 hover:bg-slate-700/60 border-white/5'
-                                                            : 'bg-slate-900/40 border-white/5 grayscale opacity-50'}
+                                                                ? 'bg-slate-800/40 hover:bg-slate-700/60 border-white/5'
+                                                                : 'bg-slate-900/40 border-white/5 grayscale opacity-50'}
                                                         `}>
-                                                        <div className="flex items-center gap-3">
-                                                            <div className="relative">
-                                                                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white text-sm font-bold shadow-lg">
-                                                                    {provider.full_name.charAt(0)}
-                                                                </div>
-                                                                <div className={`
+                                                            <div className="flex items-center gap-3">
+                                                                <div className="relative">
+                                                                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white text-sm font-bold shadow-lg">
+                                                                        {provider.full_name.charAt(0)}
+                                                                    </div>
+                                                                    <div className={`
                                                                         absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-slate-900
                                                                         ${provider.is_online ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.5)]' : 'bg-slate-600'}
                                                                     `} />
-                                                            </div>
-                                                            <div>
-                                                                <div className="flex items-center gap-2">
-                                                                    <h4 className="font-bold text-slate-200 text-sm">{provider.full_name}</h4>
-                                                                    {!provider.is_online ? (
-                                                                        <span className="text-[8px] font-black uppercase tracking-widest text-slate-500 bg-white/5 px-1.5 py-0.5 rounded border border-white/5">Away</span>
-                                                                    ) : (
-                                                                        <span className="text-[8px] font-black uppercase tracking-widest text-emerald-500 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/10 flex items-center gap-1">
-                                                                            <CheckCircle2 size={8} /> Qualified Match
-                                                                        </span>
-                                                                    )}
                                                                 </div>
-                                                                <span className="text-xs text-slate-500 font-medium">{provider.role}</span>
+                                                                <div>
+                                                                    <div className="flex items-center gap-2">
+                                                                        <h4 className="font-bold text-slate-200 text-sm">{provider.full_name}</h4>
+                                                                        {!provider.is_online ? (
+                                                                            <span className="text-[8px] font-black uppercase tracking-widest text-slate-500 bg-white/5 px-1.5 py-0.5 rounded border border-white/5">Away</span>
+                                                                        ) : (
+                                                                            <span className="text-[8px] font-black uppercase tracking-widest text-emerald-500 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/10 flex items-center gap-1">
+                                                                                <CheckCircle2 size={8} /> Qualified Match
+                                                                            </span>
+                                                                        )}
+                                                                    </div>
+                                                                    <span className="text-xs text-slate-500 font-medium">{provider.role}</span>
+                                                                </div>
                                                             </div>
-                                                        </div>
-                                                        <button
-                                                            onClick={() => shiftClient(apt.id, provider.id, apt.assigned_profile_id)}
-                                                            disabled={!provider.is_online}
-                                                            className={`
+                                                            <button
+                                                                onClick={() => shiftClient(apt.id, provider.id, apt.assigned_profile_id)}
+                                                                disabled={!provider.is_online}
+                                                                className={`
                                                                     text-xs px-4 py-2.5 rounded-lg font-bold flex items-center gap-2 transition-all active:scale-95
                                                                     ${provider.is_online
-                                                                    ? 'bg-primary hover:bg-indigo-500 text-white shadow-lg shadow-primary/20 opacity-0 group-hover/provider:opacity-100 translate-x-2 group-hover/provider:translate-x-0'
-                                                                    : 'bg-slate-800 text-slate-600 cursor-not-allowed'}
+                                                                        ? 'bg-primary hover:bg-indigo-500 text-white shadow-lg shadow-primary/20 opacity-0 group-hover/provider:opacity-100 translate-x-2 group-hover/provider:translate-x-0'
+                                                                        : 'bg-slate-800 text-slate-600 cursor-not-allowed'}
                                                                 `}
-                                                        >
-                                                            <ArrowLeftRight size={14} />
-                                                            {provider.is_online ? 'Assign' : 'Offline'}
-                                                        </button>
-                                                    </div>
-                                                ));
-                                            })()}
+                                                            >
+                                                                <ArrowLeftRight size={14} />
+                                                                {provider.is_online ? 'Assign' : 'Offline'}
+                                                            </button>
+                                                        </div>
+                                                    ));
+                                                })()}
+                                            </div>
                                         </div>
-                                    </div>
-                                </motion.div>
-                            ))}
-                        </AnimatePresence>
-                    </div>
-                </>
-            )}
+                                    </motion.div>
+                                ))}
+                            </AnimatePresence>
+                        </div>
+                    </>
+                )
+            }
 
             {/* Action Modal */}
             <AnimatePresence>
@@ -1696,7 +1884,7 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                     </div>
                 )}
             </AnimatePresence>
-        </div>
+        </div >
     )
 }
 

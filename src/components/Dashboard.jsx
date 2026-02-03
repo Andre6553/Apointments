@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../hooks/useAuth';
@@ -47,17 +47,19 @@ const Dashboard = () => {
     const [activeTab, setActiveTab] = useState('appointments');
     const [isSidebarOpen, setIsSidebarOpen] = useState(false);
     const [currentTime, setCurrentTime] = useState(new Date());
-    const [demoMode, setDemoMode] = useState(getDemoStatus()); // DEMO MODE
-    const [serverOnline, setServerOnline] = useState(false); // REMOTE HEARTBEAT
+    const [demoMode, setDemoMode] = useState(localStorage.getItem('medical_demo_enabled') === 'true');
+    const [serverOnline, setServerOnline] = useState(false);
     const [loggingEnabled, setLoggingEnabled] = useState(localStorage.getItem('logging_enabled') === 'true');
     const [virtualAssistantEnabled, setVirtualAssistantEnabled] = useState(localStorage.getItem('virtual_assistant_enabled') === 'true');
     const [selectedNotification, setSelectedNotification] = useState(null);
     const [isResponseModalOpen, setIsResponseModalOpen] = useState(false);
     const { count: alertCount } = useWorkloadAlerts();
     const isAwake = useWakeLock(virtualAssistantEnabled);
+    const settingsLoaded = useRef(false);
 
     // ... (messaging state) ...
     const [unreadChatCount, setUnreadChatCount] = useState(0);
+    const mainContentRef = useRef(null);
     const [assistantCountdown, setAssistantCountdown] = useState(60);
     const [incomingMessageSender, setIncomingMessageSender] = useState(null);
     const [manualChatTarget, setManualChatTarget] = useState(null);
@@ -72,18 +74,33 @@ const Dashboard = () => {
     // ... (deep linking effect) ...
 
     useEffect(() => {
+        // Clock timer stays in the static effect
         const timer = setInterval(() => setCurrentTime(new Date()), 1000);
 
-        // HEARTBEAT: Local server acts as the "Pulse"
+        return () => {
+            clearInterval(timer);
+        };
+    }, []);
+
+    // HEARTBEAT: Dedicated effect to pick up state changes
+    useEffect(() => {
+        if (!isLocal || !profile?.business_id || !user) return;
+
         const heartbeatInterval = setInterval(async () => {
-            if (isLocal && profile?.business_id && user) {
-                await supabase.from('business_settings').upsert({
-                    business_id: profile.business_id,
-                    last_heartbeat: new Date().toISOString()
-                });
-            }
+            // IMPORTANT: Must include current states in upsert to prevent wiping them
+            await supabase.from('business_settings').upsert({
+                business_id: profile.business_id,
+                last_heartbeat: new Date().toISOString(),
+                virtual_assistant_enabled: virtualAssistantEnabled,
+                demo_mode_enabled: demoMode
+            });
         }, 15000); // Pulse every 15s
 
+        return () => clearInterval(heartbeatInterval);
+    }, [isLocal, profile?.business_id, user, virtualAssistantEnabled, demoMode]);
+
+    // MAIN BACKGROUND SYSTEMS
+    useEffect(() => {
         // WATCHDOG: Live client checks if Pulse is alive
         const watchdogInterval = setInterval(() => {
             if (!isLocal && lastHbTimestamp) {
@@ -115,16 +132,20 @@ const Dashboard = () => {
         // Shared lastHbTimestamp for watchdog access (closure)
         let lastHbTimestamp = null;
 
-        if (profile?.business_id) {
-            // 1. Initial Load
+        if (profile?.business_id && !settingsLoaded.current) {
+            // 1. Initial Load (One-time only to prevent focus-revert bugs)
             supabase.from('business_settings')
-                .select('demo_mode_enabled, last_heartbeat')
+                .select('demo_mode_enabled, last_heartbeat, virtual_assistant_enabled')
                 .eq('business_id', profile.business_id)
                 .maybeSingle()
                 .then(({ data }) => {
                     if (data) {
                         setDemoMode(data.demo_mode_enabled);
+                        localStorage.setItem('medical_demo_enabled', data.demo_mode_enabled.toString());
+                        setVirtualAssistantEnabled(data.virtual_assistant_enabled || false);
+                        localStorage.setItem('virtual_assistant_enabled', (data.virtual_assistant_enabled || false).toString());
                         lastHbTimestamp = data.last_heartbeat;
+                        settingsLoaded.current = true;
                         // Initial check
                         if (!isLocal && lastHbTimestamp) {
                             const diff = (Date.now() - new Date(lastHbTimestamp).getTime()) / 1000;
@@ -144,7 +165,15 @@ const Dashboard = () => {
                 }, (payload) => {
                     if (payload.new) {
                         console.log('[Dashboard] Remote Update:', payload.new);
-                        setDemoMode(payload.new.demo_mode_enabled);
+                        if (payload.new.demo_mode_enabled !== undefined) {
+                            setDemoMode(payload.new.demo_mode_enabled);
+                            localStorage.setItem('medical_demo_enabled', payload.new.demo_mode_enabled.toString());
+                        }
+
+                        if (payload.new.virtual_assistant_enabled !== undefined) {
+                            setVirtualAssistantEnabled(payload.new.virtual_assistant_enabled);
+                            localStorage.setItem('virtual_assistant_enabled', payload.new.virtual_assistant_enabled.toString());
+                        }
 
                         // Update Logging State
                         if (payload.new.logging_enabled !== undefined) {
@@ -160,20 +189,37 @@ const Dashboard = () => {
                     }
                 })
                 .subscribe();
-        }
 
-        return () => {
-            clearInterval(timer);
-            clearInterval(heartbeatInterval);
-            clearInterval(watchdogInterval);
-            clearInterval(overrunMonitor);
-            clearInterval(msgPoller);
-            if (settingsSub) supabase.removeChannel(settingsSub);
-            document.removeEventListener('click', unlockAudio);
-            document.removeEventListener('keydown', unlockAudio);
-            document.removeEventListener('touchstart', unlockAudio);
-        };
-    }, [user, unreadChatCount]);
+            // 3. Admin Signal Polling (Every 5s) 
+            // Bypasses RLS issues with business_settings for non-admins
+            const signalInterval = setInterval(async () => {
+                const { data: admin } = await supabase
+                    .from('profiles')
+                    .select('active_tab')
+                    .eq('business_id', profile.business_id)
+                    .eq('email', 'admin@demo.com')
+                    .maybeSingle();
+
+                if (admin) {
+                    const isAssistantOn = admin.active_tab?.startsWith('ASSISTANT:');
+                    if (user?.email !== 'admin@demo.com') {
+                        setVirtualAssistantEnabled(isAssistantOn);
+                    }
+                }
+            }, 5000);
+
+            return () => {
+                clearInterval(watchdogInterval);
+                clearInterval(overrunMonitor);
+                clearInterval(msgPoller);
+                clearInterval(signalInterval);
+                if (settingsSub) supabase.removeChannel(settingsSub);
+                document.removeEventListener('click', unlockAudio);
+                document.removeEventListener('keydown', unlockAudio);
+                document.removeEventListener('touchstart', unlockAudio);
+            };
+        }
+    }, [user, profile?.business_id]);
 
     // DEMO MODE: Dedicated effect for stress test (must depend on demoMode)
     useEffect(() => {
@@ -228,17 +274,31 @@ const Dashboard = () => {
         };
     }, [virtualAssistantEnabled, profile?.business_id]);
 
-    // Sync active_tab to database for Do Not Disturb (DND) logic
+    // Keyboard Shortcuts: Press 'Home' to scroll to top
+    useEffect(() => {
+        const handleKeyDown = (e) => {
+            if (e.key === 'Home') {
+                mainContentRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, []);
+
+    // Sync active_tab to database for DND logic and Assistant Signaling
     useEffect(() => {
         if (user) {
+            const isLocalAdmin = user.email === 'admin@demo.com';
+            const signalPrefix = (isLocalAdmin && virtualAssistantEnabled) ? 'ASSISTANT:' : '';
+
             supabase.from('profiles')
-                .update({ active_tab: activeTab })
+                .update({ active_tab: signalPrefix + activeTab })
                 .eq('id', user.id)
                 .then(({ error }) => {
                     if (error) console.error('[Dashboard] Failed to sync active_tab:', error);
                 });
         }
-    }, [activeTab, user]);
+    }, [activeTab, virtualAssistantEnabled, user]);
 
     // Handle payment redirect routing
     useEffect(() => {
@@ -330,16 +390,18 @@ const Dashboard = () => {
         const components = {
             appointments: (
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-                    <div className="lg:col-span-8">
+                    <div className={profile?.role === 'Admin' ? "lg:col-span-12" : "lg:col-span-8"}>
                         <AppointmentList
                             virtualAssistantEnabled={virtualAssistantEnabled && user?.email === 'admin@demo.com'}
                             assistantCountdown={assistantCountdown}
                             isAssistantLeader={isAssistantLeader}
                         />
                     </div>
-                    <div className="lg:col-span-4">
-                        <DailyTimeline />
-                    </div>
+                    {profile?.role !== 'Admin' && (
+                        <div className="lg:col-span-4">
+                            <DailyTimeline />
+                        </div>
+                    )}
                 </div>
             ),
             clients: <ClientList initialClientId={deepLinkClientId} onClientModalClose={() => setDeepLinkClientId(null)} />,
@@ -414,6 +476,25 @@ const Dashboard = () => {
                         </div>
                     )}
 
+                    {/* ASSISTANT CORE STATUS LIGHT (Visible to everyone in Demo Mode) */}
+                    {virtualAssistantEnabled && (
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.95 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            className="mx-4 mb-8 p-4 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center gap-4 relative overflow-hidden group"
+                        >
+                            <div className="absolute inset-0 bg-indigo-500/5 animate-pulse" />
+                            <div className="relative shrink-0">
+                                <div className="w-3 h-3 rounded-full bg-indigo-500 shadow-[0_0_15px_rgba(99,102,241,0.8)]" />
+                                <div className="absolute inset-0 w-3 h-3 rounded-full bg-indigo-500 animate-ping opacity-50" />
+                            </div>
+                            <div className="relative">
+                                <p className="text-[10px] font-black text-indigo-400 uppercase tracking-[0.2em] leading-none mb-1">Assistant Core</p>
+                                <p className="text-[9px] font-bold text-slate-400 leading-tight">AI Optimization Active</p>
+                            </div>
+                        </motion.div>
+                    )}
+
                     <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-4 px-4">Menu</p>
 
                     {/* Subscription Status Pill */}
@@ -460,17 +541,26 @@ const Dashboard = () => {
                 </div>
 
                 <div className="mt-8 space-y-4">
-                    {/* DEMO CONTROLS (Admin Only - LOCALHOST OR (admin@demo.com AND Connected to Local)) */}
-                    {profile?.role === 'Admin' && ((isLocal || serverOnline) && (isLocal || user?.email === 'admin@demo.com')) && (
+                    {/* DEMO CONTROLS (Only for admin@demo.com) */}
+                    {user?.email === 'admin@demo.com' && (profile?.role === 'Admin' || isLocal) && (
                         <div className="bg-slate-900/50 rounded-2xl p-4 border border-white/5 space-y-3">
                             <div className="flex items-center justify-between">
                                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Medical Demo</span>
                                 <button
                                     onClick={async () => {
                                         const newState = !demoMode;
-                                        setDemoMode(newState); // Optimistic Update for instant feedback
+                                        setDemoMode(newState);
+                                        localStorage.setItem('medical_demo_enabled', newState.toString());
+
                                         if (profile?.business_id) {
-                                            await setDemoStatus(profile.business_id, newState);
+                                            // IMPORTANT: Must include BOTH states in upsert to prevent wiping one when toggling the other
+                                            await supabase.from('business_settings').upsert({
+                                                business_id: profile.business_id,
+                                                demo_mode_enabled: newState,
+                                                virtual_assistant_enabled: virtualAssistantEnabled,
+                                                updated_at: new Date().toISOString()
+                                            });
+
                                             if (newState) {
                                                 await seedBusinessSkills(profile.business_id);
                                             }
@@ -490,16 +580,26 @@ const Dashboard = () => {
                                         {virtualAssistantEnabled && (
                                             <div className="flex items-center gap-1.5">
                                                 <span className="flex h-2 w-2 rounded-full bg-green-500 animate-pulse" />
-                                                <span className="text-[8px] text-indigo-400 font-bold bg-indigo-500/10 px-1 rounded border border-indigo-500/20">{assistantCountdown}s</span>
                                                 {isAwake && <span className="text-[8px] text-emerald-500 font-bold border border-emerald-500/20 px-1 rounded bg-emerald-500/5">KEEP-AWAKE ON</span>}
                                             </div>
                                         )}
                                     </span>
                                     <button
-                                        onClick={() => {
+                                        onClick={async () => {
                                             const newState = !virtualAssistantEnabled;
                                             setVirtualAssistantEnabled(newState);
                                             localStorage.setItem('virtual_assistant_enabled', newState.toString());
+
+                                            // Sync to DB so everyone in this business sees it
+                                            if (profile?.business_id) {
+                                                // IMPORTANT: Must include BOTH states in upsert to prevent wiping one when toggling the other
+                                                await supabase.from('business_settings').upsert({
+                                                    business_id: profile.business_id,
+                                                    virtual_assistant_enabled: newState,
+                                                    demo_mode_enabled: demoMode,
+                                                    updated_at: new Date().toISOString()
+                                                });
+                                            }
                                         }}
                                         className={`relative w-10 h-5 rounded-full transition-colors ${virtualAssistantEnabled ? 'bg-indigo-500' : 'bg-slate-700'}`}
                                     >
@@ -632,7 +732,7 @@ const Dashboard = () => {
             </nav>
 
             {/* Main Content */}
-            <main className="flex-grow overflow-y-auto h-screen relative">
+            <main ref={mainContentRef} className="flex-grow overflow-y-auto h-screen relative">
                 {/* Top fade for scrolling aesthetics */}
                 <div className="fixed top-0 left-0 right-0 h-12 bg-gradient-to-b from-background to-transparent z-10 pointer-events-none md:left-80" />
 
@@ -667,6 +767,22 @@ const Dashboard = () => {
                                             >
                                                 <AlertTriangle size={20} className="stroke-[3]" />
                                                 <span className="text-xs font-black uppercase tracking-tighter hidden sm:inline">{alertCount} Alerts</span>
+                                            </motion.div>
+                                        )}
+
+                                        {/* Header Assistant Indicator */}
+                                        {virtualAssistantEnabled && (
+                                            <motion.div
+                                                initial={{ opacity: 0, scale: 0.5 }}
+                                                animate={{ opacity: 1, scale: 1 }}
+                                                className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-indigo-500/20 border border-indigo-500/30 text-indigo-400"
+                                                title="Assistant Core Active"
+                                            >
+                                                <div className="relative flex items-center justify-center">
+                                                    <div className="w-2.5 h-2.5 rounded-full bg-indigo-500 shadow-[0_0_10px_rgba(99,102,241,0.8)]" />
+                                                    <div className="absolute inset-0 w-2.5 h-2.5 rounded-full bg-indigo-500 animate-ping opacity-75" />
+                                                </div>
+                                                <span className="text-[10px] font-black uppercase tracking-[0.2em] hidden sm:inline">Assistant Core</span>
                                             </motion.div>
                                         )}
                                     </h1>

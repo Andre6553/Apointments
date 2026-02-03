@@ -19,15 +19,12 @@ const ProfileSettings = () => {
 
     const [isLeavingOrg, setIsLeavingOrg] = useState(false)
 
-    // Skills State
-    const [skills, setSkills] = useState([]) // e.g. [{ label: 'Haircut', code: 'HC' }]
-    const [skillInput, setSkillInput] = useState('')
-    const [skillNameInput, setSkillNameInput] = useState('')
+    // Skills State (assigned by Admin, provider can only toggle priority)
+    const [skills, setSkills] = useState([]) // e.g. [{ label: 'Haircut', code: 'HC', priority: true }]
 
-    // Treatment with Skills
-    const [newTreatment, setNewTreatment] = useState({ name: '', duration: 30, cost: 0, required_skills: '' })
+    // Treatment editing state (skills-based, only duration/cost editable)
     const [editingId, setEditingId] = useState(null)
-    const [editValues, setEditValues] = useState({ name: '', duration: 30, cost: 0, required_skills: '' })
+    const [editValues, setEditValues] = useState({ duration: 30, cost: 0 })
 
 
     useEffect(() => {
@@ -124,100 +121,9 @@ const ProfileSettings = () => {
         }
     }
 
-    // Skills Manager
-    const handleAddSkill = () => {
-        if (!skillInput.trim()) return
-        const code = skillInput.toUpperCase().trim()
-        const label = skillNameInput.trim() || code
+    // Note: Skills are assigned by Admin via EditStaffModal. Provider can only toggle VIP/priority flag.
 
-        // Check if code exists (handle both string and object formats)
-        const exists = skills.some(s =>
-            (typeof s === 'string' ? s : s.code) === code
-        )
-        if (exists) return
-
-        const newSkill = { label, code }
-        const newSkills = [...skills, newSkill]
-
-        setSkills(newSkills)
-        setSkillInput('')
-        setSkillNameInput('')
-
-        // Auto-save
-        performProfileUpdate({ skills: newSkills })
-    }
-
-    const handleRemoveSkill = (codeToRemove) => {
-        const newSkills = skills.filter(s => {
-            const code = typeof s === 'string' ? s : s.code
-            return code !== codeToRemove
-        })
-        setSkills(newSkills)
-        performProfileUpdate({ skills: newSkills })
-    }
-
-    const handleAddTreatment = async (e) => {
-        e.preventDefault()
-        if (!user || !newTreatment.name) return
-
-        try {
-            const { data, error } = await supabase
-                .from('treatments')
-                .insert([{
-                    profile_id: user.id,
-                    name: newTreatment.name,
-                    duration_minutes: parseInt(newTreatment.duration),
-                    cost: parseFloat(newTreatment.cost),
-                    required_skills: newTreatment.required_skills ? newTreatment.required_skills.split(',').map(s => s.trim().toUpperCase()) : []
-                }])
-                .select()
-                .single()
-
-            if (error) throw error
-            setTreatments([...treatments, data])
-            setNewTreatment({ name: '', duration: 30, cost: 0, required_skills: '' })
-        } catch (err) {
-            console.error('Error adding treatment:', err)
-            alert('Failed to add treatment. (Note: Name must be unique)')
-        }
-    }
-
-    const handleUpdateTreatment = async (id) => {
-        try {
-            const { error } = await supabase
-                .from('treatments')
-                .update({
-                    name: editValues.name,
-                    duration_minutes: parseInt(editValues.duration),
-                    cost: parseFloat(editValues.cost),
-                    required_skills: editValues.required_skills ? editValues.required_skills.split(',').map(s => s.trim().toUpperCase()) : []
-                })
-                .eq('id', id)
-
-            if (error) throw error
-            setTreatments(treatments.map(t => t.id === id ? {
-                ...t,
-                ...editValues,
-                duration_minutes: parseInt(editValues.duration),
-                cost: parseFloat(editValues.cost),
-                required_skills: editValues.required_skills ? editValues.required_skills.split(',').map(s => s.trim().toUpperCase()) : []
-            } : t))
-            setEditingId(null)
-        } catch (err) {
-            console.error('Error updating treatment:', err)
-            alert('Failed to update treatment.')
-        }
-    }
-
-    const handleDeleteTreatment = async (id) => {
-        try {
-            const { error } = await supabase.from('treatments').delete().eq('id', id)
-            if (error) throw error
-            setTreatments(treatments.filter(t => t.id !== id))
-        } catch (err) {
-            console.error('Error deleting treatment:', err)
-        }
-    }
+    // Note: Treatment saving is now handled inline in the JSX (skill-based rows)
 
     const toggleProtection = async () => {
         setTogglingProtection(true)
@@ -289,65 +195,47 @@ const ProfileSettings = () => {
                         </div>
                     </div>
 
-                    {/* Skills Editor */}
+                    {/* Skills Editor - VIP Toggle Only (Skills assigned by Admin) */}
                     <div className="space-y-4 pt-4 border-t border-white/5">
-                        <label className="text-xs font-bold text-slate-400 uppercase tracking-widest ml-1">My Skills</label>
+                        <div className="flex items-center justify-between">
+                            <label className="text-xs font-bold text-slate-400 uppercase tracking-widest ml-1">My Skills</label>
+                            <span className="text-[10px] text-slate-600 font-medium">Assigned by Admin</span>
+                        </div>
                         <div className="bg-slate-900/50 rounded-2xl p-4 border border-white/5">
-                            <div className="flex flex-wrap gap-2 mb-4">
+                            <div className="flex flex-wrap gap-2 mb-3">
                                 {skills.map((skill, idx) => {
                                     const isObj = typeof skill === 'object'
                                     const code = isObj ? skill.code : skill
                                     const label = isObj ? skill.label : skill
+                                    const isPriority = isObj && skill.priority === true
+
+                                    const togglePriority = () => {
+                                        const newSkills = skills.map((s, i) => {
+                                            if (i !== idx) return s;
+                                            const sObj = typeof s === 'object' ? s : { label: s, code: s };
+                                            return { ...sObj, priority: !sObj.priority };
+                                        });
+                                        setSkills(newSkills);
+                                        performProfileUpdate({ skills: newSkills });
+                                    };
 
                                     return (
-                                        <div key={`${code}-${idx}`} className="bg-indigo-500 text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-2 shadow-lg shadow-indigo-500/20">
+                                        <div key={`${code}-${idx}`} className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-2 shadow-lg transition-all cursor-pointer ${isPriority ? 'bg-amber-500 text-slate-900 shadow-amber-500/30' : 'bg-indigo-500 text-white shadow-indigo-500/20'}`}
+                                            onClick={togglePriority}
+                                            title={isPriority ? 'Click to unmark as VIP' : 'Click to mark as VIP (Priority)'}
+                                        >
+                                            <Sparkles size={14} className={isPriority ? 'fill-current' : ''} />
                                             <span>
                                                 {label} <span className="opacity-50 font-normal">({code})</span>
                                             </span>
-                                            <button
-                                                type="button"
-                                                onClick={() => handleRemoveSkill(code)}
-                                                className="hover:text-indigo-200 transition-colors"
-                                            >
-                                                <XCircle size={14} />
-                                            </button>
                                         </div>
                                     )
                                 })}
-                                {skills.length === 0 && <span className="text-slate-500 text-sm italic">No skills listed (Matches all basic services)</span>}
+                                {skills.length === 0 && <span className="text-slate-500 text-sm italic">No skills assigned yet. Ask your Admin to assign skills to your profile.</span>}
                             </div>
-
-                            <div className="flex flex-col md:flex-row gap-2">
-                                <input
-                                    type="text"
-                                    value={skillNameInput}
-                                    onChange={e => setSkillNameInput(e.target.value)}
-                                    placeholder="Skill Name (e.g. Haircut)"
-                                    className="glass-input h-10 flex-[2] text-sm"
-                                />
-                                <input
-                                    type="text"
-                                    value={skillInput}
-                                    onChange={e => setSkillInput(e.target.value)}
-                                    placeholder="Code (HC)"
-                                    className="glass-input h-10 flex-1 text-sm uppercase"
-                                    onKeyDown={e => {
-                                        if (e.key === 'Enter') {
-                                            e.preventDefault();
-                                            handleAddSkill();
-                                        }
-                                    }}
-                                />
-                                <button
-                                    type="button"
-                                    onClick={handleAddSkill}
-                                    className="bg-indigo-500 hover:bg-indigo-600 text-white px-6 h-10 rounded-xl font-bold text-xs shadow-lg shadow-indigo-500/20 transition-all active:scale-95"
-                                >
-                                    ADD
-                                </button>
-                            </div>
-                            <p className="text-[10px] text-slate-500 mt-2 ml-1">
-                                * The Code (e.g. HC) matches the 'Req. Skills' in your Service definitions.
+                            <p className="text-[10px] text-amber-500/80 ml-1 italic">
+                                <Sparkles size={10} className="inline mr-1" />
+                                Click a skill to mark it as <strong>VIP/Priority</strong>. Appointments requiring these skills are protected during crises.
                             </p>
                         </div>
                     </div>
@@ -446,144 +334,154 @@ const ProfileSettings = () => {
                 </div>
 
                 <div className="glass-card p-8 border-white/5 space-y-6">
-                    {/* Add Treatment Form */}
-                    <form onSubmit={handleAddTreatment} className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end pb-6 border-b border-white/5">
-                        <div className="md:col-span-6 space-y-2">
-                            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Service Name</label>
-                            <input
-                                type="text"
-                                placeholder="e.g. Full Set Nails"
-                                className="glass-input w-full h-12 text-sm"
-                                value={newTreatment.name}
-                                onChange={e => setNewTreatment({ ...newTreatment, name: e.target.value })}
-                                required
-                            />
-                        </div>
-                        <div className="md:col-span-2 space-y-2">
-                            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Min</label>
-                            <input
-                                type="number"
-                                placeholder="30"
-                                className="glass-input w-full h-12 text-sm text-center"
-                                value={newTreatment.duration}
-                                onChange={e => setNewTreatment({ ...newTreatment, duration: e.target.value })}
-                                required
-                            />
-                        </div>
-                        <div className="md:col-span-3 space-y-2">
-                            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Req. Skills (Optional)</label>
-                            <input
-                                type="text"
-                                placeholder="e.g. HC,COL"
-                                className="glass-input w-full h-12 text-sm uppercase"
-                                value={newTreatment.required_skills}
-                                onChange={e => setNewTreatment({ ...newTreatment, required_skills: e.target.value })}
-                            />
-                        </div>
-                        <div className="md:col-span-12 flex justify-end">
-                            <button type="submit" className="h-12 px-6 bg-primary rounded-xl flex items-center justify-center text-white shadow-lg shadow-primary/20 hover:scale-105 transition-transform gap-2 font-bold text-sm">
-                                <Save size={18} /> Add Service
-                            </button>
-                        </div>
-                    </form>
-
-                    {/* Treatment List */}
+                    {/* Skill-Based Service List - Providers can only edit Duration and Cost */}
                     <div className="space-y-3">
-                        {isFetchingTreatments ? (
-                            <div className="py-8 text-center text-slate-500 italic text-sm flex items-center justify-center gap-2">
-                                <Loader2 size={16} className="animate-spin" /> Fetching treatments...
+                        {skills.length === 0 ? (
+                            <div className="py-8 text-center text-slate-500 italic text-sm">
+                                No skills assigned yet. Ask your Admin to assign skills to your profile.
                             </div>
-                        ) : treatments.length === 0 ? (
-                            <div className="py-8 text-center text-slate-500 italic text-sm">No treatments defined yet.</div>
                         ) : (
-                            <div className="grid grid-cols-1 gap-3">
-                                {treatments.map(t => (
-                                    <div key={t.id} className="flex items-center justify-between p-4 rounded-xl bg-white/[0.02] border border-white/5 hover:bg-white/[0.04] transition-all group">
-                                        {editingId === t.id ? (
-                                            <div className="flex-1 grid grid-cols-1 md:grid-cols-12 gap-3 items-center">
-                                                <div className="md:col-span-5">
-                                                    <input
-                                                        type="text"
-                                                        className="glass-input w-full h-10 text-xs"
-                                                        value={editValues.name}
-                                                        onChange={e => setEditValues({ ...editValues, name: e.target.value })}
-                                                    />
+                            <>
+                                {/* Header Row */}
+                                <div className="grid grid-cols-12 gap-3 px-4 py-2 text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                                    <div className="col-span-3">Service (Skill)</div>
+                                    <div className="col-span-2">Duration</div>
+                                    <div className="col-span-3">Cost</div>
+                                    <div className="col-span-4"></div>
+                                </div>
+
+                                {/* Skill/Service Rows */}
+                                {skills.map((skill, idx) => {
+                                    const isObj = typeof skill === 'object'
+                                    const code = isObj ? skill.code : skill
+                                    const label = isObj ? skill.label : skill
+                                    const isPriority = isObj && skill.priority === true
+
+                                    // Find matching treatment for this skill (by code match)
+                                    const treatment = treatments.find(t =>
+                                        t.name?.toUpperCase() === code?.toUpperCase() ||
+                                        (Array.isArray(t.required_skills) && t.required_skills.includes(code))
+                                    )
+
+                                    const isEditing = editingId === code
+
+                                    return (
+                                        <div key={`${code}-${idx}`} className={`grid grid-cols-12 gap-3 items-center p-4 rounded-xl border transition-all group ${isPriority ? 'bg-amber-500/5 border-amber-500/20' : 'bg-white/[0.02] border-white/5 hover:bg-white/[0.04]'}`}>
+                                            {/* Service Name (read-only) */}
+                                            <div className="col-span-3 flex items-center gap-2">
+                                                <div className={`w-10 h-10 rounded-lg flex items-center justify-center font-bold text-xs shrink-0 ${isPriority ? 'bg-amber-500/20 text-amber-400' : 'bg-indigo-500/10 text-indigo-400'}`}>
+                                                    {code}
                                                 </div>
-                                                <div className="md:col-span-2">
-                                                    <input
-                                                        type="number"
-                                                        className="glass-input w-full h-10 text-xs text-center"
-                                                        value={editValues.duration}
-                                                        onChange={e => setEditValues({ ...editValues, duration: e.target.value })}
-                                                    />
-                                                </div>
-                                                <div className="md:col-span-3">
-                                                    <input
-                                                        type="number"
-                                                        className="glass-input w-full h-10 text-xs text-center"
-                                                        value={editValues.cost}
-                                                        onChange={e => setEditValues({ ...editValues, cost: e.target.value })}
-                                                    />
-                                                </div>
-                                                <div className="md:col-span-2 flex gap-1 justify-end">
-                                                    <button onClick={() => handleUpdateTreatment(t.id)} className="p-2 text-emerald-400 hover:bg-emerald-500/10 rounded-lg shrink-0">
-                                                        <Check size={16} />
-                                                    </button>
-                                                    <button onClick={() => setEditingId(null)} className="p-2 text-slate-500 hover:bg-white/5 rounded-lg shrink-0">
-                                                        <XCircle size={16} />
-                                                    </button>
+                                                <div>
+                                                    <p className="text-sm font-bold text-white">{label || code}</p>
+                                                    {isPriority && <span className="text-[9px] text-amber-500 font-bold uppercase">⭐ VIP Priority</span>}
                                                 </div>
                                             </div>
-                                        ) : (
-                                            <>
-                                                <div className="flex items-center gap-4">
-                                                    <div className="w-10 h-10 rounded-lg bg-indigo-500/10 flex items-center justify-center text-indigo-400 font-bold text-xs">
-                                                        {t.duration_minutes}'
-                                                    </div>
-                                                    <div>
-                                                        <p className="text-sm font-bold text-white">{t.name}</p>
-                                                        <div className="flex items-center gap-2">
-                                                            <p className="text-xs text-slate-500 font-medium">{currencySymbol}{t.cost}</p>
-                                                            {Array.isArray(t.required_skills) && t.required_skills.length > 0 && (
-                                                                <div className="flex gap-1">
-                                                                    {t.required_skills.map(s => (
-                                                                        <span key={s} className="px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 text-[10px] font-bold">{s}</span>
-                                                                    ))}
-                                                                </div>
-                                                            )}
-                                                        </div>
-                                                    </div>
-                                                </div>
 
-                                                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                            {/* Duration Field */}
+                                            <div className="col-span-2">
+                                                {isEditing ? (
+                                                    <input
+                                                        type="number"
+                                                        className="glass-input w-full h-10 text-sm text-center"
+                                                        value={editValues.duration}
+                                                        onChange={e => setEditValues({ ...editValues, duration: e.target.value })}
+                                                        min="5"
+                                                        step="5"
+                                                    />
+                                                ) : (
+                                                    <div className="text-sm text-slate-300 font-medium">
+                                                        {treatment?.duration_minutes || 30} min
+                                                    </div>
+                                                )}
+                                            </div>
+
+                                            {/* Cost Field */}
+                                            <div className="col-span-3">
+                                                {isEditing ? (
+                                                    <input
+                                                        type="number"
+                                                        className="glass-input w-full h-10 text-sm text-center"
+                                                        value={editValues.cost}
+                                                        onChange={e => setEditValues({ ...editValues, cost: e.target.value })}
+                                                        min="0"
+                                                        step="10"
+                                                    />
+                                                ) : (
+                                                    <div className="text-sm text-slate-300 font-medium">
+                                                        {currencySymbol}{treatment?.cost || 0}
+                                                    </div>
+                                                )}
+                                            </div>
+
+                                            {/* Actions */}
+                                            <div className="col-span-4 flex justify-end gap-2">
+                                                {isEditing ? (
+                                                    <>
+                                                        <button
+                                                            onClick={async () => {
+                                                                // Save/Update treatment for this skill
+                                                                try {
+                                                                    if (treatment?.id) {
+                                                                        // Update existing
+                                                                        await supabase.from('treatments').update({
+                                                                            duration_minutes: parseInt(editValues.duration),
+                                                                            cost: parseFloat(editValues.cost)
+                                                                        }).eq('id', treatment.id)
+                                                                        setTreatments(treatments.map(t => t.id === treatment.id ? { ...t, duration_minutes: parseInt(editValues.duration), cost: parseFloat(editValues.cost) } : t))
+                                                                    } else {
+                                                                        // Create new treatment for this skill
+                                                                        const { data, error } = await supabase.from('treatments').insert([{
+                                                                            profile_id: user.id,
+                                                                            name: code,
+                                                                            duration_minutes: parseInt(editValues.duration),
+                                                                            cost: parseFloat(editValues.cost),
+                                                                            required_skills: [code]
+                                                                        }]).select().single()
+                                                                        if (!error && data) setTreatments([...treatments, data])
+                                                                    }
+                                                                    setEditingId(null)
+                                                                } catch (err) {
+                                                                    console.error('Error saving treatment:', err)
+                                                                }
+                                                            }}
+                                                            className="px-3 py-2 bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 rounded-lg text-xs font-bold flex items-center gap-1"
+                                                        >
+                                                            <Check size={14} /> Save
+                                                        </button>
+                                                        <button
+                                                            onClick={() => setEditingId(null)}
+                                                            className="px-2 py-2 text-slate-500 hover:bg-white/5 rounded-lg text-xs"
+                                                            title="Cancel"
+                                                        >
+                                                            Cancel
+                                                        </button>
+                                                    </>
+                                                ) : (
                                                     <button
                                                         onClick={() => {
-                                                            setEditingId(t.id)
+                                                            setEditingId(code)
                                                             setEditValues({
-                                                                name: t.name,
-                                                                duration: t.duration_minutes,
-                                                                cost: t.cost,
-                                                                required_skills: Array.isArray(t.required_skills) ? t.required_skills.join(',') : ''
+                                                                duration: treatment?.duration_minutes || 30,
+                                                                cost: treatment?.cost || 0
                                                             })
                                                         }}
-                                                        className="p-2 text-slate-500 hover:text-primary transition-colors hover:bg-white/5 rounded-lg"
+                                                        className="p-2 text-slate-500 hover:text-primary transition-colors hover:bg-white/5 rounded-lg opacity-0 group-hover:opacity-100"
                                                     >
                                                         <Edit2 size={16} />
                                                     </button>
-                                                    <button
-                                                        onClick={() => handleDeleteTreatment(t.id)}
-                                                        className="p-2 text-slate-500 hover:text-rose-400 transition-colors hover:bg-white/5 rounded-lg"
-                                                    >
-                                                        <Trash2 size={16} />
-                                                    </button>
-                                                </div>
-                                            </>
-                                        )}
-                                    </div>
-                                ))}
-                            </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    )
+                                })}
+                            </>
                         )}
                     </div>
+
+                    <p className="text-[10px] text-slate-500 text-center pt-2">
+                        Services are based on your assigned skills. Contact Admin to add/remove skills.
+                    </p>
                 </div>
             </div>
 
