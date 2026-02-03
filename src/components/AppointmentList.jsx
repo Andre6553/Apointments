@@ -116,6 +116,7 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
     const [selectedAptDetails, setSelectedAptDetails] = useState(null);
     const [isDetailsOpen, setIsDetailsOpen] = useState(false);
     const [now, setNow] = useState(new Date());
+    const dateInputRef = useRef(null);
     const appointmentsRef = useRef(appointments);
 
     // Derive busy providers for UI state
@@ -256,16 +257,37 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
     return (
         <div className="space-y-8">
             <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-6">
-                <div className="flex items-center gap-4 w-full md:w-auto bg-surface/50 p-1.5 rounded-2xl border border-white/5 shadow-inner">
-                    <button onClick={() => navigateDay(-1)} className="p-3 hover:bg-white/10 rounded-xl text-slate-400 hover:text-white transition-all active:scale-90"><ArrowRight size={20} className="rotate-180" /></button>
-                    <div className="flex flex-col items-center flex-1 px-4 cursor-pointer" onClick={setToday}>
-                        <span className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-0.5">Current View</span>
-                        <div className="flex items-center gap-2 font-heading font-bold text-white whitespace-nowrap">
-                            <CalendarIcon size={16} className="text-primary" />
-                            {isSameDay(viewDate, new Date()) ? "Today's Schedule" : format(viewDate, 'EEEE, MMM d')}
+                <div className="flex items-center gap-4 w-full md:w-auto">
+                    <div className="flex items-center gap-4 bg-surface/50 p-1.5 rounded-2xl border border-white/5 shadow-inner">
+                        <button onClick={() => navigateDay(-1)} className="p-3 hover:bg-white/10 rounded-xl text-slate-400 hover:text-white transition-all active:scale-90"><ArrowRight size={20} className="rotate-180" /></button>
+                        <div className="flex flex-col items-center flex-1 px-4 cursor-pointer" onClick={setToday}>
+                            <span className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-0.5">Current View</span>
+                            <div className="flex items-center gap-2 font-heading font-bold text-white whitespace-nowrap">
+                                <CalendarIcon size={16} className="text-primary" />
+                                {isSameDay(viewDate, new Date()) ? "Today's Schedule" : format(viewDate, 'EEEE, MMM d')}
+                            </div>
                         </div>
+                        <button onClick={() => navigateDay(1)} className="p-3 hover:bg-white/10 rounded-xl text-slate-400 hover:text-white transition-all active:scale-90"><ArrowRight size={20} /></button>
                     </div>
-                    <button onClick={() => navigateDay(1)} className="p-3 hover:bg-white/10 rounded-xl text-slate-400 hover:text-white transition-all active:scale-90"><ArrowRight size={20} /></button>
+
+                    <button
+                        onClick={() => dateInputRef.current?.showPicker()}
+                        className="p-3 bg-surface/50 hover:bg-white/10 rounded-2xl text-primary transition-all active:scale-90 border border-white/5 shadow-inner group relative"
+                        title="Select Date"
+                    >
+                        <CalendarIcon size={24} className="group-hover:scale-110 transition-transform" />
+                        <input
+                            type="date"
+                            ref={dateInputRef}
+                            className="absolute inset-0 opacity-0 cursor-pointer w-0 h-0"
+                            onChange={(e) => {
+                                if (e.target.value) {
+                                    const [y, m, d] = e.target.value.split('-').map(Number);
+                                    setViewDate(new Date(y, m - 1, d));
+                                }
+                            }}
+                        />
+                    </button>
                 </div>
                 {virtualAssistantEnabled && (
                     <div className="hidden md:flex items-center gap-3 px-4 py-2 bg-indigo-500/10 border border-indigo-500/20 rounded-xl text-indigo-400">
@@ -306,8 +328,8 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
                         <div className="absolute inset-0 bg-gradient-to-b from-primary/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
                         <div className="relative z-10 flex flex-col items-center">
                             <div className="w-20 h-20 bg-surface rounded-3xl flex items-center justify-center mb-6 shadow-inner border border-white/5 group-hover:scale-110 transition-transform duration-500"><CalendarIcon size={40} className="text-slate-600 group-hover:text-primary transition-colors duration-300" /></div>
-                            <h3 className="text-2xl font-heading font-bold text-white mb-2">Schedule Empty</h3>
-                            <p className="text-slate-400 max-w-sm mx-auto">No appointments scheduled for today. Click the button above to add your first client session.</p>
+                            <h3 className="text-2xl font-heading font-bold text-white mb-2">No appointments scheduled</h3>
+                            <p className="text-slate-400 max-w-sm mx-auto">No appointments scheduled for {isSameDay(viewDate, new Date()) ? "today" : format(viewDate, 'MMMM do')}. Click the button above to add your first client session.</p>
                         </div>
                     </motion.div>
                 ) : (
