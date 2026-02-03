@@ -246,19 +246,28 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
         }
     };
 
+    // Clear stale status when provider changes
+    useEffect(() => {
+        if (isOpen && isAdmin) {
+            setSlotStatus({ type: 'idle', message: '' });
+            setProviderData({ hours: null, breaks: [] });
+            setTargetProviderSkills([]);
+        }
+    }, [targetProviderId]);
+
     useEffect(() => {
         let isCurrent = true;
         const timer = setTimeout(async () => {
-            if (isOpen && formData.clientId && formData.date && formData.time && isCurrent) {
+            if (isOpen && formData.date && formData.time && isCurrent) {
                 await checkConflicts(isCurrent);
             }
-        }, 200);
+        }, 250); // Slightly longer debounce to allow data fetching to catch up
 
         return () => {
             isCurrent = false;
             clearTimeout(timer);
         };
-    }, [formData.date, formData.time, formData.duration, formData.clientId, formData.treatmentId, formData.requiredSkills, targetProviderId, isOpen]);
+    }, [formData.date, formData.time, formData.duration, formData.clientId, formData.treatmentId, formData.requiredSkills, targetProviderId, providerData, targetProviderSkills, isOpen]);
 
     const checkConflicts = async (isCurrent) => {
         const timeRegex = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -470,17 +479,56 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
     };
 
     const fetchTreatments = async () => {
-        if (!targetProviderId) return;
+        if (!targetProviderId || !profile?.business_id) return;
         setFetchingTreatments(true);
         try {
-            // Fetch treatments specific to the selected provider (not business-wide)
-            // This ensures provider-specific pricing and duration is used
-            const { data } = await supabase
+            // 1. Fetch provider's specific skills first to ensure we can filter correctly
+            const { data: pData } = await supabase
+                .from('profiles')
+                .select('skills')
+                .eq('id', targetProviderId)
+                .single();
+
+            const pSkills = Array.isArray(pData?.skills)
+                ? pData.skills.map(s => typeof s === 'object' ? s.code : s)
+                : [];
+
+            // 2. Fetch ALL treatments for the entire business
+            const { data: allTreatments } = await supabase
                 .from('treatments')
                 .select('*')
-                .eq('profile_id', targetProviderId)
+                .eq('business_id', profile.business_id)
                 .order('name');
-            if (data) setTreatments(data);
+
+            if (allTreatments) {
+                // 3. Filter treatments:
+                // - Include if explicitly assigned to this provider
+                // - Include if it matches any of the provider's skills
+                const filtered = allTreatments.filter(t => {
+                    // Match by provider ID
+                    if (t.profile_id === targetProviderId) return true;
+
+                    // Match by skills if no specific profile_id OR even if it belongs to another (as a template)
+                    // The user wants to see the services this DR offers.
+                    const reqSkills = Array.isArray(t.required_skills) ? t.required_skills : [];
+                    return reqSkills.some(rs => pSkills.includes(rs));
+                });
+
+                // De-duplicate by name, preferring the one assigned to the provider
+                const uniqueByName = filtered.reduce((acc, curr) => {
+                    const existing = acc.find(item => item.name.toLowerCase() === curr.name.toLowerCase());
+                    if (!existing) {
+                        acc.push(curr);
+                    } else if (curr.profile_id === targetProviderId) {
+                        // Replace existing with the provider-specific version
+                        const idx = acc.indexOf(existing);
+                        acc[idx] = curr;
+                    }
+                    return acc;
+                }, []);
+
+                setTreatments(uniqueByName.sort((a, b) => a.name.localeCompare(b.name)));
+            }
         } catch (err) {
             console.error('Error fetching treatments:', err);
         } finally {
@@ -672,7 +720,7 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
     return (
         <AnimatePresence>
             {isOpen && (
-                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 overflow-y-auto">
+                <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 overflow-y-auto">
                     <motion.div
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
@@ -915,8 +963,17 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
 
                             <div className="p-8 pt-4 border-t border-white/5 shrink-0 bg-white/[0.01]">
                                 <button
-                                    disabled={loading || slotStatus.type === 'error' || slotStatus.type === 'checking'}
-                                    className="w-full bg-primary hover:bg-indigo-600 text-white p-4 rounded-xl font-bold shadow-lg shadow-primary/20 active:scale-[0.98] transition-all flex items-center justify-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    disabled={
+                                        loading ||
+                                        slotStatus.type === 'error' ||
+                                        slotStatus.type === 'checking' ||
+                                        !formData.clientId ||
+                                        !targetProviderId ||
+                                        !formData.date ||
+                                        !formData.time ||
+                                        !formData.treatmentName
+                                    }
+                                    className="w-full bg-primary hover:bg-indigo-600 text-white p-4 rounded-xl font-bold shadow-lg shadow-primary/20 active:scale-[0.98] transition-all flex items-center justify-center gap-3 disabled:opacity-30 disabled:grayscale disabled:cursor-not-allowed"
                                 >
                                     {loading ? (
                                         <Loader2 className="animate-spin w-5 h-5" />

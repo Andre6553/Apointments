@@ -152,28 +152,64 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
     // VIRTUAL ASSISTANT LOGIC: Now handled globally by Dashboard.jsx
     // This component now only listens to realtime updates.
 
-    const getWeekRange = (date) => {
+    const getDayRange = (date) => {
         const start = new Date(date);
         start.setHours(0, 0, 0, 0);
-        const day = start.getDay();
-        start.setDate(start.getDate() - day + (day === 0 ? -6 : 1));
-        const end = new Date(start);
-        end.setDate(start.getDate() + 6);
+        const end = new Date(date);
         end.setHours(23, 59, 59, 999);
         return { start, end };
     };
 
     const fetchAppointments = async (silent = false) => {
         if (!silent) setLoading(true);
-        const { start, end } = getWeekRange(viewDate);
-        const cacheKey = `${CACHE_KEYS.APPOINTMENTS}_${start.toISOString().split('T')[0]}`;
-        const cached = getCache(cacheKey);
-        if (cached && !silent) setAppointments(cached);
 
-        let query = supabase.from('appointments').select(`*, client:clients(first_name, last_name, phone), provider:profiles!appointments_assigned_profile_id_fkey(full_name, skills, role), transfer_requests(id, status, receiver_id, sender_id)`).or(`status.eq.active,status.eq.pending`).gte('scheduled_start', start.toISOString()).lte('scheduled_start', end.toISOString()).order('scheduled_start', { ascending: true });
-        if (profile?.role?.toLowerCase() !== 'admin') query = query.eq('assigned_profile_id', user?.id);
+        // Strategy: Always fetch a window around viewDate.
+        // Adjusted per user: 1 day back, 7 days forward.
+        const windowStart = new Date(viewDate);
+        windowStart.setDate(windowStart.getDate() - 1); // 1 day back
+        windowStart.setHours(0, 0, 0, 0);
+
+        const windowEnd = new Date(viewDate);
+        windowEnd.setDate(windowEnd.getDate() + 7); // 7 days forward
+        windowEnd.setHours(23, 59, 59, 999);
+
+        const cacheKey = `${CACHE_KEYS.APPOINTMENTS}_window_${windowStart.toISOString().split('T')[0]}`;
+        const cached = getCache(cacheKey);
+
+        // Local filter for display
+        const filterToSelectedDay = (allDocs) => {
+            const { start, end } = getDayRange(viewDate);
+            return allDocs.filter(a => {
+                const d = new Date(a.scheduled_start);
+                return d >= start && d <= end;
+            });
+        };
+
+        if (cached && !silent) {
+            setAppointments(filterToSelectedDay(cached));
+        }
+
+        let query = supabase
+            .from('appointments')
+            .select(`*, 
+                client:clients(first_name, last_name, phone), 
+                provider:profiles!appointments_assigned_profile_id_fkey(full_name, skills, role), 
+                transfer_requests(id, status, receiver_id, sender_id)
+            `)
+            .or(`status.eq.active,status.eq.pending`)
+            .gte('scheduled_start', windowStart.toISOString())
+            .lte('scheduled_start', windowEnd.toISOString())
+            .order('scheduled_start', { ascending: true });
+
+        if (profile?.role?.toLowerCase() !== 'admin') {
+            query = query.eq('assigned_profile_id', user?.id);
+        }
+
         const { data } = await query;
-        if (data) { setAppointments(data); setCache(cacheKey, data); }
+        if (data) {
+            setCache(cacheKey, data);
+            setAppointments(filterToSelectedDay(data));
+        }
         setLoading(false);
     };
 
@@ -184,10 +220,14 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
         return () => supabase.removeChannel(channel);
     }, [user, profile, viewDate]);
 
-    const navigateWeek = (direction) => {
+    const navigateDay = (direction) => {
         const newDate = new Date(viewDate);
-        newDate.setDate(viewDate.getDate() + (direction * 7));
+        newDate.setDate(viewDate.getDate() + direction);
         setViewDate(newDate);
+    };
+
+    const setToday = () => {
+        setViewDate(new Date());
     };
 
     const startAppointment = async (id) => {
@@ -216,13 +256,16 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
     return (
         <div className="space-y-8">
             <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-6">
-                <div className="flex items-center gap-4 w-full md:w-auto bg-surface/50 p-1.5 rounded-2xl border border-white/5">
-                    <button onClick={() => navigateWeek(-1)} className="p-3 hover:bg-white/10 rounded-xl text-slate-400 hover:text-white transition-colors"><ArrowRight size={20} className="rotate-180" /></button>
-                    <div className="flex flex-col items-center flex-1 px-4">
-                        <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Current View</span>
-                        <div className="flex items-center gap-2 font-heading font-bold text-white whitespace-nowrap"><CalendarIcon size={16} className="text-primary" />{format(getWeekRange(viewDate).start, 'MMM d')} - {format(getWeekRange(viewDate).end, 'MMM d, yyyy')}</div>
+                <div className="flex items-center gap-4 w-full md:w-auto bg-surface/50 p-1.5 rounded-2xl border border-white/5 shadow-inner">
+                    <button onClick={() => navigateDay(-1)} className="p-3 hover:bg-white/10 rounded-xl text-slate-400 hover:text-white transition-all active:scale-90"><ArrowRight size={20} className="rotate-180" /></button>
+                    <div className="flex flex-col items-center flex-1 px-4 cursor-pointer" onClick={setToday}>
+                        <span className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-0.5">Current View</span>
+                        <div className="flex items-center gap-2 font-heading font-bold text-white whitespace-nowrap">
+                            <CalendarIcon size={16} className="text-primary" />
+                            {isSameDay(viewDate, new Date()) ? 'Today' : format(viewDate, 'EEEE, MMM d')}
+                        </div>
                     </div>
-                    <button onClick={() => navigateWeek(1)} className="p-3 hover:bg-white/10 rounded-xl text-slate-400 hover:text-white transition-colors"><ArrowRight size={20} /></button>
+                    <button onClick={() => navigateDay(1)} className="p-3 hover:bg-white/10 rounded-xl text-slate-400 hover:text-white transition-all active:scale-90"><ArrowRight size={20} /></button>
                 </div>
                 {virtualAssistantEnabled && (
                     <div className="hidden md:flex items-center gap-3 px-4 py-2 bg-indigo-500/10 border border-indigo-500/20 rounded-xl text-indigo-400">

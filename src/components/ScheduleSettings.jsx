@@ -7,6 +7,8 @@ import { getCache, setCache, CACHE_KEYS } from '../lib/cache'
 import { useToast } from '../contexts/ToastContext'
 import { format, parseISO } from 'date-fns'
 import { logEvent } from '../lib/logger'
+import AddAppointmentModal from './AddAppointmentModal'
+import { useNavigate } from 'react-router-dom'
 
 const ScheduleSettings = () => {
     const { user, profile, updateProfile } = useAuth()
@@ -22,6 +24,7 @@ const ScheduleSettings = () => {
     const [loading, setLoading] = useState(!getCache(CACHE_KEYS.WORKING_HOURS))
     const [showAddBreak, setShowAddBreak] = useState(false)
     const [newBreak, setNewBreak] = useState({ label: 'Lunch Break', startTime: '13:00', duration: 60 })
+    const [isUpdatingBreak, setIsUpdatingBreak] = useState(null) // { label, startTime, dayIdx }
     const [isSubmitting, setIsSubmitting] = useState(false)
     const [saveStatus, setSaveStatus] = useState({}) // { dayIdx: 'saved' | 'saving' | 'error' }
     const [bufferSettings, setBufferSettings] = useState({ enabled: false, duration: 15 })
@@ -32,6 +35,10 @@ const ScheduleSettings = () => {
     const [pendingHoursChange, setPendingHoursChange] = useState(null)
     const [transferring, setTransferring] = useState(false)
     const [showTransferReminder, setShowTransferReminder] = useState(false)
+    const [breakConflictData, setBreakConflictData] = useState(null) // { brk, dayIdx, conflicts }
+    const [isRescheduling, setIsRescheduling] = useState(false)
+    const [selectedAptToReschedule, setSelectedAptToReschedule] = useState(null)
+    const navigate = useNavigate()
 
     const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
@@ -214,6 +221,32 @@ const ScheduleSettings = () => {
             }
 
             setSaveStatus(prev => ({ ...prev, [dayIdx]: 'saved' }))
+
+            // NEW: If the day was disabled, automatically sweep and remove any breaks for that day
+            if (!newItem.is_active) {
+                const { data: removedBreaks, error: breakSweepError } = await supabase
+                    .from('breaks')
+                    .delete()
+                    .eq('profile_id', user.id)
+                    .eq('day_of_week', dayIdx)
+                    .select();
+
+                if (breakSweepError) {
+                    console.error('Failed to sweep breaks for disabled day:', breakSweepError);
+                } else {
+                    if (removedBreaks?.length > 0) {
+                        await logEvent('BREAKS_CLEARED_AUTOMATICALLY', {
+                            day: days[dayIdx],
+                            removed_count: removedBreaks.length,
+                            reason: 'Working day deactivated'
+                        }, profile);
+                    }
+                    // Update local state to reflect the swept breaks
+                    setBreaks(prev => prev.filter(b => b.day_of_week !== dayIdx));
+                    setCache(CACHE_KEYS.BREAKS, (breaks || []).filter(b => b.day_of_week !== dayIdx));
+                }
+            }
+
             setTimeout(() => setSaveStatus(prev => ({ ...prev, [dayIdx]: null })), 2000)
         } catch (error) {
             console.error('Update failed:', error)
@@ -369,6 +402,141 @@ const ScheduleSettings = () => {
         }
     }
 
+    const toggleBreakDay = async (brk, dayIdx, options = { force: false, action: 'transfer' }) => {
+        if (!user) return
+
+        const isActive = brk.days.includes(dayIdx)
+        if (isActive) {
+            // Turning it OFF is always safe
+            setIsUpdatingBreak(`${brk.label}-${brk.start_time}-${dayIdx}`)
+            try {
+                await supabase.from('breaks').delete()
+                    .eq('profile_id', user.id)
+                    .eq('label', brk.label)
+                    .eq('start_time', brk.start_time)
+                    .eq('duration_minutes', brk.duration_minutes)
+                    .eq('day_of_week', dayIdx)
+                fetchData(true)
+            } finally {
+                setIsUpdatingBreak(null)
+            }
+            return
+        }
+
+        // Turning it ON needs safety check
+        const conflicts = await checkBreakConflicts(brk, dayIdx)
+        if (conflicts.length > 0 && !options.force) {
+            setBreakConflictData({ brk, dayIdx, conflicts })
+            return
+        }
+
+        setIsUpdatingBreak(`${brk.label}-${brk.start_time}-${dayIdx}`)
+        try {
+            if (options.force && conflicts.length > 0) {
+                await performBreakTransfers(conflicts, options.action)
+            }
+
+            await supabase.from('breaks').insert({
+                profile_id: user.id,
+                label: brk.label,
+                start_time: brk.start_time,
+                duration_minutes: brk.duration_minutes,
+                day_of_week: dayIdx
+            })
+
+            // Log event
+            await logEvent('BREAK_TOGGLED', {
+                provider_id: user.id,
+                label: brk.label,
+                day: days[dayIdx],
+                active: !isActive
+            }, profile)
+
+            fetchData(true)
+        } catch (err) {
+            console.error('Failed to toggle break day:', err)
+            showToast('Update failed', 'error')
+        } finally {
+            setIsUpdatingBreak(null)
+            setBreakConflictData(null)
+        }
+    }
+
+    const checkBreakConflicts = async (brk, dayIdx) => {
+        const today = new Date()
+        today.setHours(0, 0, 0, 0)
+
+        const { data: appointments } = await supabase
+            .from('appointments')
+            .select('*, client:clients(first_name, last_name, phone)')
+            .eq('assigned_profile_id', user.id)
+            .eq('status', 'pending')
+            .gte('scheduled_start', today.toISOString())
+
+        if (!appointments) return []
+
+        return appointments.filter(apt => {
+            const aptDate = new Date(apt.scheduled_start)
+            if (aptDate.getDay() !== dayIdx) return false
+
+            const aptStartTime = format(aptDate, 'HH:mm')
+            const aptEndTime = format(new Date(aptDate.getTime() + apt.duration_minutes * 60000), 'HH:mm')
+
+            const breakStart = brk.start_time
+            const breakEnd = format(new Date(new Date(`1970-01-01T${brk.start_time}`).getTime() + brk.duration_minutes * 60000), 'HH:mm')
+
+            // Does appointment overlap with break?
+            return aptStartTime < breakEnd && aptEndTime > breakStart
+        })
+    }
+
+    const performBreakTransfers = async (conflicts, action) => {
+        const { data: admins } = await supabase
+            .from('profiles')
+            .select('id, full_name')
+            .eq('business_id', profile?.business_id)
+            .ilike('role', 'admin')
+            .limit(1)
+
+        const admin = admins?.[0]
+        if (!admin) throw new Error('No admin found')
+
+        for (const apt of conflicts) {
+            await supabase.rpc('reassign_appointment', {
+                appt_id: apt.id,
+                new_provider_id: admin.id,
+                note_text: action === 'transfer'
+                    ? 'Transferred due to break scheduling'
+                    : 'Marked for rescheduling due to break scheduling',
+                flag_attention: true
+            })
+
+            // Log high-fidelity appointment event
+            await logEvent('APPT_BREAK_SHIFT', {
+                appointment_id: apt.id,
+                client_name: `${apt.client?.first_name} ${apt.client?.last_name}`,
+                original_provider: user.id,
+                target_provider: admin.id,
+                break_label: breakConflictData?.brk?.label,
+                action_type: action,
+                reason: `Provider scheduled a ${breakConflictData?.brk?.label} break`
+            }, profile)
+        }
+
+        const clientNames = conflicts.map(a => `${a.client?.first_name} ${a.client?.last_name}`).join(', ')
+        const msg = action === 'transfer'
+            ? `Hi ${admin.full_name}, I've added a break on ${days[conflicts[0].dayIdx]}. Please handle these clients: ${clientNames}`
+            : `Hi ${admin.full_name}, I've added a break on ${days[conflicts[0].dayIdx]}. These clients need to be RESCHEDULED: ${clientNames}`
+
+        await supabase.from('temporary_messages').insert({
+            sender_id: user.id,
+            receiver_id: admin.id,
+            business_id: profile?.business_id,
+            content: msg,
+            is_read: false
+        })
+    }
+
     const deleteBreak = async (breakToCancel) => {
         if (!confirm(`Cancel this scheduled break (${breakToCancel.label}) for all days?`)) return
         try {
@@ -415,96 +583,117 @@ const ScheduleSettings = () => {
 
     return (
         <div className="space-y-12">
-            {/* Conflict Warning Modal */}
+            {/* Break Conflict Warning Modal */}
             <AnimatePresence>
-                {showConflictModal && (
+                {breakConflictData && (
                     <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
                         <motion.div
                             initial={{ opacity: 0 }}
                             animate={{ opacity: 1 }}
                             exit={{ opacity: 0 }}
-                            onClick={handleCancelHoursChange}
-                            className="absolute inset-0 bg-slate-950/80 backdrop-blur-md"
+                            onClick={() => setBreakConflictData(null)}
+                            className="absolute inset-0 bg-slate-950/90 backdrop-blur-xl"
                         />
                         <motion.div
                             initial={{ opacity: 0, scale: 0.95, y: 20 }}
                             animate={{ opacity: 1, scale: 1, y: 0 }}
                             exit={{ opacity: 0, scale: 0.95, y: 20 }}
-                            className="relative w-full max-w-lg glass-card p-0 flex flex-col max-h-[85vh] overflow-hidden shadow-2xl border border-amber-500/30"
+                            className="relative w-full max-w-lg glass-card p-0 flex flex-col max-h-[90vh] overflow-hidden shadow-2xl border border-orange-500/30"
                         >
-                            {/* Header */}
-                            <div className="p-6 border-b border-amber-500/20 bg-amber-500/10 flex items-center justify-between shrink-0">
+                            <div className="p-6 border-b border-orange-500/20 bg-orange-500/10 flex items-center justify-between shrink-0">
                                 <div className="flex items-center gap-3">
-                                    <div className="p-2.5 rounded-xl bg-amber-500/20 border border-amber-500/30 text-amber-400">
-                                        <AlertTriangle size={20} />
+                                    <div className="p-2.5 rounded-xl bg-orange-500/20 border border-orange-500/30 text-orange-400">
+                                        <Coffee size={24} />
                                     </div>
                                     <div>
-                                        <h3 className="text-xl font-heading font-bold text-white leading-none">Appointment Conflict</h3>
-                                        <p className="text-[10px] text-amber-400 font-bold uppercase tracking-widest mt-1.5">
-                                            {conflictingAppointments.length} CLIENT{conflictingAppointments.length !== 1 ? 'S' : ''} AFFECTED
+                                        <h3 className="text-xl font-bold text-white leading-none">Break Conflict</h3>
+                                        <p className="text-[10px] text-orange-400 font-bold uppercase tracking-widest mt-1.5">
+                                            {breakConflictData.conflicts.length} CLIENT{breakConflictData.conflicts.length !== 1 ? 'S' : ''} BOOKED DURING {breakConflictData.brk.label}
                                         </p>
                                     </div>
                                 </div>
-                                <button onClick={handleCancelHoursChange} className="p-2 text-slate-500 hover:text-white hover:bg-white/5 rounded-xl transition-all">
+                                <button onClick={() => setBreakConflictData(null)} className="p-2 text-slate-500 hover:text-white hover:bg-white/5 rounded-xl transition-all">
                                     <X size={20} />
                                 </button>
                             </div>
 
-                            {/* Content */}
                             <div className="flex-1 overflow-y-auto p-6 space-y-4">
-                                <p className="text-sm text-slate-300">
-                                    Changing your working hours will affect these scheduled appointments.
-                                    They will be <span className="text-amber-400 font-bold">transferred to the Admin</span> for rescheduling.
+                                <p className="text-sm text-slate-300 leading-relaxed">
+                                    "{breakConflictData.conflicts.map(c => c.client?.first_name).join(', ')}" is booked during this time.
+                                    Should we move them to Admin or reschedule so you can take your {breakConflictData.brk.label.toLowerCase()}?
                                 </p>
 
                                 <div className="space-y-2">
-                                    {conflictingAppointments.map(apt => (
-                                        <div key={apt.id} className="bg-slate-800/50 border border-white/5 rounded-xl p-4 flex items-center gap-4">
-                                            <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center text-amber-400 font-bold text-sm">
-                                                {apt.client?.first_name?.charAt(0) || '?'}
+                                    {breakConflictData.conflicts.map(apt => (
+                                        <div key={apt.id} className="bg-slate-800/80 border border-white/5 rounded-xl p-4 flex items-center justify-between gap-4">
+                                            <div className="flex items-center gap-4">
+                                                <div className="w-10 h-10 rounded-full bg-orange-500/20 flex items-center justify-center text-orange-400 font-bold text-sm">
+                                                    {apt.client?.first_name?.charAt(0)}
+                                                </div>
+                                                <div className="flex-1">
+                                                    <p className="font-bold text-white text-sm">
+                                                        {apt.client?.first_name} {apt.client?.last_name}
+                                                    </p>
+                                                    <p className="text-xs text-slate-400">
+                                                        {format(new Date(apt.scheduled_start), 'HH:mm')} ({apt.duration_minutes}min)
+                                                    </p>
+                                                </div>
                                             </div>
-                                            <div className="flex-1">
-                                                <p className="font-bold text-white text-sm">
-                                                    {apt.client?.first_name} {apt.client?.last_name}
-                                                </p>
-                                                <p className="text-xs text-slate-400">
-                                                    {format(new Date(apt.scheduled_start), 'EEE, MMM d')} at {format(new Date(apt.scheduled_start), 'HH:mm')}
-                                                    <span className="mx-2">•</span>
-                                                    {apt.duration_minutes}min
-                                                </p>
-                                            </div>
-                                            <ArrowRight className="text-amber-500" size={16} />
-                                            <div className="p-2 rounded-lg bg-indigo-500/20 text-indigo-400">
-                                                <Users size={16} />
-                                            </div>
+                                            <button
+                                                onClick={() => setSelectedAptToReschedule(apt)}
+                                                className="px-3 py-1.5 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/20 text-indigo-400 text-[10px] font-bold uppercase tracking-wider transition-all"
+                                            >
+                                                Reschedule
+                                            </button>
                                         </div>
                                     ))}
                                 </div>
                             </div>
 
-                            {/* Actions */}
-                            <div className="p-4 border-t border-white/5 bg-white/[0.02] flex gap-3 shrink-0">
+                            <div className="p-6 border-t border-white/5 bg-white/[0.02] flex flex-col gap-3">
                                 <button
-                                    type="button"
-                                    onClick={handleCancelHoursChange}
-                                    className="flex-1 py-3 rounded-xl bg-surface border border-white/5 text-slate-400 font-bold hover:text-white transition-all text-sm"
+                                    onClick={() => toggleBreakDay(breakConflictData.brk, breakConflictData.dayIdx, { force: true, action: 'transfer' })}
+                                    className="w-full py-4 rounded-xl bg-indigo-500 hover:bg-indigo-600 text-white font-bold transition-all flex items-center justify-center gap-2 text-sm shadow-lg shadow-indigo-500/20"
                                 >
-                                    Keep Original Hours
+                                    <Users size={18} />
+                                    <span>Move to Admin</span>
                                 </button>
                                 <button
-                                    type="button"
-                                    onClick={handleTransferToAdmin}
-                                    disabled={transferring}
-                                    className="flex-[2] py-3 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-900 font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20 text-sm"
+                                    onClick={() => setBreakConflictData(null)}
+                                    className="w-full py-3 rounded-xl border border-white/10 hover:bg-white/5 text-slate-400 font-bold transition-all text-sm"
                                 >
-                                    {transferring ? <Loader2 size={18} className="animate-spin" /> : <ArrowRight size={18} />}
-                                    Transfer to Admin & Save
+                                    Cancel & Keep Appointment
                                 </button>
                             </div>
                         </motion.div>
                     </div>
                 )}
             </AnimatePresence>
+
+            {/* Individual Reschedule Modal */}
+            <AddAppointmentModal
+                isOpen={!!selectedAptToReschedule}
+                onClose={() => setSelectedAptToReschedule(null)}
+                onRefresh={async () => {
+                    await fetchData(true)
+                    setSelectedAptToReschedule(null)
+
+                    // Critical: Re-check conflicts for the existing modal
+                    if (breakConflictData) {
+                        const updated = await checkBreakConflicts(breakConflictData.brk, breakConflictData.dayIdx)
+                        if (updated.length === 0) {
+                            // Amazing! The user manually moved everyone. 
+                            // We can now safely turn the break ON.
+                            await toggleBreakDay(breakConflictData.brk, breakConflictData.dayIdx, { force: true })
+                            setBreakConflictData(null)
+                            showToast('Break activated - conflicts resolved!', 'success')
+                        } else {
+                            setBreakConflictData({ ...breakConflictData, conflicts: updated })
+                        }
+                    }
+                }}
+                editData={selectedAptToReschedule}
+            />
 
             {/* Transfer Reminder Modal */}
             <AnimatePresence>
@@ -780,7 +969,6 @@ const ScheduleSettings = () => {
                 </AnimatePresence>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                    {/* Unique breaks grouping */}
                     {Object.values(breaks.reduce((acc, brk) => {
                         const key = `${brk.label}-${brk.start_time}-${brk.duration_minutes}`;
                         if (!acc[key]) acc[key] = { ...brk, days: [] };
@@ -789,17 +977,40 @@ const ScheduleSettings = () => {
                     }, {})).map(brk => (
                         <div key={`${brk.label}-${brk.start_time}`} className="glass-card p-5 group flex flex-col justify-between hover:border-orange-500/30 transition-all">
                             <div className="flex justify-between items-start mb-4">
-                                <div className="w-10 h-10 rounded-xl bg-orange-500/10 flex items-center justify-center text-orange-500 border border-orange-500/20">
-                                    <Coffee size={20} />
+                                <div className="flex items-center gap-3">
+                                    <div className="w-10 h-10 rounded-xl bg-orange-500/10 flex items-center justify-center text-orange-500 border border-orange-500/20">
+                                        <Coffee size={20} />
+                                    </div>
+                                    <div className="flex gap-1">
+                                        {[0, 1, 2, 3, 4, 5, 6].map(d => {
+                                            const isActive = brk.days.includes(d);
+                                            const isUpdating = isUpdatingBreak === `${brk.label}-${brk.start_time}-${d}`;
+                                            const dayLabels = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+
+                                            return (
+                                                <button
+                                                    key={d}
+                                                    disabled={isUpdating}
+                                                    onClick={() => toggleBreakDay(brk, d)}
+                                                    className={`w-5 h-5 rounded flex items-center justify-center text-[8px] font-black transition-all border ${isActive
+                                                        ? 'bg-orange-500 border-orange-400 text-slate-900 shadow-[0_0_10px_rgba(249,115,22,0.5)]'
+                                                        : 'bg-slate-800/50 border-white/5 text-slate-500 hover:border-white/20'
+                                                        } ${isUpdating ? 'animate-pulse opacity-50' : ''}`}
+                                                >
+                                                    {dayLabels[d]}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
                                 </div>
-                                <button onClick={() => deleteBreak(brk)} className="text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <button onClick={() => deleteBreak(brk)} className="p-2 -mr-2 text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity">
                                     <Trash2 size={16} />
                                 </button>
                             </div>
                             <div className="flex flex-col gap-0.5 mb-3">
                                 <h4 className="font-bold text-white text-sm">{brk.label}</h4>
                                 <p className="text-[10px] text-slate-500 font-bold uppercase tracking-tight">
-                                    {brk.days.length === 7 ? 'Daily' : brk.days.length === 5 && !brk.days.includes(0) && !brk.days.includes(6) ? 'Weekdays' : `${brk.days.length} Days`}
+                                    {brk.days.length === 7 ? 'Daily' : brk.days.length === 5 && !brk.days.includes(0) && !brk.days.includes(6) ? 'Weekdays' : `${brk.days.length} Days Active`}
                                 </p>
                             </div>
                             <div className="flex items-center gap-2 text-[10px] font-bold">
