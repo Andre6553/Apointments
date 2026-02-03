@@ -262,7 +262,7 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
                         <span className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-0.5">Current View</span>
                         <div className="flex items-center gap-2 font-heading font-bold text-white whitespace-nowrap">
                             <CalendarIcon size={16} className="text-primary" />
-                            {isSameDay(viewDate, new Date()) ? 'Today' : format(viewDate, 'EEEE, MMM d')}
+                            {isSameDay(viewDate, new Date()) ? "Today's Schedule" : format(viewDate, 'EEEE, MMM d')}
                         </div>
                     </div>
                     <button onClick={() => navigateDay(1)} className="p-3 hover:bg-white/10 rounded-xl text-slate-400 hover:text-white transition-all active:scale-90"><ArrowRight size={20} /></button>
