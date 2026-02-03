@@ -2,6 +2,7 @@ import { AuthProvider, useAuth } from './hooks/useAuth'
 import Auth from './components/Auth'
 import Dashboard from './components/Dashboard'
 import { ToastProvider } from './contexts/ToastContext'
+import { SpeedInsights } from "@vercel/speed-insights/react"
 
 function AppContent() {
     const { user, loading, connectionError } = useAuth()
@@ -47,6 +48,7 @@ function App() {
         <AuthProvider>
             <ToastProvider>
                 <AppContent />
+                <SpeedInsights />
             </ToastProvider>
         </AuthProvider>
     )
