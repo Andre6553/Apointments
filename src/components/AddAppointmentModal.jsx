@@ -66,7 +66,7 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
                 });
             }
         }
-    }, [isOpen, editData]);
+    }, [isOpen, editData, profile?.business_id]);
 
     useEffect(() => {
         if (isOpen && profile?.business_id && isAdmin) {
@@ -89,7 +89,7 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
             fetchTargetProviderSkills();
             fetchTreatments(); // Fetch provider-specific treatments with their pricing
         }
-    }, [isOpen, targetProviderId, formData.date]);
+    }, [isOpen, targetProviderId, formData.date, profile?.business_id]);
 
     const fetchTargetProviderSkills = async () => {
         if (!targetProviderId) return;
@@ -482,18 +482,26 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
         if (!targetProviderId || !profile?.business_id) return;
         setFetchingTreatments(true);
         try {
-            // 1. Fetch provider's specific skills first to ensure we can filter correctly
-            const { data: pData } = await supabase
-                .from('profiles')
-                .select('skills')
-                .eq('id', targetProviderId)
-                .single();
+            // 1. Fetch provider's specific skills and all business profiles (for role check)
+            const [pRes, allProfilesRes] = await Promise.all([
+                supabase.from('profiles').select('skills').eq('id', targetProviderId).single(),
+                supabase.from('profiles').select('id, role').eq('business_id', profile.business_id)
+            ]);
 
-            const pSkills = Array.isArray(pData?.skills)
-                ? pData.skills.map(s => typeof s === 'object' ? s.code : s)
-                : [];
+            const pSkillsArray = Array.isArray(pRes.data?.skills) ? pRes.data.skills : [];
 
-            // 2. Fetch ALL treatments for the entire business
+            // MANDATORY RULE: If provider has no skills in their profile, show nothing
+            if (pSkillsArray.length === 0) {
+                setTreatments([]);
+                return;
+            }
+
+            const roleMap = (allProfilesRes.data || []).reduce((acc, curr) => {
+                acc[curr.id] = curr.role;
+                return acc;
+            }, {});
+
+            // 2. Fetch ALL treatments for the entire business to find matching records
             const { data: allTreatments } = await supabase
                 .from('treatments')
                 .select('*')
@@ -501,33 +509,45 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
                 .order('name');
 
             if (allTreatments) {
-                // 3. Filter treatments:
-                // - Include if explicitly assigned to this provider
-                // - Include if it matches any of the provider's skills
-                const filtered = allTreatments.filter(t => {
-                    // Match by provider ID
-                    if (t.profile_id === targetProviderId) return true;
+                // 3. Map the Profile Skills directly to Treatment objects
+                const mapped = pSkillsArray.map(skillObj => {
+                    const skillCode = (typeof skillObj === 'object' ? skillObj.code : skillObj).toUpperCase();
 
-                    // Match by skills if no specific profile_id OR even if it belongs to another (as a template)
-                    // The user wants to see the services this DR offers.
-                    const reqSkills = Array.isArray(t.required_skills) ? t.required_skills : [];
-                    return reqSkills.some(rs => pSkills.includes(rs));
-                });
+                    // Find treatments that match this skill code
+                    const matches = allTreatments.filter(t => {
+                        const reqSkills = Array.isArray(t.required_skills) ? t.required_skills.map(s => String(s).toUpperCase()) : [];
+                        return reqSkills.includes(skillCode);
+                    });
 
-                // De-duplicate by name, preferring the one assigned to the provider
-                const uniqueByName = filtered.reduce((acc, curr) => {
+                    // Priority: 1. Assigned to me, 2. Global/Admin Template
+                    const myMatch = matches.find(t => t.profile_id === targetProviderId);
+                    const templateMatch = matches.find(t => !t.profile_id || roleMap[t.profile_id] === 'Admin');
+
+                    const baseTreatment = myMatch || templateMatch;
+                    if (!baseTreatment) return null;
+
+                    // Merge settings from the profile skill object (duration, price)
+                    return {
+                        ...baseTreatment,
+                        duration_minutes: skillObj.duration || baseTreatment.duration_minutes,
+                        price: (skillObj.price !== undefined && skillObj.price !== null) ? skillObj.price : baseTreatment.price,
+                        display_name: skillObj.label || baseTreatment.name
+                    };
+                }).filter(Boolean);
+
+                // De-duplicate by name if necessary
+                const uniqueByName = mapped.reduce((acc, curr) => {
                     const existing = acc.find(item => item.name.toLowerCase() === curr.name.toLowerCase());
                     if (!existing) {
                         acc.push(curr);
                     } else if (curr.profile_id === targetProviderId) {
-                        // Replace existing with the provider-specific version
                         const idx = acc.indexOf(existing);
                         acc[idx] = curr;
                     }
                     return acc;
                 }, []);
 
-                setTreatments(uniqueByName.sort((a, b) => a.name.localeCompare(b.name)));
+                setTreatments(uniqueByName.sort((a, b) => (a.display_name || a.name).localeCompare(b.display_name || b.name)));
             }
         } catch (err) {
             console.error('Error fetching treatments:', err);

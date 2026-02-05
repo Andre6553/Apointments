@@ -85,3 +85,4 @@ Thumbs.db
 *.html
 .vercel
 .env*.local
+google-service-account.json

@@ -34,6 +34,25 @@ export const setCache = (key, data) => {
         localStorage.setItem(`${key}_${userId}`, JSON.stringify(cacheObj));
     } catch (e) {
         console.warn('Cache write failed:', e);
+        // If storage is full, clear all OUR cache keys and try once more
+        if (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED') {
+            const keysToPurge = [];
+            for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                if (k.startsWith('apt_') || k.startsWith('timeline_') || k.startsWith('work_hours_')) {
+                    keysToPurge.push(k);
+                }
+            }
+            keysToPurge.forEach(k => localStorage.removeItem(k));
+
+            // Try one more time after purge
+            try {
+                const userId = getUserIdSuffix();
+                localStorage.setItem(`${key}_${userId}`, JSON.stringify({ timestamp: Date.now(), data }));
+            } catch (retryErr) {
+                console.warn('Final cache retry failed after purge:', retryErr);
+            }
+        }
     }
 };
 

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../lib/supabase'
-import { ArrowLeftRight, ArrowRightLeft, UserCheck, AlertTriangle, CheckCircle2, Clock, BarChart3, Loader2, Globe, User, Users, Sparkles, ChevronRight, Check, CheckCheck } from 'lucide-react'
+import { ArrowLeftRight, ArrowRightLeft, UserCheck, AlertTriangle, CheckCircle2, Clock, BarChart3, Loader2, Globe, User, Users, Sparkles, ChevronRight, Check, CheckCheck, Info, X } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { format } from 'date-fns'
 import { sendWhatsApp } from '../lib/notifications'
@@ -23,12 +23,18 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
     const [crisisPlans, setCrisisPlans] = useState([])
     const [systemHealth, setSystemHealth] = useState(null)
     const [processing, setProcessing] = useState(false)
+    const [processingActions, setProcessingActions] = useState(new Set())
+    const isFetchingRef = useRef(false)
+    const debounceTimerRef = useRef(null)
+    const cooldownActionsRef = useRef(new Set()) // Track recently moved IDs to prevent re-appearance
+    const [cooldownTrigger, setCooldownTrigger] = useState(0) // Used to force re-render when cooldown changes
     const navigate = useNavigate()
 
     // Appointment Actions
     const [selectedAptForAction, setSelectedAptForAction] = useState(null)
     const [showActionModal, setShowActionModal] = useState(false)
     const [showRescheduleModal, setShowRescheduleModal] = useState(false)
+    const [showCrisisInfo, setShowCrisisInfo] = useState(false)
 
     // Messaging State
     const [showOnlineModal, setShowOnlineModal] = useState(false)
@@ -65,6 +71,9 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
 
     const fetchData = async (isSilent = false) => {
         if (!profile?.business_id) return
+        if (isFetchingRef.current) return;
+        isFetchingRef.current = true;
+
         if (!isSilent) setLoading(true)
         try {
             // 1. Fetch delayed appointments
@@ -177,14 +186,20 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                     analyzeSystemHealth(profile.business_id, virtualAssistantEnabled),
                     generateCrisisRecoveryPlan(profile.business_id)
                 ])
-                setSuggestions(smart)
+                setSuggestions(smart.filter(s => !cooldownActionsRef.current.has(s.appointmentId)))
                 setSystemHealth(health)
-                setCrisisPlans(crisis || [])
+                // Filter crisis plans to remove any appointments currently in cooldown
+                const filteredCrisis = (crisis || []).map(p => ({
+                    ...p,
+                    recommendedActions: p.recommendedActions.filter(a => !cooldownActionsRef.current.has(a.appointment.id))
+                })).filter(p => p.recommendedActions.length > 0);
+                setCrisisPlans(filteredCrisis)
             }
         } catch (error) {
             console.error('Balancer Data Error:', error)
         } finally {
             setLoading(false)
+            isFetchingRef.current = false;
         }
     }
 
@@ -210,7 +225,13 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                     schema: 'public',
                     table: 'appointments',
                     filter: `business_id=eq.${profile.business_id}`
-                }, () => fetchData(true)) // Also refresh on status changes
+                }, () => {
+                    // DEBOUNCE: Ripple updates from DelayEngine can trigger dozens of events at once
+                    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+                    debounceTimerRef.current = setTimeout(() => {
+                        fetchData(true);
+                    }, 1000); // 1s cooldown to let ripple settle
+                })
                 .subscribe()
 
             return () => {
@@ -251,8 +272,8 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
         }
     };
 
-    const shiftClient = async (aptId, newProviderId, oldProviderId) => {
-        if (!confirm('Shift this client to the new provider?')) return
+    const shiftClient = async (aptId, newProviderId, oldProviderId, isCrisis = false) => {
+        if (!isCrisis && !confirm('Shift this client to the new provider?')) return
 
         try {
             // Optimistic update for demo purposes
@@ -295,8 +316,10 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                     }
                 }
 
-                alert('Client successfully shifted and notified!');
-                fetchData() // Refresh real data
+                if (!isCrisis) {
+                    alert('Client successfully shifted and notified!');
+                    fetchData(true) // Silent refresh
+                }
             } else {
                 throw error
             }
@@ -308,17 +331,16 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
     }
 
     const approveSuggestion = async (sug, skipRefresh = false) => {
+        if (processingActions.has(sug.appointmentId)) return;
+        setProcessingActions(prev => new Set(prev).add(sug.appointmentId));
+
         try {
-            const { error } = await supabase
-                .from('appointments')
-                .update({
-                    assigned_profile_id: sug.newProviderId,
-                    shifted_from_id: sug.currentProviderId,
-                    notes: 'Auto-pilot reassignment due to delay',
-                    requires_attention: false, // Clear attention flag
-                    delay_minutes: 0 // Reset delay for the new provider
-                })
-                .eq('id', sug.appointmentId)
+            const { error } = await supabase.rpc('reassign_appointment', {
+                appt_id: sug.appointmentId,
+                new_provider_id: sug.newProviderId,
+                note_text: 'Auto-pilot reassignment due to delay',
+                flag_attention: false
+            });
 
             // Also remove from needs attention list
             setNeedsAttentionApts(prev => prev.filter(a => a.id !== sug.appointmentId))
@@ -347,6 +369,12 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
         } catch (err) {
             console.error('Failed to approve suggestion:', err)
             alert('Action failed. Check logs.')
+        } finally {
+            setProcessingActions(prev => {
+                const next = new Set(prev);
+                next.delete(sug.appointmentId);
+                return next;
+            });
         }
     }
 
@@ -608,12 +636,16 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
 
     // Crisis Handler
     const handleCrisisAction = async (plan, action) => {
-        if (!confirm(`Confirm Emergency Action for ${action.appointment.client?.first_name}?\n\nType: ${action.type}\nReason: ${action.reason}`)) return;
+        if (processingActions.has(action.appointment.id)) return;
+
+        // Add to Cooldown immediately
+        cooldownActionsRef.current.add(action.appointment.id);
+
+        setProcessingActions(prev => new Set(prev).add(action.appointment.id));
 
         try {
             if (action.type === 'TRANSFER_RECOMMENDATION') {
-                // Find ANY capable provider (even busy is better than 2h late)
-                // Filter allProviders for skills
+                // Find BEST capable provider (Online, Not Busy, Not Delayed)
                 const reqSkills = action.appointment.required_skills || [];
                 const capable = allProviders.filter(p => {
                     if (p.id === plan.providerId) return false;
@@ -621,23 +653,59 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                     return reqSkills.every(qs => pSkills.includes(qs));
                 });
 
-                // Sort by online + LEAST busy
-                // (Simple heuristic: pick first online, or first anyone)
-                const target = capable.find(p => p.is_online) || capable[0];
+                // Ranking:
+                // 1. Online + Not Busy + Not Delayed
+                // 2. Online + Not Busy
+                // 3. Online + Least Delayed
+                // 4. Anyone Online
+                const target = capable.find(p => p.is_online && !p.is_busy && !delayedApts.some(a => a.assigned_profile_id === p.id))
+                    || capable.find(p => p.is_online && !p.is_busy)
+                    || [...capable.filter(p => p.is_online)].sort((a, b) => {
+                        const aDelay = delayedApts.find(apt => apt.assigned_profile_id === a.id)?.delay_minutes || 0;
+                        const bDelay = delayedApts.find(apt => apt.assigned_profile_id === b.id)?.delay_minutes || 0;
+                        return aDelay - bDelay;
+                    })[0]
+                    || capable.find(p => p.is_online)
+                    || capable[0];
 
                 if (!target) {
-                    alert('CRISIS FALIED: No capable provider found to take this load.');
+                    alert('CRISIS FAILED: No capable provider found to take this load.');
+                    setProcessingActions(prev => {
+                        const next = new Set(prev);
+                        next.delete(action.appointment.id);
+                        return next;
+                    });
                     return;
                 }
 
-                await shiftClient(action.appointment.id, target.id, plan.providerId);
+                // Atomic reassignment via RPC (Handles time-shifting and delay-reset internally)
+                await shiftClient(action.appointment.id, target.id, plan.providerId, true);
 
-                // Extra Log
+                // Optimistic update for Crisis Plans (Global Clear)
+                setCrisisPlans(prev => prev.map(p => ({
+                    ...p,
+                    recommendedActions: p.recommendedActions.filter(a => a.appointment.id !== action.appointment.id)
+                })).filter(p => p.recommendedActions.length > 0));
+
+                // Also clear from Autopilot suggestions if it exists there
+                setSuggestions(prev => prev.filter(s => s.appointmentId !== action.appointment.id));
+
+                // Extra Log with correct Actor
                 await logEvent('crisis.load_shed', {
                     from: plan.providerName,
                     to: target.full_name,
-                    minutes_saved: action.impact_score
-                }, { level: 'WARN' });
+                    minutes_saved: action.impact_score,
+                    appointment_id: action.appointment.id,
+                    business_id: profile?.business_id
+                }, {
+                    level: 'WARN',
+                    actor: {
+                        type: 'user',
+                        id: profile?.id,
+                        name: profile?.full_name,
+                        role: profile?.role
+                    }
+                });
 
             } else if (action.type === 'DEFERRAL_RECOMMENDATION') {
                 // Open Reschedule Modal for this specific client
@@ -652,6 +720,12 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
         } catch (e) {
             console.error('Crisis Action Failed:', e);
             alert('Failed to execute crisis plan.');
+        } finally {
+            setProcessingActions(prev => {
+                const next = new Set(prev);
+                next.delete(action.appointment.id);
+                return next;
+            });
         }
     };
 
@@ -1148,6 +1222,13 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                                             <h2 className="text-2xl font-black text-white uppercase tracking-tight flex items-center gap-3">
                                                 Crisis Mode Active
                                                 <span className="text-xs bg-red-500 text-white px-2 py-0.5 rounded-full font-bold tracking-widest animate-pulse border border-white/20">LIVE</span>
+                                                <button
+                                                    onClick={() => setShowCrisisInfo(true)}
+                                                    className="p-1.5 hover:bg-white/10 rounded-lg transition-colors text-red-200 hover:text-white"
+                                                    title="Crisis Mode Logic Explained"
+                                                >
+                                                    <Info size={18} />
+                                                </button>
                                             </h2>
                                             <p className="text-red-200 font-medium">Critical schedule delays detected. Immediate action recommended to prevent cascade failure.</p>
                                         </div>
@@ -1209,15 +1290,24 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
 
                                                             <button
                                                                 onClick={() => handleCrisisAction(plan, action)}
-                                                                className={`w-full py-3 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition-all active:scale-95 shadow-lg ${isEmergency
+                                                                disabled={processingActions.has(action.appointment.id)}
+                                                                className={`w-full py-3 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition-all active:scale-95 shadow-lg ${processingActions.has(action.appointment.id) ? 'bg-slate-700 text-slate-500' : isEmergency
                                                                     ? 'bg-red-500 hover:bg-red-400 text-white shadow-red-500/20'
                                                                     : action.type === 'TRANSFER_RECOMMENDATION'
                                                                         ? 'bg-amber-500 hover:bg-amber-400 text-slate-900 shadow-amber-500/20'
                                                                         : 'bg-purple-500 hover:bg-purple-400 text-white shadow-purple-500/20'
                                                                     }`}
                                                             >
-                                                                {action.type === 'TRANSFER_RECOMMENDATION' ? <ArrowRightLeft size={16} /> : <Clock size={16} />}
-                                                                {isEmergency ? 'Approve Clear' : (action.type === 'TRANSFER_RECOMMENDATION' ? 'Approve Transfer' : 'Approve Postpone')}
+                                                                {processingActions.has(action.appointment.id) ? (
+                                                                    <Loader2 size={16} className="animate-spin" />
+                                                                ) : action.type === 'TRANSFER_RECOMMENDATION' ? (
+                                                                    <ArrowRightLeft size={16} />
+                                                                ) : (
+                                                                    <Clock size={16} />
+                                                                )}
+                                                                {processingActions.has(action.appointment.id)
+                                                                    ? 'Processing...'
+                                                                    : isEmergency ? 'Approve Clear' : (action.type === 'TRANSFER_RECOMMENDATION' ? 'Approve Transfer' : 'Approve Postpone')}
                                                             </button>
                                                         </div>
                                                     );
@@ -1880,6 +1970,107 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                                     </div>
                                 </>
                             )}
+                        </motion.div>
+                    </div>
+                )}
+            </AnimatePresence>
+
+            {/* CRISIS INFO MODAL */}
+            <AnimatePresence>
+                {showCrisisInfo && (
+                    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            onClick={() => setShowCrisisInfo(false)}
+                            className="absolute inset-0 bg-slate-900/90 backdrop-blur-xl"
+                        />
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.9, y: 20 }}
+                            className="relative w-full max-w-2xl bg-slate-900 border border-white/10 rounded-[2.5rem] shadow-2xl overflow-hidden"
+                        >
+                            <div className="absolute top-0 right-0 p-4 md:p-8">
+                                <button
+                                    onClick={() => setShowCrisisInfo(false)}
+                                    className="p-2 md:p-3 bg-white/5 hover:bg-white/10 text-white rounded-xl md:rounded-2xl transition-all active:scale-95"
+                                >
+                                    <X size={20} className="md:w-6 md:h-6" />
+                                </button>
+                            </div>
+
+                            <div className="p-6 md:p-12">
+                                <div className="flex items-center gap-3 md:gap-4 mb-6 md:mb-8">
+                                    <div className="p-2 md:p-3 bg-red-500 rounded-xl md:rounded-2xl shadow-lg shadow-red-500/20">
+                                        <Info className="text-white w-6 h-6 md:w-8 md:h-8" />
+                                    </div>
+                                    <h2 className="text-2xl md:text-3xl font-black text-white tracking-tight">Crisis Mode Logic Explained</h2>
+                                </div>
+
+                                <div className="space-y-6 md:space-y-8 max-h-[70vh] md:max-h-[60vh] overflow-y-auto pr-2 md:pr-4 custom-scrollbar">
+                                    <p className="text-slate-400 text-sm md:text-base font-medium leading-relaxed">
+                                        The Crisis Mode Engine monitors the facility for critical schedule delays and automatically generates recovery plans using two primary strategies.
+                                    </p>
+
+                                    <div className="space-y-4 md:space-y-6">
+                                        <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl md:rounded-2xl p-4 md:p-6">
+                                            <div className="flex items-center gap-3 mb-3 md:mb-4">
+                                                <div className="p-1.5 md:p-2 bg-amber-500 rounded-lg text-slate-900">
+                                                    <ArrowRightLeft size={18} className="md:w-5 md:h-5" />
+                                                </div>
+                                                <h3 className="text-lg md:text-xl font-bold text-amber-500">1. Approve Transfer (Load Shedding)</h3>
+                                            </div>
+                                            <div className="space-y-2 md:space-y-3 text-slate-300 text-sm md:text-base">
+                                                <p><span className="text-white font-bold">Strategy:</span> Load Shedding</p>
+                                                <p><span className="text-white font-bold">Trigger:</span> Delay exceeds 45 minutes.</p>
+                                                <div className="space-y-1 md:space-y-2">
+                                                    <p className="text-white font-bold">The Logic:</p>
+                                                    <ul className="list-disc list-inside space-y-1 ml-1 md:ml-2 text-slate-400 text-xs md:text-sm">
+                                                        <li>Identifies pending appointments that haven't been shifted yet.</li>
+                                                        <li>Prioritizes moving longer tasks first to recover the most time.</li>
+                                                        <li>Finds the "Best Capable Provider" (Online, Not Busy, Least Delayed).</li>
+                                                    </ul>
+                                                </div>
+                                                <p className="text-amber-400/80 font-bold text-xs md:text-sm mt-3 md:mt-4 italic">Goal: Bring the provider's cascading delay back below 15 minutes.</p>
+                                            </div>
+                                        </div>
+
+                                        <div className="bg-red-500/10 border border-red-500/20 rounded-xl md:rounded-2xl p-4 md:p-6">
+                                            <div className="flex items-center gap-3 mb-3 md:mb-4">
+                                                <div className="p-1.5 md:p-2 bg-red-500 rounded-lg text-white">
+                                                    <AlertTriangle size={18} className="md:w-5 md:h-5" />
+                                                </div>
+                                                <h3 className="text-lg md:text-xl font-bold text-red-500">2. Approve Clear (Emergency Clearance)</h3>
+                                            </div>
+                                            <div className="space-y-2 md:space-y-3 text-slate-300 text-sm md:text-base">
+                                                <p><span className="text-white font-bold">Strategy:</span> Path Clearing</p>
+                                                <p><span className="text-white font-bold">Trigger:</span> Priority Appointment (Surgery, VIP) is at risk.</p>
+                                                <div className="space-y-1 md:space-y-2">
+                                                    <p className="text-white font-bold">The Logic:</p>
+                                                    <ul className="list-disc list-inside space-y-1 ml-1 md:ml-2 text-slate-400 text-xs md:text-sm">
+                                                        <li>A high-priority intervention to "Clear the Path".</li>
+                                                        <li>Identifies all lower-priority appointments sitting ahead of the priority task.</li>
+                                                        <li>Moves them to other capable providers to ensure the priority task starts on time.</li>
+                                                    </ul>
+                                                </div>
+                                                <p className="text-red-400/80 font-bold text-xs md:text-sm mt-3 md:mt-4 italic">Goal: Ensure the "Critical Path" (e.g., "Surgical Prep") proceeds without delay.</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="mt-6 md:mt-10">
+                                    <button
+                                        onClick={() => setShowCrisisInfo(false)}
+                                        className="w-full py-3 md:py-4 bg-white hover:bg-slate-100 text-slate-900 font-extrabold md:font-black rounded-xl md:rounded-2xl transition-all shadow-xl active:scale-95 flex items-center justify-center gap-2 text-sm md:text-base"
+                                    >
+                                        RETURN TO WORKLOAD
+                                        <ArrowRightLeft size={18} />
+                                    </button>
+                                </div>
+                            </div>
                         </motion.div>
                     </div>
                 )}

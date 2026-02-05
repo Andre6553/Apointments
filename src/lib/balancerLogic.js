@@ -170,6 +170,7 @@ export const getSmartReassignments = async (businessId, forceAllOnline = false) 
                 newProviderName: bestFix.providerName,
                 newProviderWhatsapp: bestFix.whatsapp,
                 treatmentName: apt.treatment_name,
+                scheduledStart: apt.scheduled_start, // Key for time-shifting logic
                 scheduledTime: start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
                 delayMinutes: apt.delay_minutes,
                 required_skills: apt.required_skills || [], // Populated for telemetry
@@ -318,7 +319,7 @@ export const generateCrisisRecoveryPlan = async (businessId) => {
     const { data: activeWorkload } = await supabase
         .from('appointments')
         .select(`
-            id, scheduled_start, duration_minutes, delay_minutes, status, treatment_name, required_skills,
+            id, scheduled_start, duration_minutes, delay_minutes, status, treatment_name, required_skills, shifted_from_id,
             client:clients(id, first_name, last_name, phone),
             provider:profiles!appointments_assigned_profile_id_fkey(id, full_name, whatsapp, skills)
         `)
@@ -329,9 +330,12 @@ export const generateCrisisRecoveryPlan = async (businessId) => {
 
     if (!activeWorkload?.length) return [];
 
+    // Deduplicate activeWorkload by appointment ID to prevent double-counting
+    const uniqueWorkload = Array.from(new Map(activeWorkload.map(item => [item.id, item])).values());
+
     // Group by Provider
     const providerQueues = {}; // { providerId: [Tasks] }
-    activeWorkload.forEach(task => {
+    uniqueWorkload.forEach(task => {
         const pid = task.provider.id;
         if (!providerQueues[pid]) providerQueues[pid] = [];
         providerQueues[pid].push(task);
@@ -386,8 +390,8 @@ export const generateCrisisRecoveryPlan = async (businessId) => {
             const actions = [];
             let minutesToRecover = cascadeDelay;
 
-            // Move anyone who is NOT the VIP
-            const moveable = queue.filter(t => t.id !== criticalAppt.id && t.status === 'pending')
+            // Move anyone who is NOT the VIP and HAS NOT been recently shifted
+            const moveable = queue.filter(t => t.id !== criticalAppt.id && t.status === 'pending' && !t.shifted_from_id)
                 .sort((a, b) => b.duration_minutes - a.duration_minutes);
 
             for (const item of moveable) {
@@ -418,9 +422,8 @@ export const generateCrisisRecoveryPlan = async (businessId) => {
         // We reuse getSmartReassignments logic partially here but focused on this provider's queue
         // For simplicity in this "Clever" logic, we just tag who needs moving.
 
-        // Find "Sacrificial" or "Movable" candidates
-        // It is often best to move the Longest active blocks to clear the most time
-        const candidates = [...queue.filter(t => t.status === 'pending')].sort((a, b) => b.duration_minutes - a.duration_minutes); // Longest first
+        // Find "Sacrificial" or "Movable" candidates (Exclude already-shifted to prevent ping-ponging)
+        const candidates = [...queue.filter(t => t.status === 'pending' && !t.shifted_from_id)].sort((a, b) => b.duration_minutes - a.duration_minutes); // Longest first
 
         let minutesToRecover = cascadeDelay;
         const actions = [];

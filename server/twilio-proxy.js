@@ -4,7 +4,8 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createClient } from '@supabase/supabase-js';
-import { format, addMinutes, subMinutes } from 'date-fns';
+import { format, addMinutes, subMinutes, subDays } from 'date-fns';
+import { uploadToDrive } from './driveUtils.js';
 
 // Simple ENV loader
 const __filename = fileURLToPath(import.meta.url);
@@ -55,12 +56,16 @@ if (!fs.existsSync(LOGS_DIR)) {
 let currentLogFile = null;
 let currentLineCount = 0;
 
-const getNewLogFilename = () => {
+const getNewLogFilename = (businessId) => {
     const ts = format(new Date(), 'yyyy-MM-dd_HH-mm-ss');
-    return path.join(LOGS_DIR, `${ts}.log`);
+    return path.join(LOGS_DIR, `${businessId || 'global'}_${ts}.log`);
 };
 
-const writeToLogFile = (data) => {
+// Simple cache to avoid re-reading files for line counts every millisecond
+const lineCountCache = new Map();
+const BACKUP_THRESHOLD = 9999;
+
+const writeToLogFile = async (data) => {
     try {
         let entryObj = data;
         if (typeof data === 'string') {
@@ -71,18 +76,38 @@ const writeToLogFile = (data) => {
         businessId = businessId.toString().replace(/[^a-z0-9-]/gi, '_');
 
         const todayPrefix = format(new Date(), 'yyyy-MM-dd');
-
-        // --- LOG ROTATION LOGIC (10,000 Line Cap) ---
-        let rotationPart = 1;
         let filename = path.join(LOGS_DIR, `${businessId}_${todayPrefix}.log`);
 
-        // Find the latest active part
-        while (fs.existsSync(filename)) {
-            const content = fs.readFileSync(filename, 'utf8');
-            const lines = content.split('\n').length;
-            if (lines < 10000) break; // This file has room
-            rotationPart++;
-            filename = path.join(LOGS_DIR, `${businessId}_${todayPrefix}_part${rotationPart}.log`);
+        // Initialize or get cached line count
+        if (!lineCountCache.has(filename)) {
+            if (fs.existsSync(filename)) {
+                const content = fs.readFileSync(filename, 'utf8');
+                lineCountCache.set(filename, content.split('\n').filter(Boolean).length);
+            } else {
+                lineCountCache.set(filename, 0);
+            }
+        }
+
+        let currentLines = lineCountCache.get(filename);
+
+        // --- ROTATION & BACKUP TRIGGER ---
+        if (currentLines >= BACKUP_THRESHOLD) {
+            const finalizedPath = path.join(LOGS_DIR, `${businessId}_${todayPrefix}_${Date.now()}_FULL.log`);
+            console.log(`[Logger] ${filename} reached ${BACKUP_THRESHOLD} lines. Triggering Backup...`);
+
+            // Rename to "lock" the file from current writes
+            fs.renameSync(filename, finalizedPath);
+            lineCountCache.set(filename, 0); // Reset count for the next file of this name
+
+            // Backup and Cleanup (Async)
+            uploadToDrive(finalizedPath).then(success => {
+                if (success) {
+                    fs.unlinkSync(finalizedPath);
+                    console.log(`[Logger] Backup confirmed. Deleted ${finalizedPath}`);
+                } else {
+                    console.warn(`[Logger] Backup FAILED for ${finalizedPath}. File preserved.`);
+                }
+            });
         }
 
         if (typeof entryObj === 'object' && !entryObj.ts) {
@@ -91,6 +116,7 @@ const writeToLogFile = (data) => {
 
         const entry = (typeof entryObj === 'object' ? JSON.stringify(entryObj) : String(data)) + '\n';
         fs.appendFileSync(filename, entry);
+        lineCountCache.set(filename, currentLines + 1);
     } catch (err) {
         console.error('[Logger] Failed to write to log:', err);
     }
@@ -262,12 +288,68 @@ const checkStuckSessions = async () => {
     }
 };
 
+// --- CRON: Supabase Audit Log Rotation ---
+const checkSupabaseLogsRotation = async () => {
+    try {
+        console.log('[SupabaseLogCron] Checking audit_logs table size...');
+        const { count, error: countErr } = await supabase
+            .from('audit_logs')
+            .select('*', { count: 'exact', head: true });
+
+        if (countErr) throw countErr;
+
+        if (count >= 9999) {
+            console.log(`[SupabaseLogCron] Table has ${count} rows. Exporting to Drive...`);
+
+            // 1. Fetch ALL logs
+            const { data: allLogs, error: fetchErr } = await supabase
+                .from('audit_logs')
+                .select('*')
+                .order('ts', { ascending: true });
+
+            if (fetchErr) throw fetchErr;
+
+            // 2. Convert to JSON Lines for backup
+            const tempFileName = `supabase_audit_backup_${format(new Date(), 'yyyy-MM-dd_HH-mm-ss')}.log`;
+            const tempPath = path.join(LOGS_DIR, tempFileName);
+            const content = allLogs.map(l => JSON.stringify(l)).join('\n');
+            fs.writeFileSync(tempPath, content);
+
+            // 3. Upload to Drive
+            const success = await uploadToDrive(tempPath);
+
+            if (success) {
+                console.log('[SupabaseLogCron] Backup success. Clearing audit_logs table...');
+                // 4. Delete the logs that were backed up (delete everything before now to be safe)
+                const { error: deleteErr } = await supabase
+                    .from('audit_logs')
+                    .delete()
+                    .lte('ts', allLogs[allLogs.length - 1].ts);
+
+                if (deleteErr) {
+                    console.error('[SupabaseLogCron] Clear failed:', deleteErr);
+                } else {
+                    console.log('[SupabaseLogCron] Table cleared successfully.');
+                    fs.unlinkSync(tempPath);
+                }
+            } else {
+                console.warn('[SupabaseLogCron] Backup FAILED. DB preserved.');
+            }
+        }
+    } catch (e) {
+        console.error('[SupabaseLogCron] Error:', e);
+    }
+};
+
 // Start the Loops
 setInterval(checkReminders, 60000);
 checkReminders(); // Run once immediately on start
 
 setInterval(checkStuckSessions, 60000);
 checkStuckSessions(); // Run immediately
+
+setInterval(checkSupabaseLogsRotation, 300000); // Check DB every 5 minutes
+checkSupabaseLogsRotation();
 
 const server = http.createServer((req, res) => {
     // CORS
@@ -441,6 +523,7 @@ const server = http.createServer((req, res) => {
                             result_code: data.event?.result_code || "LEGACY_NORMALIZED"
                         },
                         actor: data.actor || { type: "unknown", name: "anonymous" },
+                        business_id: data.business_id || data.business_name || null,
                         payload: data.payload || data.data || {},
                         metrics: data.metrics || {},
                         context: {
