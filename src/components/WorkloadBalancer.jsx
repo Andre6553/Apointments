@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../lib/supabase'
-import { ArrowLeftRight, ArrowRightLeft, UserCheck, AlertTriangle, CheckCircle2, Clock, BarChart3, Loader2, Globe, User, Users, Sparkles, ChevronRight, Check, CheckCheck, Info, X } from 'lucide-react'
+import { ArrowLeftRight, ArrowRightLeft, UserCheck, AlertTriangle, CheckCircle2, Clock, BarChart3, Loader2, Globe, User, Users, Sparkles, ChevronRight, Check, CheckCheck, Info, X, Target, Zap } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { format } from 'date-fns'
 import { sendWhatsApp } from '../lib/notifications'
@@ -9,6 +9,7 @@ import { playNotificationSound } from '../utils/sound'
 import { useNavigate } from 'react-router-dom'
 import AddAppointmentModal from './AddAppointmentModal'
 import { logEvent, logAppointment } from '../lib/logger'
+import { checkActiveOverruns } from '../lib/delayEngine'
 
 const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEnabled }) => {
     const { user, profile } = useAuth()
@@ -41,16 +42,128 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
     const [selectedProvider, setSelectedProvider] = useState(null)
     const [messages, setMessages] = useState([])
     const [newMessage, setNewMessage] = useState('')
+    const [businessName, setBusinessName] = useState('Our Business')
 
-    // Effect to handle incoming external navigation to chat
-    useEffect(() => {
-        if (initialChatSender) {
-            setSelectedProvider(initialChatSender);
-            setShowOnlineModal(true);
-            // Clear the trigger in the parent component so it doesn't re-open on tab change
-            if (onChatHandled) onChatHandled();
+    const [autoPilotStatus, setAutoPilotStatus] = useState(null); // { current, total, active: boolean }
+    const [isAutoPiloting, setIsAutoPiloting] = useState(false);
+
+    const processAllCrisisActions = async () => {
+        if (isAutoPiloting) return;
+        setIsAutoPiloting(true);
+
+        // 1. Flatten all actions from all plans
+        let allActions = [];
+        crisisPlans.forEach(plan => {
+            plan.recommendedActions.forEach(action => {
+                allActions.push({ plan, action });
+            });
+        });
+
+        // 2. Sort by Priority: Deferral (Purple) > Emergency (Red) > Load Shed (Amber)
+        const getPriority = (item) => {
+            if (item.action.type === 'DEFERRAL_RECOMMENDATION') return 0;
+            if (item.action.reason?.includes('EMERGENCY')) return 1;
+            return 2;
+        };
+        allActions.sort((a, b) => getPriority(a) - getPriority(b));
+
+        setAutoPilotStatus({ current: 0, total: allActions.length, active: true });
+
+        for (let i = 0; i < allActions.length; i++) {
+            const { plan, action } = allActions[i];
+            setAutoPilotStatus(prev => ({ ...prev, current: i + 1 }));
+
+            try {
+                if (action.type === 'DEFERRAL_RECOMMENDATION') {
+                    await handleAutoPilotDeferral(plan, action);
+                } else {
+                    // Load Shed or Emergency Clear (both use handleCrisisAction logic)
+                    await handleCrisisAction(plan, action, true); // Added 'isAuto' flag
+                }
+            } catch (err) {
+                console.error(`[Auto-Pilot] Failed action ${i + 1}:`, err);
+            }
+
+            // Throttle: 3 seconds between actions
+            if (i < allActions.length - 1) {
+                await new Promise(r => setTimeout(r, 3000));
+            }
         }
-    }, [initialChatSender, onChatHandled]);
+
+        setIsAutoPiloting(false);
+        setAutoPilotStatus(null);
+        fetchData(true); // Final refresh
+    };
+
+    const handleAutoPilotDeferral = async (plan, action) => {
+        const appointmentId = action.appointment.id;
+        if (processingActions.has(appointmentId)) return;
+
+        setProcessingActions(prev => new Set(prev).add(appointmentId));
+        cooldownActionsRef.current.add(appointmentId);
+
+        try {
+            const scheduledStart = action.suggestedDateRaw || new Date().toISOString(); // Fallback to now if raw date missing
+            const appointmentData = {
+                assigned_profile_id: plan.providerId,
+                scheduled_start: scheduledStart,
+                status: 'pending'
+            };
+
+            const { error, data: savedApt } = await supabase
+                .from('appointments')
+                .update(appointmentData)
+                .eq('id', appointmentId)
+                .select('*, client:clients(*)')
+                .single();
+
+            if (error) throw error;
+
+            // Audit
+            await logAppointment(
+                { ...appointmentData, client: savedApt.client, treatment_name: action.appointment.treatment_name },
+                { full_name: plan.providerName, id: plan.providerId },
+                savedApt.client,
+                profile,
+                'UPDATE',
+                { source: 'crisis_autopilot', reason: action.reason }
+            );
+
+            // WhatsApp Notifications (Client & Provider)
+            try {
+                const client = savedApt.client;
+                const dateLabel = format(new Date(scheduledStart), 'EEEE, MMM do');
+                const timeLabel = format(new Date(scheduledStart), 'HH:mm');
+                const bizName = profile?.business_name || "the clinic";
+
+                if (client?.phone) {
+                    await sendWhatsApp(client.phone, `Hi ${client.first_name}, this is ${bizName}. Your appointment for ${action.appointment.treatment_name} has been rescheduled to ${dateLabel} at ${timeLabel} to help us manage a small delay. See you then!`);
+                }
+
+                const provider = allProviders.find(p => p.id === plan.providerId);
+                if (provider?.whatsapp) {
+                    await sendWhatsApp(provider.whatsapp, `[Auto-Pilot] Hi ${provider.full_name}, the session for ${client?.first_name} ${client?.last_name || ''} has been automatically moved to ${dateLabel} at ${timeLabel} to clear your current overload.`);
+                }
+            } catch (notiErr) {
+                console.warn('[Auto-Pilot] Notification failed', notiErr);
+            }
+
+            // UI Feedback
+            setCrisisPlans(prev => prev.map(p => ({
+                ...p,
+                recommendedActions: p.recommendedActions.filter(a => a.appointment.id !== appointmentId)
+            })).filter(p => p.recommendedActions.length > 0));
+
+        } catch (err) {
+            console.error('[Auto-Pilot] Deferral failed', err);
+        } finally {
+            setProcessingActions(prev => {
+                const next = new Set(prev);
+                next.delete(appointmentId);
+                return next;
+            });
+        }
+    };
 
     // Handle initial read and status updates when opening chat
     useEffect(() => {
@@ -194,6 +307,14 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                     recommendedActions: p.recommendedActions.filter(a => !cooldownActionsRef.current.has(a.appointment.id))
                 })).filter(p => p.recommendedActions.length > 0);
                 setCrisisPlans(filteredCrisis)
+
+                // 4. Fetch Business Name for Notifications
+                const { data: bizData } = await supabase
+                    .from('businesses')
+                    .select('name')
+                    .eq('id', profile.business_id)
+                    .single()
+                if (bizData) setBusinessName(bizData.name)
             }
         } catch (error) {
             console.error('Balancer Data Error:', error)
@@ -206,6 +327,12 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
     useEffect(() => {
         if (user && profile) {
             fetchData()
+
+            // Proactive Monitor (Check for overrunning sessions every 60s)
+            const overrunMonitor = setInterval(() => {
+                console.log('[Balancer] Heartbeat: Checking for proactive overruns...');
+                checkActiveOverruns();
+            }, 60000);
 
             // Realtime Listener for Online Status (Recalculate suggestions when someone logs in/out)
             const channel = supabase.channel('balancer-realtime')
@@ -235,7 +362,8 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                 .subscribe()
 
             return () => {
-                supabase.removeChannel(channel)
+                clearInterval(overrunMonitor);
+                supabase.removeChannel(channel);
             }
         }
     }, [user, profile, globalView, virtualAssistantEnabled])
@@ -272,7 +400,7 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
         }
     };
 
-    const shiftClient = async (aptId, newProviderId, oldProviderId, isCrisis = false) => {
+    const shiftClient = async (aptId, newProviderId, oldProviderId, isCrisis = false, fullApt = null, fullProvider = null) => {
         if (!isCrisis && !confirm('Shift this client to the new provider?')) return
 
         try {
@@ -282,7 +410,7 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
             const { error } = await supabase.rpc('reassign_appointment', {
                 appt_id: aptId,
                 new_provider_id: newProviderId,
-                note_text: 'Shifted via Workload Balancer',
+                note_text: isCrisis ? 'Shifted via Crisis Load Shed' : 'Shifted via Workload Balancer',
                 flag_attention: false // Clear attention flag on reassign
             });
 
@@ -291,12 +419,12 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
 
             if (!error) {
                 // Log high-fidelity event with Skill Match verification
-                const provider = freeProviders.find(p => p.id === newProviderId);
-                const apt = delayedApts.find(a => a.id === aptId);
+                const provider = fullProvider || freeProviders.find(p => p.id === newProviderId) || allProviders.find(p => p.id === newProviderId);
+                const apt = fullApt || delayedApts.find(a => a.id === aptId);
 
                 await logAppointment(apt || { id: aptId }, provider || { id: newProviderId }, null, profile, 'REASSIGN', {
                     previous_provider_id: oldProviderId,
-                    trigger: 'manual_balancer_shift',
+                    trigger: isCrisis ? 'crisis_load_shed' : 'manual_balancer_shift',
                     skill_match: {
                         required: apt?.required_skills || [],
                         provider_skills: provider?.skills || []
@@ -306,14 +434,39 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                 // Trigger notification
                 if (apt && provider) {
                     const clientName = `${apt.client?.first_name} ${apt.client?.last_name || ''}`.trim();
-                    const bizName = "[Your Business Name]";
-                    await sendWhatsApp(apt.client?.phone, `Hi ${clientName}, this is ${bizName}. Your session has been reassigned to ${provider.full_name} to minimize your wait time. See you soon!`);
+                    const bizName = businessName || "Our Business";
+                    const startTime = format(new Date(apt.scheduled_start), 'HH:mm');
 
-                    // Notify New Provider
-                    if (provider.whatsapp) {
-                        const startTime = format(new Date(apt.scheduled_start), 'HH:mm');
-                        await sendWhatsApp(provider.whatsapp, `[Reassignment] Hi ${provider.full_name}, ${clientName} has been shifted to your schedule at ${startTime}.`);
+                    // 1. WhatsApp to Client
+                    await sendWhatsApp(apt.client?.phone, `Hi ${clientName}, this is ${bizName}. To minimize your wait time, your session has been moved to ${provider.full_name} for ${startTime}. See you soon!`);
+
+                    // 2. WhatsApp to New Provider
+                    if (provider.phone || provider.whatsapp) {
+                        await sendWhatsApp(provider.phone || provider.whatsapp, `[Reassignment] Hi ${provider.full_name}, ${clientName} has been shifted to your schedule at ${startTime}.`);
                     }
+
+                    // 3. In-App Message to New Provider (Notify them in the app inbox)
+                    await supabase.from('temporary_messages').insert({
+                        sender_id: user.id,
+                        receiver_id: newProviderId,
+                        business_id: profile.business_id,
+                        content: `[ALERT] ${clientName} has been shifted to your schedule for ${startTime}. (Reason: Workload Balance)`,
+                        is_read: false
+                    });
+
+                    // 4. System Notification (Dashboard Bell + Alert)
+                    await supabase.from('notifications').insert({
+                        user_id: newProviderId,
+                        type: 'transfer_request',
+                        title: 'New Client Shifted',
+                        message: `[Crisis Balance] ${clientName} shifted to your schedule for ${startTime}.`,
+                        is_read: false,
+                        data: {
+                            appointment_id: apt.id,
+                            sender_id: user.id,
+                            old_provider_id: oldProviderId
+                        }
+                    });
                 }
 
                 if (!isCrisis) {
@@ -325,14 +478,12 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
             }
         } catch (error) {
             console.error(error)
-            // Revert optimistic update? For now just alert
-            alert('Simulation: Shift recorded (Offline/Error Mode)')
+            alert('Action Failed: Could not process shift.')
         }
     }
 
     const approveSuggestion = async (sug, skipRefresh = false) => {
         if (processingActions.has(sug.appointmentId)) return;
-        setProcessingActions(prev => new Set(prev).add(sug.appointmentId));
 
         try {
             const { error } = await supabase.rpc('reassign_appointment', {
@@ -635,7 +786,7 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
     }
 
     // Crisis Handler
-    const handleCrisisAction = async (plan, action) => {
+    const handleCrisisAction = async (plan, action, isAuto = false) => {
         if (processingActions.has(action.appointment.id)) return;
 
         // Add to Cooldown immediately
@@ -669,7 +820,7 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                     || capable[0];
 
                 if (!target) {
-                    alert('CRISIS FAILED: No capable provider found to take this load.');
+                    if (!isAuto) alert('CRISIS FAILED: No capable provider found to take this load.');
                     setProcessingActions(prev => {
                         const next = new Set(prev);
                         next.delete(action.appointment.id);
@@ -679,7 +830,7 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                 }
 
                 // Atomic reassignment via RPC (Handles time-shifting and delay-reset internally)
-                await shiftClient(action.appointment.id, target.id, plan.providerId, true);
+                await shiftClient(action.appointment.id, target.id, plan.providerId, true, action.appointment, target);
 
                 // Optimistic update for Crisis Plans (Global Clear)
                 setCrisisPlans(prev => prev.map(p => ({
@@ -1137,7 +1288,7 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                                     {systemHealth.status} ({systemHealth.loadPercentage}%)
                                 </span>
                             </div>
-                            <div className="w-64 h-2 bg-slate-700 rounded-full overflow-hidden">
+                            <div className="w-full max-w-[256px] h-2 bg-slate-700 rounded-full overflow-hidden border border-white/5">
                                 <motion.div
                                     initial={{ width: 0 }}
                                     animate={{ width: `${Math.min(100, systemHealth.loadPercentage)}%` }}
@@ -1172,25 +1323,40 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                             </h4>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                 {systemHealth.atRiskAppointments.map(risk => (
-                                    <div key={risk.id} className="bg-red-500/5 border border-red-500/10 p-3 rounded-xl flex justify-between items-center group hover:bg-red-500/10 transition-colors">
+                                    <div key={risk.id} className={`p-3 rounded-xl flex justify-between items-center group transition-colors border ${risk.severity === 'critical' ? 'bg-purple-500/10 border-purple-500/30 hover:bg-purple-500/20' :
+                                        risk.severity === 'warning' ? 'bg-amber-500/10 border-amber-500/30 hover:bg-amber-500/20' :
+                                            'bg-red-500/5 border-red-500/10 hover:bg-red-500/10'
+                                        }`}>
                                         <div>
-                                            <p className="font-bold text-white text-sm">{risk.client?.first_name} {risk.client?.last_name}</p>
+                                            <p className="font-bold text-white text-sm flex items-center gap-2">
+                                                {risk.client?.first_name} {risk.client?.last_name}
+                                                {risk.severity === 'critical' && <span className="bg-purple-500 text-white text-[8px] px-1.5 py-0.5 rounded font-black uppercase">Reschedule Recommended</span>}
+                                            </p>
                                             <div className="flex flex-wrap gap-1 mt-1 mb-1">
                                                 {risk.required_skills?.map((skill, si) => (
-                                                    <span key={si} className="text-[8px] font-black text-red-300 bg-red-500/10 px-1.5 py-0.5 rounded border border-red-500/20 uppercase tracking-widest">
+                                                    <span key={si} className={`text-[8px] font-black px-1.5 py-0.5 rounded border uppercase tracking-widest ${risk.severity === 'critical' ? 'text-purple-300 bg-purple-500/10 border-purple-500/20' : 'text-red-300 bg-red-500/10 border-red-500/20'}`}>
                                                         {skill}
                                                     </span>
                                                 ))}
                                             </div>
-                                            <p className="text-[10px] text-red-300">
-                                                +{risk.excessMinutes}m Overtime • {risk.providerName}
+                                            <p className={`text-[10px] font-medium ${risk.severity === 'critical' ? 'text-purple-300' : 'text-red-300'}`}>
+                                                {risk.severity === 'critical' ? 'WAIT TIME LIMIT REACHED (>120m)' : `+${risk.excessMinutes}m Overtime`} • {risk.providerName}
                                             </p>
                                         </div>
                                         <button
-                                            onClick={() => openActionModal(risk)}
-                                            className="px-3 py-1.5 bg-red-500/10 hover:bg-red-500 text-red-400 hover:text-white text-xs font-bold rounded-lg transition-all border border-red-500/20"
+                                            onClick={() => {
+                                                if (risk.severity === 'critical') {
+                                                    setSelectedAptForAction(risk)
+                                                    setShowRescheduleModal(true)
+                                                } else {
+                                                    openActionModal(risk)
+                                                }
+                                            }}
+                                            className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all border ${risk.severity === 'critical' ? 'bg-purple-500/10 hover:bg-purple-500 text-purple-400 hover:text-white border-purple-500/20' :
+                                                'bg-red-500/10 hover:bg-red-500 text-red-400 hover:text-white border-red-500/20'
+                                                }`}
                                         >
-                                            Suggest Move
+                                            {risk.recommendation || 'Suggest Move'}
                                         </button>
                                     </div>
                                 ))}
@@ -1233,6 +1399,41 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                                             <p className="text-red-200 font-medium">Critical schedule delays detected. Immediate action recommended to prevent cascade failure.</p>
                                         </div>
                                     </div>
+
+                                    {/* AUTO-PILOT BUTTON */}
+                                    <div className="flex flex-col items-end gap-3">
+                                        <button
+                                            onClick={processAllCrisisActions}
+                                            disabled={isAutoPiloting || processing}
+                                            className={`px-6 py-3 rounded-2xl font-black text-xs uppercase tracking-[0.2em] flex items-center gap-3 transition-all active:scale-95 shadow-2xl ${isAutoPiloting
+                                                ? 'bg-slate-800 text-slate-500 border border-white/5 cursor-wait'
+                                                : 'bg-white text-red-600 hover:bg-red-50 hover:text-red-700 shadow-white/10'
+                                                }`}
+                                        >
+                                            {isAutoPiloting ? (
+                                                <Loader2 size={16} className="animate-spin" />
+                                            ) : (
+                                                <Sparkles size={16} className="animate-bounce" />
+                                            )}
+                                            {isAutoPiloting ? 'Processing Queue...' : 'Auto-Resolve All'}
+                                        </button>
+
+                                        {isAutoPiloting && autoPilotStatus && (
+                                            <div className="w-full max-w-[200px] space-y-2">
+                                                <div className="flex justify-between text-[10px] font-bold text-red-200 uppercase tracking-widest">
+                                                    <span>Progress</span>
+                                                    <span>{autoPilotStatus.current} / {autoPilotStatus.total}</span>
+                                                </div>
+                                                <div className="h-1.5 w-full bg-white/10 rounded-full overflow-hidden border border-white/5">
+                                                    <motion.div
+                                                        className="h-full bg-white shadow-[0_0_15px_rgba(255,255,255,0.5)]"
+                                                        initial={{ width: 0 }}
+                                                        animate={{ width: `${(autoPilotStatus.current / autoPilotStatus.total) * 100}%` }}
+                                                    />
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
                                 </div>
 
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -1243,7 +1444,7 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                                                     <h3 className="font-bold text-xl text-white mb-1">{plan.providerName}</h3>
                                                     <div className="flex items-center gap-2">
                                                         <span className="text-xs font-black uppercase tracking-widest text-red-400 bg-red-500/10 px-2 py-1 rounded border border-red-500/20">
-                                                            {plan.delayMinutes}m Delayed
+                                                            {plan.delayMinutes > 120 ? 'CRITICAL DELAY (Exceeds 120m)' : `${plan.delayMinutes}m Delayed`}
                                                         </span>
                                                     </div>
                                                 </div>
@@ -1622,6 +1823,11 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                                                         if (req.length === 0) return true;
                                                         const pSkills = (provider.skills || []).map(s => typeof s === 'object' ? s.code : s);
                                                         return req.every(r => pSkills.includes(r));
+                                                    }).sort((a, b) => {
+                                                        // LEAST LOADED FIRST
+                                                        const loadA = systemHealth?.providerStats?.[a.id]?.loadPercent ?? 100;
+                                                        const loadB = systemHealth?.providerStats?.[b.id]?.loadPercent ?? 100;
+                                                        return loadA - loadB;
                                                     });
 
                                                     if (qualified.length === 0) {
@@ -1663,7 +1869,7 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                                                         );
                                                     }
 
-                                                    return qualified.map(provider => (
+                                                    return qualified.map((provider, qIdx) => (
                                                         <div key={provider.id} className={`
                                                             flex justify-between items-center p-4 rounded-xl transition-all border group/provider
                                                             ${provider.is_online
@@ -1686,12 +1892,26 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                                                                         {!provider.is_online ? (
                                                                             <span className="text-[8px] font-black uppercase tracking-widest text-slate-500 bg-white/5 px-1.5 py-0.5 rounded border border-white/5">Away</span>
                                                                         ) : (
-                                                                            <span className="text-[8px] font-black uppercase tracking-widest text-emerald-500 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/10 flex items-center gap-1">
-                                                                                <CheckCircle2 size={8} /> Qualified Match
+                                                                            <div className="flex items-center gap-1.5">
+                                                                                <span className="text-[8px] font-black uppercase tracking-widest text-emerald-500 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/10 flex items-center gap-1">
+                                                                                    <CheckCircle2 size={8} /> Qualified Match
+                                                                                </span>
+                                                                                {qIdx === 0 && (systemHealth?.providerStats?.[provider.id]?.loadPercent < 100) && (
+                                                                                    <span className="text-[8px] font-black uppercase tracking-widest text-purple-400 bg-purple-500/10 px-1.5 py-0.5 rounded border border-purple-500/20 shadow-[0_0_5px_rgba(168,85,247,0.3)] animate-pulse">
+                                                                                        ⭐ Top Capacity
+                                                                                    </span>
+                                                                                )}
+                                                                            </div>
+                                                                        )}
+                                                                    </div>
+                                                                    <div className="flex items-center gap-2 mt-0.5">
+                                                                        <span className="text-xs text-slate-500 font-medium">{provider.role}</span>
+                                                                        {systemHealth?.providerStats?.[provider.id] && (
+                                                                            <span className={`text-[10px] font-bold ${systemHealth.providerStats[provider.id].loadPercent > 80 ? 'text-orange-400' : 'text-slate-400'}`}>
+                                                                                • {systemHealth.providerStats[provider.id].loadPercent}% Load ({Math.round(systemHealth.providerStats[provider.id].freeMinutes)}m Free)
                                                                             </span>
                                                                         )}
                                                                     </div>
-                                                                    <span className="text-xs text-slate-500 font-medium">{provider.role}</span>
                                                                 </div>
                                                             </div>
                                                             <button
@@ -1704,8 +1924,8 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                                                                         : 'bg-slate-800 text-slate-600 cursor-not-allowed'}
                                                                 `}
                                                             >
-                                                                <ArrowLeftRight size={14} />
-                                                                {provider.is_online ? 'Assign' : 'Offline'}
+                                                                {qIdx === 0 && (systemHealth?.providerStats?.[provider.id]?.loadPercent < 100) ? <Zap size={14} /> : <ArrowLeftRight size={14} />}
+                                                                {qIdx === 0 && (systemHealth?.providerStats?.[provider.id]?.loadPercent < 100) ? 'Fill Capacity' : (provider.is_online ? 'Assign' : 'Offline')}
                                                             </button>
                                                         </div>
                                                     ));
@@ -2014,48 +2234,64 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                                         The Crisis Mode Engine monitors the facility for critical schedule delays and automatically generates recovery plans using two primary strategies.
                                     </p>
 
-                                    <div className="space-y-4 md:space-y-6">
-                                        <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl md:rounded-2xl p-4 md:p-6">
+                                    <div className="space-y-4 md:space-y-6 pb-4">
+                                        {/* Strategy 1: Load Shedding */}
+                                        <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl md:rounded-2xl p-4 md:p-6 shadow-lg shadow-amber-500/5">
                                             <div className="flex items-center gap-3 mb-3 md:mb-4">
-                                                <div className="p-1.5 md:p-2 bg-amber-500 rounded-lg text-slate-900">
+                                                <div className="p-1.5 md:p-2 bg-amber-500 rounded-lg text-slate-900 shadow-lg shadow-amber-500/20">
                                                     <ArrowRightLeft size={18} className="md:w-5 md:h-5" />
                                                 </div>
-                                                <h3 className="text-lg md:text-xl font-bold text-amber-500">1. Approve Transfer (Load Shedding)</h3>
+                                                <h3 className="text-lg md:text-xl font-bold text-amber-500 uppercase tracking-tight">1. Load Shedding (Transfer)</h3>
                                             </div>
-                                            <div className="space-y-2 md:space-y-3 text-slate-300 text-sm md:text-base">
-                                                <p><span className="text-white font-bold">Strategy:</span> Load Shedding</p>
-                                                <p><span className="text-white font-bold">Trigger:</span> Delay exceeds 45 minutes.</p>
-                                                <div className="space-y-1 md:space-y-2">
-                                                    <p className="text-white font-bold">The Logic:</p>
-                                                    <ul className="list-disc list-inside space-y-1 ml-1 md:ml-2 text-slate-400 text-xs md:text-sm">
-                                                        <li>Identifies pending appointments that haven't been shifted yet.</li>
-                                                        <li>Prioritizes moving longer tasks first to recover the most time.</li>
-                                                        <li>Finds the "Best Capable Provider" (Online, Not Busy, Least Delayed).</li>
+                                            <div className="space-y-2 md:space-y-4 text-slate-300 text-sm md:text-base">
+                                                <p><span className="text-white font-bold opacity-70">Strategy:</span> "Move the work to someone else."</p>
+                                                <p><span className="text-white font-bold opacity-70">When it happens:</span> When a provider is running late (usually {'>'} 45 mins), but there are other qualified doctors online with open gaps in their schedule.</p>
+                                                <div className="bg-white/5 rounded-xl p-3 md:p-4 border border-white/5">
+                                                    <p className="text-white font-black text-[10px] uppercase tracking-widest mb-2 text-amber-500/80">The Logic:</p>
+                                                    <ul className="list-disc list-inside space-y-1 text-slate-400 text-xs md:text-sm font-medium">
+                                                        <li>Reassigns to the <span className="text-white">Best Capable Provider</span> (Online, Not Busy, Least Delayed).</li>
+                                                        <li>Prioritizes moving <span className="text-white">longer tasks first</span> to recover the most time for the queue.</li>
                                                     </ul>
                                                 </div>
-                                                <p className="text-amber-400/80 font-bold text-xs md:text-sm mt-3 md:mt-4 italic">Goal: Bring the provider's cascading delay back below 15 minutes.</p>
+                                                <p className="text-amber-400/80 font-bold text-xs md:text-sm mt-3 md:mt-4 italic border-l-2 border-amber-500/30 pl-3">Goal: Balance the team's workload so that one person isn't drowned while others are sitting free.</p>
                                             </div>
                                         </div>
 
-                                        <div className="bg-red-500/10 border border-red-500/20 rounded-xl md:rounded-2xl p-4 md:p-6">
+                                        {/* Strategy 2: Emergency Clearance */}
+                                        <div className="bg-indigo-500/10 border border-indigo-500/20 rounded-xl md:rounded-2xl p-4 md:p-6 shadow-lg shadow-indigo-500/5">
                                             <div className="flex items-center gap-3 mb-3 md:mb-4">
-                                                <div className="p-1.5 md:p-2 bg-red-500 rounded-lg text-white">
-                                                    <AlertTriangle size={18} className="md:w-5 md:h-5" />
+                                                <div className="p-1.5 md:p-2 bg-indigo-500 rounded-lg text-white shadow-lg shadow-indigo-500/20">
+                                                    <Target size={18} className="md:w-5 md:h-5" />
                                                 </div>
-                                                <h3 className="text-lg md:text-xl font-bold text-red-500">2. Approve Clear (Emergency Clearance)</h3>
+                                                <h3 className="text-lg md:text-xl font-bold text-indigo-400 uppercase tracking-tight">2. Emergency Clearance (Path Clearing)</h3>
                                             </div>
-                                            <div className="space-y-2 md:space-y-3 text-slate-300 text-sm md:text-base">
-                                                <p><span className="text-white font-bold">Strategy:</span> Path Clearing</p>
-                                                <p><span className="text-white font-bold">Trigger:</span> Priority Appointment (Surgery, VIP) is at risk.</p>
-                                                <div className="space-y-1 md:space-y-2">
-                                                    <p className="text-white font-bold">The Logic:</p>
-                                                    <ul className="list-disc list-inside space-y-1 ml-1 md:ml-2 text-slate-400 text-xs md:text-sm">
-                                                        <li>A high-priority intervention to "Clear the Path".</li>
-                                                        <li>Identifies all lower-priority appointments sitting ahead of the priority task.</li>
-                                                        <li>Moves them to other capable providers to ensure the priority task starts on time.</li>
+                                            <div className="space-y-2 md:space-y-4 text-slate-300 text-sm md:text-base">
+                                                <p><span className="text-white font-bold opacity-70">Strategy:</span> "Clear the Path for Priority Care."</p>
+                                                <p><span className="text-white font-bold opacity-70">When it happens:</span> When a high-priority session (Surgery, VIP, Critical) is at risk of delay due to general cluster workload.</p>
+                                                <div className="bg-white/5 rounded-xl p-3 md:p-4 border border-white/5">
+                                                    <p className="text-white font-black text-[10px] uppercase tracking-widest mb-2 text-indigo-400/80">The Logic:</p>
+                                                    <ul className="list-disc list-inside space-y-1 text-slate-400 text-xs md:text-sm font-medium">
+                                                        <li>Identifies all <span className="text-white">lower-priority tasks</span> sitting ahead of the priority session.</li>
+                                                        <li>Agresively moves them to other providers to ensure the priority task starts on time.</li>
                                                     </ul>
                                                 </div>
-                                                <p className="text-red-400/80 font-bold text-xs md:text-sm mt-3 md:mt-4 italic">Goal: Ensure the "Critical Path" (e.g., "Surgical Prep") proceeds without delay.</p>
+                                                <p className="text-indigo-400/80 font-bold text-xs md:text-sm mt-3 md:mt-4 italic border-l-2 border-indigo-500/30 pl-3">Goal: Ensure the "Critical Path" (e.g., Surgical Prep) proceeds without even 1 minute of delay.</p>
+                                            </div>
+                                        </div>
+
+                                        {/* Strategy 3: Deferral */}
+                                        <div className="bg-red-500/10 border border-red-500/20 rounded-xl md:rounded-2xl p-4 md:p-6 shadow-lg shadow-red-500/5">
+                                            <div className="flex items-center gap-3 mb-3 md:mb-4">
+                                                <div className="p-1.5 md:p-2 bg-red-500 rounded-lg text-white shadow-lg shadow-red-500/20">
+                                                    <AlertTriangle size={18} className="md:w-5 md:h-5" />
+                                                </div>
+                                                <h3 className="text-lg md:text-xl font-bold text-red-500 uppercase tracking-tight">3. Deferral (Postpone)</h3>
+                                            </div>
+                                            <div className="space-y-2 md:space-y-4 text-slate-300 text-sm md:text-base">
+                                                <p><span className="text-white font-bold opacity-70">Strategy:</span> "Push the work to a different day."</p>
+                                                <p><span className="text-white font-bold opacity-70">When it happens:</span> The "Emergency Brake." Triggers when a provider is severely behind and <span className="text-white">nobody else on the team</span> has the capacity or skills to take over today.</p>
+                                                <p><span className="text-white font-bold opacity-70">The Action:</span> Suggests rescheduling the client (usually the last in the queue) to a future date or the next available opening.</p>
+                                                <p className="text-red-400/80 font-bold text-xs md:text-sm mt-3 md:mt-4 italic border-l-2 border-red-500/30 pl-3">Goal: Prevent a "death spiral" and ensure the rest of today's clients actually get seen.</p>
                                             </div>
                                         </div>
                                     </div>

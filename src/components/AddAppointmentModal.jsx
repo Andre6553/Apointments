@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 import { X, Calendar, Clock, User, MessageCircle, ArrowRight, Loader2, Timer, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -34,6 +34,27 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
     const [targetProviderId, setTargetProviderId] = useState(null);
     const [targetProviderSkills, setTargetProviderSkills] = useState([]);
     const isAdmin = profile?.role?.toLowerCase() === 'admin' || profile?.role?.toLowerCase() === 'manager' || profile?.role?.toLowerCase() === 'owner';
+    const [providerAvailability, setProviderAvailability] = useState({});
+    const [calculatingAvailability, setCalculatingAvailability] = useState(false);
+
+    const qualifiedProviders = useMemo(() => {
+        const req = formData.requiredSkills || [];
+        if (req.length === 0) return providers;
+
+        return providers.filter(p => {
+            const pSkillsRaw = Array.isArray(p.skills) ? p.skills : [];
+            const pCodes = pSkillsRaw.map(s => (typeof s === 'object' ? s.code : s).toUpperCase());
+            return req.every(r => pCodes.includes(r.toUpperCase()));
+        });
+    }, [providers, formData.requiredSkills]);
+
+    const sortedQualifiedProviders = useMemo(() => {
+        return [...qualifiedProviders].sort((a, b) => {
+            const timeA = providerAvailability[a.id] || '23:59';
+            const timeB = providerAvailability[b.id] || '23:59';
+            return timeA.localeCompare(timeB);
+        });
+    }, [qualifiedProviders, providerAvailability]);
 
     useEffect(() => {
         if (isOpen) {
@@ -43,14 +64,15 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
             if (editData) {
                 setTargetProviderId(editData.assigned_profile_id);
                 setFormData({
-                    clientId: editData.client_id || editData.clientId,
+                    clientId: editData.client_id || editData.clientId || editData.client?.id,
                     date: format(new Date(editData.scheduled_start), 'yyyy-MM-dd'),
                     time: format(new Date(editData.scheduled_start), 'HH:mm'),
                     duration: editData.duration_minutes,
                     notes: editData.notes || '',
-                    treatmentId: '', // snapshots stored in flat fields for edits
+                    treatmentId: editData.treatment_id || '',
                     treatmentName: editData.treatment_name || '',
-                    cost: editData.cost || 0
+                    cost: editData.cost || 0,
+                    requiredSkills: editData.required_skills || []
                 });
             } else {
                 setTargetProviderId(user?.id);
@@ -77,7 +99,7 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
     const fetchProviders = async () => {
         const { data } = await supabase
             .from('profiles')
-            .select('id, full_name, whatsapp')
+            .select('id, full_name, whatsapp, skills, is_online')
             .eq('business_id', profile.business_id)
             .eq('role', 'Provider');
         if (data) setProviders(data);
@@ -90,6 +112,115 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
             fetchTreatments(); // Fetch provider-specific treatments with their pricing
         }
     }, [isOpen, targetProviderId, formData.date, profile?.business_id]);
+
+    useEffect(() => {
+        if (isOpen && qualifiedProviders.length > 0 && formData.date && formData.duration) {
+            calculateProvidersAvailability();
+        }
+    }, [isOpen, qualifiedProviders, formData.date, formData.duration]);
+
+    const calculateProvidersAvailability = async () => {
+        setCalculatingAvailability(true);
+        try {
+            const pIds = qualifiedProviders.map(p => p.id);
+            const [y, m, d] = formData.date.split('-').map(Number);
+            const dayOfWeek = new Date(y, m - 1, d).getDay();
+
+            // Bulk fetch for all qualified providers
+            const [hoursRes, breaksRes, aptsRes] = await Promise.all([
+                supabase.from('working_hours').select('*').in('profile_id', pIds).eq('day_of_week', dayOfWeek).eq('is_active', true),
+                supabase.from('breaks').select('*').in('profile_id', pIds).eq('day_of_week', dayOfWeek),
+                supabase.from('appointments')
+                    .select('assigned_profile_id, scheduled_start, duration_minutes')
+                    .in('assigned_profile_id', pIds)
+                    .in('status', ['pending', 'active', 'completed'])
+                    .gte('scheduled_start', `${formData.date}T00:00:00`)
+                    .lte('scheduled_start', `${formData.date}T23:59:59`)
+            ]);
+
+            const availMap = {};
+            const duration = parseInt(formData.duration) || 30;
+
+            for (const provider of qualifiedProviders) {
+                const hours = (hoursRes.data || []).find(h => h.profile_id === provider.id);
+                if (!hours) {
+                    availMap[provider.id] = 'Closed';
+                    continue;
+                }
+
+                const breaks = (breaksRes.data || []).filter(b => b.profile_id === provider.id);
+                const dayApts = (aptsRes.data || []).filter(apt => apt.assigned_profile_id === provider.id);
+
+                const [hS, mS] = hours.start_time.split(':').map(Number);
+                const [hE, mE] = hours.end_time.split(':').map(Number);
+                let candidate = new Date(y, m - 1, d, hS, mS);
+                const limit = new Date(y, m - 1, d, hE, mE);
+                const now = new Date();
+
+                if (isSameDay(candidate, now)) {
+                    const bufferedNow = new Date(now.getTime() + 15 * 60000);
+                    if (bufferedNow > candidate) candidate = new Date(Math.ceil(bufferedNow.getTime() / (15 * 60000)) * (15 * 60000));
+                }
+
+                let soonest = 'None';
+                while (candidate.getTime() + duration * 60000 <= limit.getTime()) {
+                    const cStart = candidate;
+                    const cEnd = new Date(cStart.getTime() + duration * 60000);
+
+                    const overlapBreak = breaks.find(brk => {
+                        const [bh, bm] = brk.start_time.split(':').map(Number);
+                        const bS = new Date(y, m - 1, d, bh, bm);
+                        const bE = new Date(bS.getTime() + brk.duration_minutes * 60000);
+                        return cStart < bE && cEnd > bS;
+                    });
+                    if (overlapBreak) {
+                        const [bh, bm] = overlapBreak.start_time.split(':').map(Number);
+                        const bE = new Date(new Date(y, m - 1, d, bh, bm).getTime() + overlapBreak.duration_minutes * 60000);
+                        candidate = new Date(Math.ceil(bE.getTime() / (5 * 60000)) * (5 * 60000));
+                        continue;
+                    }
+
+                    const overlapApt = dayApts.find(apt => {
+                        const aS = new Date(apt.scheduled_start);
+                        const aE = new Date(aS.getTime() + apt.duration_minutes * 60000);
+                        return cStart < aE && cEnd > aS;
+                    });
+                    if (overlapApt) {
+                        const aE = new Date(new Date(overlapApt.scheduled_start).getTime() + overlapApt.duration_minutes * 60000);
+                        candidate = new Date(Math.ceil(aE.getTime() / (5 * 60000)) * (5 * 60000));
+                        continue;
+                    }
+
+                    soonest = format(cStart, 'HH:mm');
+                    break;
+                }
+                availMap[provider.id] = soonest;
+            }
+            setProviderAvailability(availMap);
+        } catch (err) {
+            console.error('Availability Calculation Error:', err);
+        } finally {
+            setCalculatingAvailability(false);
+        }
+    };
+
+    useEffect(() => {
+        // Auto-select best provider if current one is unqualified or not set
+        if (isOpen && sortedQualifiedProviders.length > 0 && !calculatingAvailability) {
+            const isQualified = sortedQualifiedProviders.some(p => p.id === targetProviderId);
+            if (!targetProviderId || !isQualified) {
+                // The first one in sorted list should be the best (soonest)
+                const best = sortedQualifiedProviders.find(p => {
+                    const avail = providerAvailability[p.id];
+                    return avail && avail !== 'Closed' && avail !== 'None';
+                }) || sortedQualifiedProviders[0];
+
+                if (best && best.id !== targetProviderId) {
+                    setTargetProviderId(best.id);
+                }
+            }
+        }
+    }, [isOpen, sortedQualifiedProviders, calculatingAvailability, targetProviderId]);
 
     const fetchTargetProviderSkills = async () => {
         if (!targetProviderId) return;
@@ -547,7 +678,16 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
                     return acc;
                 }, []);
 
-                setTreatments(uniqueByName.sort((a, b) => (a.display_name || a.name).localeCompare(b.display_name || b.name)));
+                const finalTreatments = uniqueByName.sort((a, b) => (a.display_name || a.name).localeCompare(b.display_name || b.name));
+                setTreatments(finalTreatments);
+
+                // Auto-select match if we have a name but no ID (standard for Deferrals/Edits)
+                if (editData && !formData.treatmentId && editData.treatment_name) {
+                    const match = finalTreatments.find(t => t.name.toLowerCase() === editData.treatment_name.toLowerCase());
+                    if (match) {
+                        setFormData(prev => ({ ...prev, treatmentId: match.id, requiredSkills: match.required_skills || [] }));
+                    }
+                }
             }
         } catch (err) {
             console.error('Error fetching treatments:', err);
@@ -761,9 +901,11 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
                                     <Calendar className="text-primary" size={20} />
                                 </div>
                                 <div>
-                                    <h3 className="text-lg font-bold text-white">{editData ? 'Adjust Booking' : 'New Booking'}</h3>
+                                    <h3 className="text-lg font-bold text-white">
+                                        {editData ? `Adjusting: ${editData.client?.first_name || ''} ${editData.client?.last_name || ''}` : 'New Booking'}
+                                    </h3>
                                     <p className="text-slate-500 text-[10px] uppercase tracking-widest font-bold">
-                                        {editData ? 'Update Schedule' : 'Appointment Scheduling'}
+                                        {editData ? (editData.treatment_name || 'Update Schedule') : 'Appointment Scheduling'}
                                     </p>
                                 </div>
                             </div>
@@ -799,11 +941,18 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
                                             value={formData.clientId}
                                             onChange={e => setFormData({ ...formData, clientId: e.target.value })}
                                             required
+                                            disabled={fetchingClients}
                                         >
-                                            <option value="" className="bg-slate-900">Choose from directory...</option>
-                                            {clients.map(c => (
-                                                <option key={c.id} value={c.id} className="bg-slate-900">{c.first_name} {c.last_name}</option>
-                                            ))}
+                                            {fetchingClients ? (
+                                                <option value="" className="bg-slate-900">Loading clients...</option>
+                                            ) : (
+                                                <>
+                                                    <option value="" className="bg-slate-900">Choose from directory...</option>
+                                                    {clients.map(c => (
+                                                        <option key={c.id} value={c.id} className="bg-slate-900">{c.first_name} {c.last_name}</option>
+                                                    ))}
+                                                </>
+                                            )}
                                         </select>
                                         {fetchingClients && <Loader2 className="absolute right-10 top-1/2 -translate-y-1/2 animate-spin text-primary" size={16} />}
                                     </div>
@@ -820,11 +969,26 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
                                                 onChange={e => setTargetProviderId(e.target.value)}
                                                 required
                                             >
-                                                <option value="" className="bg-slate-900">Select provider...</option>
-                                                {providers.map(p => (
-                                                    <option key={p.id} value={p.id} className="bg-slate-900">{p.full_name} {p.id === user?.id ? '(Me)' : ''}</option>
-                                                ))}
+                                                <option value="" className="bg-slate-900">
+                                                    {calculatingAvailability ? 'Analyzing availability...' : 'Select provider...'}
+                                                </option>
+                                                {sortedQualifiedProviders.length === 0 && !calculatingAvailability && formData.requiredSkills?.length > 0 && (
+                                                    <option value="" disabled className="bg-slate-900 text-red-400 italic">
+                                                        ⚠ No providers match required skills
+                                                    </option>
+                                                )}
+                                                {sortedQualifiedProviders.map(p => {
+                                                    const avail = providerAvailability[p.id];
+                                                    const isAvailable = avail && avail !== 'Closed' && avail !== 'None';
+                                                    return (
+                                                        <option key={p.id} value={p.id} className="bg-slate-900">
+                                                            {p.full_name} {p.id === user?.id ? '(Me)' : ''}
+                                                            {avail ? ` — ${isAvailable ? `Soonest: ${avail}` : avail}` : ''}
+                                                        </option>
+                                                    );
+                                                })}
                                             </select>
+                                            {calculatingAvailability && <Loader2 className="absolute right-10 top-1/2 -translate-y-1/2 animate-spin text-primary" size={16} />}
                                         </div>
                                     </div>
                                 )}
@@ -879,11 +1043,18 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
                                             className="glass-input w-full pl-12 h-14"
                                             value={formData.treatmentId}
                                             onChange={e => handleTreatmentChange(e.target.value)}
+                                            disabled={fetchingTreatments}
                                         >
-                                            <option value="" className="bg-slate-900">Custom / Select Service...</option>
-                                            {treatments.map(t => (
-                                                <option key={t.id} value={t.id} className="bg-slate-900">{t.name} ({t.duration_minutes}m)</option>
-                                            ))}
+                                            {fetchingTreatments ? (
+                                                <option value="" className="bg-slate-900">Loading services...</option>
+                                            ) : (
+                                                <>
+                                                    <option value="" className="bg-slate-900">Custom / Select Service...</option>
+                                                    {treatments.map(t => (
+                                                        <option key={t.id} value={t.id} className="bg-slate-900">{t.name} ({t.duration_minutes}m)</option>
+                                                    ))}
+                                                </>
+                                            )}
                                         </select>
                                         {fetchingTreatments && <Loader2 className="absolute right-10 top-1/2 -translate-y-1/2 animate-spin text-primary" size={16} />}
                                     </div>

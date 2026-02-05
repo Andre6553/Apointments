@@ -736,7 +736,7 @@ const Dashboard = () => {
                 {/* Top fade for scrolling aesthetics */}
                 <div className="fixed top-0 left-0 right-0 h-12 bg-gradient-to-b from-background to-transparent z-10 pointer-events-none md:left-80" />
 
-                <div className="max-w-[1600px] mx-auto p-6 md:p-10 lg:p-14 pb-24">
+                <div className="max-w-[1600px] mx-auto p-4 md:p-10 lg:p-14 pb-24">
                     <AnimatePresence mode="wait">
                         <motion.div
                             key={activeTab}
@@ -745,10 +745,10 @@ const Dashboard = () => {
                             exit={{ opacity: 0, y: -15 }}
                             transition={{ duration: 0.3, ease: "easeOut" }}
                         >
-                            <div className="mb-10 flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-                                <div>
-                                    <h1 className="text-4xl font-heading font-bold text-white tracking-tight mb-2 flex items-center gap-4">
-                                        {activeTabData?.label}
+                            <div className="mb-10 flex flex-col sm:flex-row sm:items-end justify-between gap-6">
+                                <div className="min-w-0">
+                                    <h1 className="text-3xl sm:text-4xl font-heading font-bold text-white tracking-tight mb-2 flex flex-wrap items-center gap-3 sm:gap-4">
+                                        <span className="truncate">{activeTabData?.label}</span>
                                         {activeTab === 'appointments' && alertCount > 0 && (
                                             <motion.div
                                                 initial={{ scale: 0.8, opacity: 0 }}
@@ -761,12 +761,12 @@ const Dashboard = () => {
                                                     repeat: Infinity,
                                                     ease: "easeInOut"
                                                 }}
-                                                className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-red-500/20 border border-red-500/30 text-red-500 cursor-pointer"
+                                                className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-red-500/20 border border-red-500/30 text-red-500 cursor-pointer shrink-0"
                                                 onClick={() => setActiveTab('balancer')}
                                                 title={`${alertCount} Delayed Appointments`}
                                             >
-                                                <AlertTriangle size={20} className="stroke-[3]" />
-                                                <span className="text-xs font-black uppercase tracking-tighter hidden sm:inline">{alertCount} Alerts</span>
+                                                <AlertTriangle size={18} className="stroke-[3]" />
+                                                <span className="text-[10px] font-black uppercase tracking-tighter">{alertCount} Alerts</span>
                                             </motion.div>
                                         )}
 

@@ -256,30 +256,31 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
 
     return (
         <div className="space-y-8">
-            <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-6">
-                <div className="flex items-center gap-4 w-full md:w-auto">
-                    <div className="flex items-center gap-4 bg-surface/50 p-1.5 rounded-2xl border border-white/5 shadow-inner">
-                        <button onClick={() => navigateDay(-1)} className="p-3 hover:bg-white/10 rounded-xl text-slate-400 hover:text-white transition-all active:scale-90"><ArrowRight size={20} className="rotate-180" /></button>
-                        <div className="flex flex-col items-center flex-1 px-4 cursor-pointer" onClick={setToday}>
-                            <span className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-0.5">Current View</span>
-                            <div className="flex items-center gap-2 font-heading font-bold text-white whitespace-nowrap">
-                                <CalendarIcon size={16} className="text-primary" />
-                                {isSameDay(viewDate, new Date()) ? "Today's Schedule" : format(viewDate, 'EEEE, MMM d')}
+            <div className="flex flex-col xl:flex-row justify-between items-stretch xl:items-center gap-6">
+                <div className="flex flex-col sm:flex-row items-center gap-4 w-full xl:w-auto">
+                    <div className="flex items-center gap-2 sm:gap-4 bg-surface/50 p-1.5 rounded-2xl border border-white/5 shadow-inner w-full sm:w-auto justify-between sm:justify-start">
+                        <button onClick={() => navigateDay(-1)} className="p-3 hover:bg-white/10 rounded-xl text-slate-400 hover:text-white transition-all active:scale-90 shrink-0"><ArrowRight size={20} className="rotate-180" /></button>
+                        <div className="flex flex-col items-center flex-1 sm:flex-none sm:px-4 cursor-pointer min-w-0" onClick={setToday}>
+                            <span className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-0.5 whitespace-nowrap">Current View</span>
+                            <div className="flex items-center gap-2 font-heading font-bold text-white whitespace-nowrap overflow-hidden">
+                                <CalendarIcon size={16} className="text-primary shrink-0" />
+                                <span className="truncate">{isSameDay(viewDate, new Date()) ? "Today's Schedule" : format(viewDate, 'EEEE, MMM d')}</span>
                             </div>
                         </div>
-                        <button onClick={() => navigateDay(1)} className="p-3 hover:bg-white/10 rounded-xl text-slate-400 hover:text-white transition-all active:scale-90"><ArrowRight size={20} /></button>
+                        <button onClick={() => navigateDay(1)} className="p-3 hover:bg-white/10 rounded-xl text-slate-400 hover:text-white transition-all active:scale-90 shrink-0"><ArrowRight size={20} /></button>
                     </div>
 
                     <button
                         onClick={() => dateInputRef.current?.showPicker()}
-                        className="p-3 bg-surface/50 hover:bg-white/10 rounded-2xl text-primary transition-all active:scale-90 border border-white/5 shadow-inner group relative"
+                        className="p-3 bg-surface/50 hover:bg-white/10 rounded-2xl text-primary transition-all active:scale-90 border border-white/5 shadow-inner group relative w-full sm:w-auto flex items-center justify-center"
                         title="Select Date"
                     >
                         <CalendarIcon size={24} className="group-hover:scale-110 transition-transform" />
+                        <span className="sm:hidden ml-2 font-bold text-sm">Select Date</span>
                         <input
                             type="date"
                             ref={dateInputRef}
-                            className="absolute inset-0 opacity-0 cursor-pointer w-0 h-0"
+                            className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
                             onChange={(e) => {
                                 if (e.target.value) {
                                     const [y, m, d] = e.target.value.split('-').map(Number);

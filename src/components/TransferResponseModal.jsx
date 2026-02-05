@@ -17,7 +17,7 @@ const TransferResponseModal = ({ isOpen, onClose, notification, onComplete }) =>
     const [conflict, setConflict] = useState(null) // { originalTime, nextTime }
 
     useEffect(() => {
-        if (isOpen && notification?.data?.transfer_request_id) {
+        if (isOpen && (notification?.data?.transfer_request_id || notification?.data?.appointment_id)) {
             fetchDetails()
         }
     }, [isOpen, notification])
@@ -25,25 +25,33 @@ const TransferResponseModal = ({ isOpen, onClose, notification, onComplete }) =>
     const fetchDetails = async () => {
         setLoading(true)
         try {
-            // 1. Fetch Transfer Request
-            const { data: req, error: reqError } = await supabase
-                .from('transfer_requests')
-                .select('*, sender:profiles!transfer_requests_sender_id_fkey(full_name, email)')
-                .eq('id', notification.data.transfer_request_id)
-                .single()
+            let aptId = notification.data.appointment_id;
 
-            if (reqError) throw reqError
-            setRequest(req)
+            // 1. Fetch Transfer Request (if any)
+            if (notification.data.transfer_request_id) {
+                const { data: req, error: reqError } = await supabase
+                    .from('transfer_requests')
+                    .select('*, sender:profiles!transfer_requests_sender_id_fkey(full_name, email)')
+                    .eq('id', notification.data.transfer_request_id)
+                    .maybeSingle()
+
+                if (req) {
+                    setRequest(req)
+                    if (!aptId) aptId = req.appointment_id;
+                }
+            }
 
             // 2. Fetch Appointment Details
-            const { data: apt, error: aptError } = await supabase
-                .from('appointments')
-                .select('*, client:clients(first_name, last_name, phone)')
-                .eq('id', req.appointment_id)
-                .single()
+            if (aptId) {
+                const { data: apt, error: aptError } = await supabase
+                    .from('appointments')
+                    .select('*, client:clients(first_name, last_name, phone)')
+                    .eq('id', aptId)
+                    .single()
 
-            if (aptError) throw aptError
-            setAppointment(apt)
+                if (aptError) throw aptError
+                setAppointment(apt)
+            }
         } catch (error) {
             console.error('Error fetching transfer details:', error)
         } finally {
@@ -222,7 +230,7 @@ const TransferResponseModal = ({ isOpen, onClose, notification, onComplete }) =>
                                     <Loader2 className="w-10 h-10 animate-spin mb-4 text-primary" />
                                     <span className="text-xs font-bold uppercase tracking-widest">Loading details...</span>
                                 </div>
-                            ) : !request || !appointment ? (
+                            ) : !appointment ? (
                                 <div className="p-12 text-center">
                                     <AlertCircle className="mx-auto text-rose-500 mb-4" size={48} />
                                     <p className="text-white font-bold">Transfer request no longer available.</p>
@@ -232,12 +240,18 @@ const TransferResponseModal = ({ isOpen, onClose, notification, onComplete }) =>
                                     {/* Request Message */}
                                     <div className="flex items-start gap-4 p-4 rounded-2xl bg-primary/5 border border-primary/10">
                                         <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center text-primary font-bold shrink-0">
-                                            {request.sender?.full_name?.charAt(0) || '?'}
+                                            {request ? (request.sender?.full_name?.charAt(0) || '?') : 'A'}
                                         </div>
                                         <div>
-                                            <p className="text-sm text-slate-300">
-                                                <span className="text-white font-bold">{request.sender?.full_name || request.sender?.email}</span> wants to transfer a client to you.
-                                            </p>
+                                            {request ? (
+                                                <p className="text-sm text-slate-300">
+                                                    <span className="text-white font-bold">{request.sender?.full_name || request.sender?.email}</span> wants to transfer a client to you.
+                                                </p>
+                                            ) : (
+                                                <p className="text-sm text-slate-300">
+                                                    <span className="text-white font-bold">Admin/System</span> has assigned a client to your schedule via Workload Balancing.
+                                                </p>
+                                            )}
                                         </div>
                                     </div>
 
@@ -295,20 +309,22 @@ const TransferResponseModal = ({ isOpen, onClose, notification, onComplete }) =>
 
                         {/* Footer */}
                         <div className="p-6 bg-white/[0.02] border-t border-white/5 flex gap-3">
+                            {request && (
+                                <button
+                                    onClick={handleReject}
+                                    disabled={submitting || !request || !appointment}
+                                    className="flex-1 px-6 py-4 rounded-xl bg-surface hover:bg-rose-500/10 text-slate-400 hover:text-rose-400 border border-white/5 hover:border-rose-500/20 transition-all font-bold text-sm"
+                                >
+                                    Decline
+                                </button>
+                            )}
                             <button
-                                onClick={handleReject}
-                                disabled={submitting || !request || !appointment}
-                                className="flex-1 px-6 py-4 rounded-xl bg-surface hover:bg-rose-500/10 text-slate-400 hover:text-rose-400 border border-white/5 hover:border-rose-500/20 transition-all font-bold text-sm"
-                            >
-                                Decline
-                            </button>
-                            <button
-                                onClick={() => handleAccept()}
-                                disabled={submitting || !request || !appointment || request.status !== 'pending'}
-                                className="flex-[2] px-6 py-4 rounded-xl bg-primary hover:bg-indigo-600 text-white font-bold text-sm transition-all flex items-center justify-center gap-2 shadow-lg shadow-primary/20 active:scale-[0.98]"
+                                onClick={() => request ? handleAccept() : onClose()}
+                                disabled={submitting || !appointment || (request && request.status !== 'pending')}
+                                className={`${request ? 'flex-[2]' : 'flex-1'} px-6 py-4 rounded-xl bg-primary hover:bg-indigo-600 text-white font-bold text-sm transition-all flex items-center justify-center gap-2 shadow-lg shadow-primary/20 active:scale-[0.98]`}
                             >
                                 {submitting ? <Loader2 size={18} className="animate-spin" /> : <Check size={18} />}
-                                {submitting ? 'Processing...' : 'Accept Transfer'}
+                                {submitting ? 'Processing...' : (request ? 'Accept Transfer' : 'Acknowledge Receipt')}
                             </button>
                         </div>
 

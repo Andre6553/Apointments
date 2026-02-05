@@ -89,6 +89,46 @@ export const getSmartReassignments = async (businessId, forceAllOnline = false) 
         treatmentSkillsMap[t.name] = t.required_skills || [];
     });
 
+    // 3e. Calculate Provider "Load Stats" for Balanced Distribution
+    const nowTime = new Date();
+    const providerLoadStats = onlineProviders.map(p => {
+        const pid = p.id;
+        const hours = allHours?.find(h => h.profile_id === pid && h.day_of_week === nowTime.getDay());
+
+        let minutesLeft = 0;
+        if (hours) {
+            const [hE, mE] = hours.end_time.split(':').map(Number);
+            const shiftEnd = new Date(nowTime); shiftEnd.setHours(hE, mE, 0, 0);
+            minutesLeft = Math.max(0, (shiftEnd - nowTime) / 60000);
+
+            // Deduct future breaks from capacity
+            const pBreaks = allBreaks?.filter(b => b.profile_id === pid && b.day_of_week === nowTime.getDay()) || [];
+            for (const b of pBreaks) {
+                const [bh, bm] = b.start_time.split(':').map(Number);
+                const bs = new Date(nowTime); bs.setHours(bh, bm, 0, 0);
+                if (bs >= nowTime && bs < shiftEnd) {
+                    minutesLeft -= b.duration_minutes;
+                }
+            }
+        }
+
+        const myApts = allProviderApts?.filter(a => a.assigned_profile_id === pid) || [];
+        const currentLoad = myApts.reduce((sum, a) => sum + a.duration_minutes, 0);
+
+        return {
+            id: pid,
+            freeMinutesRemaining: minutesLeft - currentLoad,
+            loadPercent: minutesLeft > 0 ? Math.round((currentLoad / minutesLeft) * 100) : 100
+        };
+    });
+
+    // Sort Providers: Highest Capacity (Free Minutes) first to spread workload
+    const balancedProviders = [...onlineProviders].sort((a, b) => {
+        const statsA = providerLoadStats.find(s => s.id === a.id);
+        const statsB = providerLoadStats.find(s => s.id === b.id);
+        return (statsB?.freeMinutesRemaining || 0) - (statsA?.freeMinutesRemaining || 0);
+    });
+
     const suggestions = [];
 
     // 4. Processing Loop (In-Memory)
@@ -99,7 +139,7 @@ export const getSmartReassignments = async (businessId, forceAllOnline = false) 
 
         let bestFix = null;
 
-        for (const provider of onlineProviders) {
+        for (const provider of balancedProviders) {
             // Skip if it's already their appointment
             if (provider.id === apt.assigned_profile_id) continue;
 
@@ -233,6 +273,7 @@ export const analyzeSystemHealth = async (businessId, forceAllOnline = false) =>
     let totalCapacityMinutes = 0;
     let totalLoadMinutes = 0;
     const atRisk = [];
+    const providerStats = {};
 
     // 2. Calculate Capacity Per Provider
     for (const provider of onlineProviders) {
@@ -242,7 +283,10 @@ export const analyzeSystemHealth = async (businessId, forceAllOnline = false) =>
         const [hE, mE] = myHours.end_time.split(':').map(Number);
         const shiftEnd = new Date(now); shiftEnd.setHours(hE, mE, 0, 0);
 
-        if (now >= shiftEnd) continue; // Shift over
+        if (now >= shiftEnd) {
+            providerStats[provider.id] = { loadPercent: 100, freeMinutes: 0 };
+            continue;
+        }
 
         // Raw Minutes Left
         let minutesLeft = (shiftEnd - now) / 60000;
@@ -257,17 +301,22 @@ export const analyzeSystemHealth = async (businessId, forceAllOnline = false) =>
             }
         }
 
-        totalCapacityMinutes += Math.max(0, minutesLeft);
+        const capacity = Math.max(0, minutesLeft);
+        totalCapacityMinutes += capacity;
 
         // 3. Calculate MY Load
-        // Note: For global health, we sum everyone's load vs everyone's capacity
-        // "Workload" query already fetched all tasks for these PIDs
         const myTasks = workload?.filter(w => w.assigned_profile_id === provider.id) || [];
         const myLoad = myTasks.reduce((sum, t) => sum + t.duration_minutes, 0);
 
         totalLoadMinutes += myLoad;
 
+        providerStats[provider.id] = {
+            loadPercent: capacity > 0 ? Math.round((myLoad / capacity) * 100) : 100,
+            freeMinutes: Math.max(0, capacity - myLoad)
+        };
+
         // 4. Check "At Risk" (Will this specific person finish?)
+        // ... (rest of logic) ...
         // Simple heuristic: If Load > Capacity, last tasks are at risk
         if (myLoad > minutesLeft) {
             // Sort by time, last ones are the problem
@@ -276,11 +325,25 @@ export const analyzeSystemHealth = async (businessId, forceAllOnline = false) =>
             for (const task of sorted) {
                 runningSum += task.duration_minutes;
                 if (runningSum > minutesLeft) {
+                    const excessMins = Math.round(runningSum - minutesLeft);
+                    let severity = 'minor';
+                    let recommendation = 'Suggest Move';
+
+                    if (excessMins > 120) {
+                        severity = 'critical';
+                        recommendation = 'Must Reschedule';
+                    } else if (excessMins > 60) {
+                        severity = 'warning';
+                        recommendation = 'Strongly Suggest Move';
+                    }
+
                     atRisk.push({
                         ...task,
                         reason: 'Predicting Overtime',
                         providerName: provider.full_name,
-                        excessMinutes: Math.round(runningSum - minutesLeft)
+                        excessMinutes: excessMins,
+                        severity,
+                        recommendation
                     });
                 }
             }
@@ -298,7 +361,8 @@ export const analyzeSystemHealth = async (businessId, forceAllOnline = false) =>
         loadPercentage,
         totalCapacityMinutes: Math.round(totalCapacityMinutes),
         totalLoadMinutes: Math.round(totalLoadMinutes),
-        atRiskAppointments: atRisk
+        atRiskAppointments: atRisk,
+        providerStats
     };
 }
 
@@ -319,7 +383,7 @@ export const generateCrisisRecoveryPlan = async (businessId) => {
     const { data: activeWorkload } = await supabase
         .from('appointments')
         .select(`
-            id, scheduled_start, duration_minutes, delay_minutes, status, treatment_name, required_skills, shifted_from_id,
+            id, client_id, treatment_id, scheduled_start, duration_minutes, delay_minutes, status, treatment_name, required_skills, shifted_from_id,
             client:clients(id, first_name, last_name, phone),
             provider:profiles!appointments_assigned_profile_id_fkey(id, full_name, whatsapp, skills)
         `)
@@ -443,15 +507,18 @@ export const generateCrisisRecoveryPlan = async (businessId) => {
 
         // Strategy B: Strategic Deferral (If still behind)
         if (minutesToRecover > 30) {
-            // Even after shedding (theoretical), we are behind. 
-            // Suggest moving the LAST client to the *Next Available Slot* (Smart Check)
-            const lastClient = queue[queue.length - 1];
+            // BATCH DEFERRAL: Find candidates from the bottom up until the delay is cleared
+            const existingActionIds = new Set(actions.map(a => a.appointment.id));
+            const deferralCandidates = [...queue].reverse().filter(t => t.status === 'pending' && !existingActionIds.has(t.id));
 
-            if (lastClient.status === 'pending') {
+            for (const candidate of deferralCandidates) {
+                if (minutesToRecover <= 30) break;
+                // Safety: Don't defer if it's the only thing left in the queue
+                if (queue.filter(t => t.status === 'pending').length - actions.filter(a => a.type === 'DEFERRAL_RECOMMENDATION').length <= 1) break;
+
                 let suggestedDate = 'Tomorrow';
                 let suggestionDetails = 'Checking availability...';
 
-                // --- INTELLIGENT FUTURE SCAN ---
                 try {
                     // Check next 14 days for THIS provider
                     const startSearch = new Date(); startSearch.setDate(startSearch.getDate() + 1);
@@ -471,9 +538,8 @@ export const generateCrisisRecoveryPlan = async (businessId) => {
                         .eq('profile_id', providerId)
                         .eq('is_active', true);
 
-                    // Find first day with capacity
                     let foundDate = null;
-                    const neededMin = lastClient.duration_minutes || 30;
+                    const neededMin = candidate.duration_minutes || 30;
 
                     for (let d = 0; d < 14; d++) {
                         const checkDate = new Date(startSearch);
@@ -483,8 +549,6 @@ export const generateCrisisRecoveryPlan = async (businessId) => {
                         const shifts = futureHours?.filter(h => h.day_of_week === dayOfWeek) || [];
                         if (!shifts.length) continue;
 
-                        // Simple Capacity Heuristic for Speed:
-                        // TotalShiftMinutes - ExistingLoad > neededMin
                         let dailyCap = 0;
                         shifts.forEach(s => {
                             const [hS, mS] = s.start_time.split(':').map(Number);
@@ -497,7 +561,6 @@ export const generateCrisisRecoveryPlan = async (businessId) => {
                             ?.filter(a => a.scheduled_start.startsWith(dayStr))
                             .reduce((sum, a) => sum + a.duration_minutes, 0) || 0;
 
-                        // Leave 10% buffer
                         if ((dailyCap * 0.9) - dayLoad > neededMin) {
                             foundDate = checkDate;
                             break;
@@ -508,21 +571,22 @@ export const generateCrisisRecoveryPlan = async (businessId) => {
                         suggestedDate = foundDate.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
                         suggestionDetails = `First opening found on ${suggestedDate}`;
                     } else {
-                        // Original provider full?
                         suggestionDetails = `Provider fully booked (14d). Suggest Transfer & Defer.`;
                         suggestedDate = 'Waitlist / Other Provider';
                     }
-
                 } catch (e) {
                     console.error('[CrisisEngine] Availability Check Failed', e);
                 }
 
                 actions.push({
                     type: 'DEFERRAL_RECOMMENDATION',
-                    appointment: lastClient,
-                    reason: `Postpone to ${suggestedDate} (${suggestionDetails}). Saves team overtime today.`,
+                    appointment: candidate,
+                    reason: `Postpone to ${suggestedDate} (${suggestionDetails}). Recovering ${candidate.duration_minutes}m to save the day's schedule.`,
+                    suggestedDateRaw: foundDate?.toISOString(),
                     impact_score: 100
                 });
+
+                minutesToRecover -= candidate.duration_minutes;
             }
         }
 
