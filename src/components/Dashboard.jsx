@@ -337,8 +337,24 @@ const Dashboard = () => {
 
     const subscription = profile?.subscription;
     const expiresAt = subscription?.expires_at ? new Date(subscription.expires_at) : null;
-    const daysLeft = expiresAt ? Math.ceil((expiresAt.getTime() - Date.now()) / (1000 * 60 * 60 * 24)) : 0;
-    const isExpired = daysLeft <= 0 && subscription?.tier !== 'trial';
+    const now = new Date();
+
+    // milliseconds in 24 hours
+    const AMNESTY_WINDOW = 24 * 60 * 60 * 1000;
+
+    const diffMs = expiresAt ? expiresAt.getTime() - now.getTime() : 0;
+    const daysLeft = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+
+    // Logic:
+    // 1. Trial is always active until it expires (no amnesty for trial)
+    // 2. Paid tiers get 24h amnesty after expires_at
+    const isTrial = subscription?.tier === 'trial';
+    const isExpired = diffMs <= 0;
+    const isAmnesty = !isTrial && isExpired && Math.abs(diffMs) < AMNESTY_WINDOW;
+    const isHardExpired = isExpired && !isAmnesty;
+
+    // Calculate hours left in amnesty if applicable
+    const amnestyHoursLeft = isAmnesty ? Math.ceil((AMNESTY_WINDOW - Math.abs(diffMs)) / (1000 * 60 * 60)) : 0;
 
     const tabs = [
         { id: 'appointments', label: 'Dashboard', icon: Calendar, color: 'text-primary' },
@@ -358,8 +374,8 @@ const Dashboard = () => {
         }
 
         if (t.adminOnly && profile?.role?.toLowerCase() !== 'admin') return false;
-        // If expired, only allow Subscription and Profile
-        if (isExpired && !['subscription', 'profile'].includes(t.id)) return false;
+        // If HARD expired, only allow Subscription and Profile
+        if (isHardExpired && !['subscription', 'profile'].includes(t.id)) return false;
         return true;
     }).map(t => {
         // Rename 'Dashboard' to 'Master Console' for MasterAdmin
@@ -371,19 +387,19 @@ const Dashboard = () => {
 
     const activeTabData = tabs.find(t => t.id === activeTab) || tabs[0];
 
-    // Force subscription tab if expired
+    // Force subscription tab if HARD expired
     useEffect(() => {
-        if (isExpired && activeTab !== 'subscription' && activeTab !== 'profile') {
+        if (isHardExpired && activeTab !== 'subscription' && activeTab !== 'profile') {
             setActiveTab('subscription');
         }
-    }, [isExpired, activeTab]);
+    }, [isHardExpired, activeTab]);
 
     const renderActiveComponent = () => {
         if (profile?.role === 'MasterAdmin') {
             return <MasterDashboard />;
         }
 
-        if (isExpired && activeTab !== 'subscription' && activeTab !== 'profile') {
+        if (isHardExpired && activeTab !== 'subscription' && activeTab !== 'profile') {
             return <SubscriptionPage />;
         }
 
@@ -733,6 +749,25 @@ const Dashboard = () => {
 
             {/* Main Content */}
             <main ref={mainContentRef} className="flex-grow overflow-y-auto h-screen relative">
+                {/* Amnesty Warning Banner */}
+                {isAmnesty && (
+                    <div className="bg-amber-500/10 border-b border-amber-500/20 px-4 py-2 flex items-center justify-between sticky top-0 z-50 backdrop-blur-md">
+                        <div className="flex items-center gap-2 text-amber-500">
+                            <AlertTriangle size={16} />
+                            <span className="text-xs font-bold">
+                                SUBSCRIPTION EXPIRED: You are currently in a 24-hour grace period.
+                                {amnestyHoursLeft > 0 ? ` (${amnestyHoursLeft} hours remaining)` : ''}
+                            </span>
+                        </div>
+                        <button
+                            onClick={() => setActiveTab('subscription')}
+                            className="bg-amber-500 text-black text-[10px] font-black px-3 py-1 rounded-full hover:bg-amber-400 transition-colors uppercase"
+                        >
+                            Renew Now
+                        </button>
+                    </div>
+                )}
+
                 {/* Top fade for scrolling aesthetics */}
                 <div className="fixed top-0 left-0 right-0 h-12 bg-gradient-to-b from-background to-transparent z-10 pointer-events-none md:left-80" />
 

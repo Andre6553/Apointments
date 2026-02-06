@@ -12,32 +12,40 @@ const __filename = fileURLToPath(import.meta.url);
 const rootDir = path.resolve(path.dirname(__filename), '..');
 
 const loadEnv = () => {
-    try {
-        const envPath = path.join(rootDir, '.env');
-        if (!fs.existsSync(envPath)) return process.env;
-        const envFile = fs.readFileSync(envPath, 'utf8');
-        const env = { ...process.env };
-        envFile.split('\n').forEach(line => {
-            const trimmed = line.trim();
-            if (!trimmed || trimmed.startsWith('#')) return;
-            const firstEq = trimmed.indexOf('=');
-            if (firstEq === -1) return;
-            const key = trimmed.substring(0, firstEq).trim();
-            let val = trimmed.substring(firstEq + 1).trim();
-            // Remove surround quotes if present
-            if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-                val = val.substring(1, val.length - 1);
-            }
-            if (key && val) env[key] = val;
-        });
-        return env;
-    } catch (e) {
-        return process.env;
-    }
+    let env = { ...process.env };
+
+    const loadFile = (filename) => {
+        try {
+            const envPath = path.join(rootDir, filename);
+            if (!fs.existsSync(envPath)) return;
+            console.log(`[Env] Loading ${filename}...`);
+            const envFile = fs.readFileSync(envPath, 'utf8');
+            envFile.split('\n').forEach(line => {
+                const trimmed = line.trim();
+                if (!trimmed || trimmed.startsWith('#')) return;
+                const firstEq = trimmed.indexOf('=');
+                if (firstEq === -1) return;
+                const key = trimmed.substring(0, firstEq).trim();
+                let val = trimmed.substring(firstEq + 1).trim();
+                if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+                    val = val.substring(1, val.length - 1);
+                }
+                if (key && val) env[key] = val;
+            });
+        } catch (e) {
+            console.error(`[Env] Error loading ${filename}:`, e.message);
+        }
+    };
+
+    // Load .env first, then .env.local (which overrides)
+    loadFile('.env');
+    loadFile('.env.local');
+
+    return env;
 };
 
 const env = loadEnv();
-const PORT = 3001; // Avoid 3000 (often used)
+const PORT = 3001;
 const ACCOUNT_SID = env.VITE_TWILIO_ACCOUNT_SID || env.TWILIO_ACCOUNT_SID;
 const AUTH_TOKEN = env.VITE_TWILIO_AUTH_TOKEN || env.TWILIO_AUTH_TOKEN;
 const FROM_NUMBER = env.VITE_TWILIO_WHATSAPP_FROM || env.TWILIO_WHATSAPP_FROM;

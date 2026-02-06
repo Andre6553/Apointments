@@ -84,12 +84,17 @@ const SubscriptionPage = () => {
 
     const subscription = profile?.subscription;
     const expiresAt = subscription?.expires_at ? new Date(subscription.expires_at) : null;
-    const daysLeft = expiresAt ? Math.ceil((expiresAt.getTime() - Date.now()) / (1000 * 60 * 60 * 24)) : 0;
+    const now = new Date();
+    const AMNESTY_WINDOW = 24 * 60 * 60 * 1000;
+    const diffMs = expiresAt ? expiresAt.getTime() - now.getTime() : 0;
+    const daysLeft = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
 
     // Improved logic for status check
     const isTrial = subscription?.tier === 'trial';
-    const isExpired = !isTrial && daysLeft <= 0;
-    const canRenew = isTrial || daysLeft <= 2;
+    const isExpired = diffMs <= 0;
+    const isAmnesty = !isTrial && isExpired && Math.abs(diffMs) < AMNESTY_WINDOW;
+    const isHardExpired = isExpired && !isAmnesty;
+    const canRenew = isTrial || daysLeft <= 2 || isAmnesty;
 
     const [pricing, setPricing] = useState(null);  // Start as null to show loading state
 
@@ -288,12 +293,14 @@ const SubscriptionPage = () => {
                         </div>
                         <div>
                             <h3 className="text-2xl font-bold text-white mb-1">
-                                {isTrial ? 'Trial Subscription' : `${subscription?.tier?.charAt(0).toUpperCase() + subscription?.tier?.slice(1)} Subscription`}
+                                {isTrial ? 'Trial Subscription' : isAmnesty ? 'Grace Period (Amnesty)' : `${subscription?.tier?.charAt(0).toUpperCase() + subscription?.tier?.slice(1)} Subscription`}
                             </h3>
                             <p className="text-slate-400">
-                                {isExpired
+                                {isHardExpired
                                     ? 'Your subscription has expired. Please renew to continue using the app.'
-                                    : `You have ${daysLeft} days remaining on your current plan.`}
+                                    : isAmnesty
+                                        ? 'Your subscription has expired, but you are in a 24-hour grace period.'
+                                        : `You have ${daysLeft} days remaining on your current plan.`}
                             </p>
                         </div>
                     </div>

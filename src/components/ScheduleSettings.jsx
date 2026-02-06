@@ -9,6 +9,139 @@ import { format, parseISO } from 'date-fns'
 import { logEvent } from '../lib/logger'
 import AddAppointmentModal from './AddAppointmentModal'
 import { useNavigate } from 'react-router-dom'
+import { useRef } from 'react'
+
+const DayHoursRow = ({ day, idx, initialHours, onCommit, saveStatus }) => {
+    const [localStart, setLocalStart] = useState(initialHours?.start_time?.slice(0, 5) || '08:00')
+    const [localEnd, setLocalEnd] = useState(initialHours?.end_time?.slice(0, 5) || '17:00')
+    const [isActive, setIsActive] = useState(initialHours?.is_active !== false)
+    const isFocused = useRef(false)
+    const lastCommitted = useRef({ start: localStart, end: localEnd, active: isActive })
+
+    // Sync with backend changes only when NOT focused
+    useEffect(() => {
+        if (isFocused.current) return
+
+        const hStart = initialHours?.start_time?.slice(0, 5) || '08:00'
+        const hEnd = initialHours?.end_time?.slice(0, 5) || '17:00'
+        const hActive = initialHours?.is_active !== false
+
+        setLocalStart(hStart)
+        setLocalEnd(hEnd)
+        setIsActive(hActive)
+        lastCommitted.current = { start: hStart, end: hEnd, active: hActive }
+    }, [initialHours])
+
+    const handleTimeChange = (field, val, setter) => {
+        let processed = val.replace(/[^\d:]/g, '')
+
+        // Smarter colon logic: Only add if typing forward (not deleting)
+        if (processed.length === 2 && !processed.includes(':') && val.length > (field === 'start' ? localStart : localEnd).length) {
+            processed += ':'
+        }
+
+        setter(processed)
+
+        // If it's a valid 5-char time, we can optionally auto-commit or wait for blur
+        if (processed.length === 5 && /^([01]\d|2[0-3]):[0-5]\d$/.test(processed)) {
+            const newStart = field === 'start' ? processed : localStart
+            const newEnd = field === 'end' ? processed : localEnd
+            if (newStart !== lastCommitted.current.start || newEnd !== lastCommitted.current.end) {
+                lastCommitted.current = { start: newStart, end: newEnd, active: isActive }
+                onCommit(idx, newStart, newEnd, isActive)
+            }
+        }
+    }
+
+    const handleBlur = () => {
+        isFocused.current = false
+        const timeRegex = /^([01]\d|2[0-3]):[0-5]\d$/
+        if (timeRegex.test(localStart) && timeRegex.test(localEnd)) {
+            if (localStart !== lastCommitted.current.start || localEnd !== lastCommitted.current.end) {
+                lastCommitted.current = { start: localStart, end: localEnd, active: isActive }
+                onCommit(idx, localStart, localEnd, isActive)
+            }
+        }
+    }
+
+    const toggleActive = () => {
+        const newActive = !isActive
+        setIsActive(newActive)
+        lastCommitted.current = { ...lastCommitted.current, active: newActive }
+        onCommit(idx, localStart, localEnd, newActive)
+    }
+
+    const status = saveStatus[idx]
+
+    return (
+        <div key={day} className={`glass-card p-6 flex flex-col gap-4 group transition-all relative overflow-hidden ${!isActive ? 'opacity-60 grayscale-[0.5]' : 'hover:border-primary/30'}`}>
+            <AnimatePresence>
+                {status && (
+                    <motion.div
+                        initial={{ opacity: 0, y: -10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0 }}
+                        className="absolute top-2 right-2 px-2 py-0.5 rounded text-[8px] font-bold uppercase tracking-widest flex items-center gap-1"
+                    >
+                        {status === 'saving' && <Loader2 size={10} className="animate-spin text-primary" />}
+                        {status === 'saved' && <Check size={10} className="text-emerald-400" />}
+                        {(status === 'error' || status === 'invalid format') && <AlertTriangle size={10} className="text-red-400" />}
+                        <span className={status === 'saved' ? 'text-emerald-400' : (status === 'error' || status === 'invalid format') ? 'text-red-400' : 'text-slate-500'}>
+                            {status}
+                        </span>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            <div className="flex items-center justify-between">
+                <span className={`font-bold ${isActive ? 'text-white' : 'text-slate-500'}`}>{day}</span>
+                <button
+                    onClick={toggleActive}
+                    className={`w-10 h-5 rounded-full relative transition-colors ${isActive ? 'bg-primary/40' : 'bg-slate-700'}`}
+                >
+                    <motion.div
+                        animate={{ x: isActive ? 20 : 2 }}
+                        className={`absolute top-1 w-3 h-3 rounded-full ${isActive ? 'bg-primary shadow-glow shadow-primary/50' : 'bg-slate-400'}`}
+                    />
+                </button>
+            </div>
+            <div className={`grid grid-cols-2 gap-4 transition-opacity ${!isActive ? 'pointer-events-none' : ''}`}>
+                <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1">
+                        <Sun size={10} className={isActive ? "text-amber-400" : "text-slate-600"} /> Start (HH:mm)
+                    </label>
+                    <input
+                        type="text"
+                        disabled={!isActive}
+                        placeholder="08:00"
+                        className={`glass-input text-[11px] p-2 h-10 w-full text-center ${!/^([01]\d|2[0-3]):[0-5]\d$/.test(localStart) && localStart ? 'border-red-500/50 text-red-400' : ''}`}
+                        value={localStart}
+                        maxLength={5}
+                        onFocus={() => { isFocused.current = true }}
+                        onChange={(e) => handleTimeChange('start', e.target.value, setLocalStart)}
+                        onBlur={handleBlur}
+                    />
+                </div>
+                <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1">
+                        <Moon size={10} className={isActive ? "text-blue-400" : "text-slate-600"} /> End (HH:mm)
+                    </label>
+                    <input
+                        type="text"
+                        disabled={!isActive}
+                        placeholder="17:00"
+                        className={`glass-input text-[11px] p-2 h-10 w-full text-center ${!/^([01]\d|2[0-3]):[0-5]\d$/.test(localEnd) && localEnd ? 'border-red-500/50 text-red-400' : ''}`}
+                        value={localEnd}
+                        maxLength={5}
+                        onFocus={() => { isFocused.current = true }}
+                        onChange={(e) => handleTimeChange('end', e.target.value, setLocalEnd)}
+                        onBlur={handleBlur}
+                    />
+                </div>
+            </div>
+        </div>
+    )
+}
 
 const ScheduleSettings = () => {
     const { user, profile, updateProfile } = useAuth()
@@ -84,43 +217,41 @@ const ScheduleSettings = () => {
         }
     }, [user, fetchData])
 
-    const handleUpdateHours = async (dayIdx, start, end, isActive = true, skipConflictCheck = false) => {
-        if (!user) return
+    const handleCommitHours = async (dayIdx, start, end, isActive, skipConflictCheck = false) => {
+        if (!user) {
+            return
+        }
 
-        // 1. Optimistic UI update
-        const updatedHours = [...workingHours]
-        const existingIdx = updatedHours.findIndex(h => h.day_of_week === dayIdx)
         const newItem = { profile_id: user.id, day_of_week: dayIdx, start_time: start, end_time: end, is_active: isActive }
 
-        if (existingIdx >= 0) updatedHours[existingIdx] = newItem
-        else updatedHours.push(newItem)
-
-        setWorkingHours(updatedHours)
-        setCache(CACHE_KEYS.WORKING_HOURS, updatedHours)
-
-        // 2. Validate before saving
+        // 1. Validate
         const timeRegex = /^([01]\d|2[0-3]):[0-5]\d$/
-        // Only show error if complete (length 5) and invalid
-        if ((start.length === 5 && !timeRegex.test(start)) || (end.length === 5 && !timeRegex.test(end))) {
+        if (!timeRegex.test(start) || !timeRegex.test(end)) {
             setSaveStatus(prev => ({ ...prev, [dayIdx]: 'invalid format' }))
             return
         }
-        // If incomplete, just return without saving (but don't show error yet)
-        if (start.length < 5 || end.length < 5) return
 
-        // 3. Check for appointment conflicts
-        // - When disabling a day: check ALL appointments on that day
-        // - When narrowing hours: check appointments outside the new window
+        // 2. Optimistic UI update for the canonical state
+        setWorkingHours(prev => {
+            const updated = [...prev]
+            const idx = updated.findIndex(h => h.day_of_week === dayIdx)
+            if (idx >= 0) updated[idx] = newItem
+            else updated.push(newItem)
+            setCache(CACHE_KEYS.WORKING_HOURS, updated)
+            return updated
+        })
+
+        // 3. Conflict Check
         if (!skipConflictCheck) {
             const conflicts = isActive
                 ? await checkForConflicts(dayIdx, start, end)
-                : await checkForConflicts(dayIdx, '00:00', '00:01') // If disabling, ALL appointments conflict
+                : await checkForConflicts(dayIdx, '00:00', '00:01')
 
             if (conflicts.length > 0) {
                 setConflictingAppointments(conflicts)
                 setPendingHoursChange({ dayIdx, start, end, isActive })
                 setShowConflictModal(true)
-                return // Don't save yet - wait for user decision
+                return
             }
         }
 
@@ -342,13 +473,6 @@ const ScheduleSettings = () => {
         setConflictingAppointments([])
         setPendingHoursChange(null)
         fetchData() // Revert to original hours
-    }
-
-    const handleToggleDay = async (dayIdx, currentHours) => {
-        const isActive = currentHours ? !currentHours.is_active : false
-        const start = currentHours?.start_time || '08:00'
-        const end = currentHours?.end_time || '17:00'
-        handleUpdateHours(dayIdx, start, end, isActive)
     }
 
     const handleAddBreak = async (e) => {
@@ -583,6 +707,96 @@ const ScheduleSettings = () => {
 
     return (
         <div className="space-y-12">
+            {/* Working Hours Conflict Modal */}
+            <AnimatePresence>
+                {showConflictModal && (
+                    <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            onClick={handleCancelHoursChange}
+                            className="absolute inset-0 bg-slate-950/90 backdrop-blur-xl"
+                        />
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                            className="relative w-full max-w-lg glass-card p-0 flex flex-col max-h-[90vh] overflow-hidden shadow-2xl border border-red-500/30"
+                        >
+                            <div className="p-6 border-b border-red-500/20 bg-red-500/10 flex items-center justify-between shrink-0">
+                                <div className="flex items-center gap-3">
+                                    <div className="p-2.5 rounded-xl bg-red-500/20 border border-red-500/30 text-red-400">
+                                        <AlertTriangle size={24} />
+                                    </div>
+                                    <div>
+                                        <h3 className="text-xl font-bold text-white leading-none">Schedule Conflict</h3>
+                                        <p className="text-[10px] text-red-400 font-bold uppercase tracking-widest mt-1.5">
+                                            {conflictingAppointments.length} APPOINTMENT{conflictingAppointments.length !== 1 ? 'S' : ''} ALREADY BOOKED
+                                        </p>
+                                    </div>
+                                </div>
+                                <button onClick={handleCancelHoursChange} className="p-2 text-slate-500 hover:text-white hover:bg-white/5 rounded-xl transition-all">
+                                    <X size={20} />
+                                </button>
+                            </div>
+
+                            <div className="flex-1 overflow-y-auto p-6 space-y-4">
+                                <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 mb-4">
+                                    <p className="text-sm text-amber-200/80 leading-relaxed">
+                                        You are narrowing your availability, but you already have clients booked during the hours you're removing.
+                                        You must transfer these clients to the Admin or reschedule them before you can save these new hours.
+                                    </p>
+                                </div>
+
+                                <div className="space-y-2">
+                                    {conflictingAppointments.map(apt => (
+                                        <div key={apt.id} className="bg-slate-800/80 border border-white/5 rounded-xl p-4 flex items-center justify-between gap-4">
+                                            <div className="flex items-center gap-4">
+                                                <div className="w-10 h-10 rounded-full bg-red-500/20 flex items-center justify-center text-red-400 font-bold text-sm">
+                                                    {apt.client?.first_name?.charAt(0)}
+                                                </div>
+                                                <div className="flex-1">
+                                                    <p className="font-bold text-white text-sm">
+                                                        {apt.client?.first_name} {apt.client?.last_name}
+                                                    </p>
+                                                    <p className="text-xs text-slate-400">
+                                                        {format(new Date(apt.scheduled_start), 'eeee, HH:mm')} ({apt.duration_minutes}min)
+                                                    </p>
+                                                </div>
+                                            </div>
+                                            <button
+                                                onClick={() => setSelectedAptToReschedule(apt)}
+                                                className="px-3 py-1.5 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/20 text-indigo-400 text-[10px] font-bold uppercase tracking-wider transition-all"
+                                            >
+                                                Reschedule
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="p-6 border-t border-white/5 bg-white/[0.02] flex flex-col gap-3">
+                                <button
+                                    onClick={handleTransferToAdmin}
+                                    disabled={transferring}
+                                    className="w-full py-4 rounded-xl bg-red-500 hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold transition-all flex items-center justify-center gap-2 text-sm shadow-lg shadow-red-500/20"
+                                >
+                                    {transferring ? <Loader2 size={18} className="animate-spin" /> : <Users size={18} />}
+                                    <span>Transfer {conflictingAppointments.length} Clients to Admin</span>
+                                </button>
+                                <button
+                                    onClick={handleCancelHoursChange}
+                                    className="w-full py-3 rounded-xl border border-white/10 hover:bg-white/5 text-slate-400 font-bold transition-all text-sm"
+                                >
+                                    Cancel & Revert Changes
+                                </button>
+                            </div>
+                        </motion.div>
+                    </div>
+                )}
+            </AnimatePresence>
+
             {/* Break Conflict Warning Modal */}
             <AnimatePresence>
                 {breakConflictData && (
@@ -764,90 +978,16 @@ const ScheduleSettings = () => {
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {days.map((day, idx) => {
-                        const hData = Array.isArray(workingHours) ? workingHours.find(h => h.day_of_week === idx) : null
-                        const hours = hData || { start_time: '08:00', end_time: '17:00', is_active: true }
-                        const isActive = hours.is_active !== false
-                        const status = saveStatus[idx]
-
-                        return (
-                            <div key={day} className={`glass-card p-6 flex flex-col gap-4 group transition-all relative overflow-hidden ${!isActive ? 'opacity-60 grayscale-[0.5]' : 'hover:border-primary/30'}`}>
-                                {/* Status Indicator */}
-                                <AnimatePresence>
-                                    {status && (
-                                        <motion.div
-                                            initial={{ opacity: 0, y: -10 }}
-                                            animate={{ opacity: 1, y: 0 }}
-                                            exit={{ opacity: 0 }}
-                                            className="absolute top-2 right-2 px-2 py-0.5 rounded text-[8px] font-bold uppercase tracking-widest flex items-center gap-1"
-                                        >
-                                            {status === 'saving' && <Loader2 size={10} className="animate-spin text-primary" />}
-                                            {status === 'saved' && <Check size={10} className="text-emerald-400" />}
-                                            {(status === 'error' || status === 'invalid format') && <AlertTriangle size={10} className="text-red-400" />}
-                                            <span className={status === 'saved' ? 'text-emerald-400' : (status === 'error' || status === 'invalid format') ? 'text-red-400' : 'text-slate-500'}>
-                                                {status}
-                                            </span>
-                                        </motion.div>
-                                    )}
-                                </AnimatePresence>
-
-                                <div className="flex items-center justify-between">
-                                    <span className={`font-bold ${isActive ? 'text-white' : 'text-slate-500'}`}>{day}</span>
-                                    <button
-                                        onClick={() => handleToggleDay(idx, hData)}
-                                        className={`w-10 h-5 rounded-full relative transition-colors ${isActive ? 'bg-primary/40' : 'bg-slate-700'}`}
-                                    >
-                                        <motion.div
-                                            animate={{ x: isActive ? 20 : 2 }}
-                                            className={`absolute top-1 w-3 h-3 rounded-full ${isActive ? 'bg-primary shadow-glow shadow-primary/50' : 'bg-slate-400'}`}
-                                        />
-                                    </button>
-                                </div>
-                                <div className={`grid grid-cols-2 gap-4 transition-opacity ${!isActive ? 'pointer-events-none' : ''}`}>
-                                    <div className="space-y-1">
-                                        <label className="text-[9px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1">
-                                            <Sun size={10} className={isActive ? "text-amber-400" : "text-slate-600"} /> Start (HH:mm)
-                                        </label>
-                                        <input
-                                            type="text"
-                                            disabled={!isActive}
-                                            placeholder="08:00"
-                                            className={`glass-input text-[11px] p-2 h-10 w-full text-center ${!/^([01]\d|2[0-3]):[0-5]\d$/.test(hours.start_time) && hours.start_time ? 'border-red-500/50 text-red-400' : ''}`}
-                                            value={(hours.start_time || '').slice(0, 5)}
-                                            maxLength={5}
-                                            onChange={(e) => {
-                                                let val = e.target.value.replace(/[^\d:]/g, '');
-                                                if (val.length === 2 && !val.includes(':') && e.nativeEvent.inputType !== 'deleteContentBackward') {
-                                                    val += ':';
-                                                }
-                                                handleUpdateHours(idx, val, hours.end_time, isActive);
-                                            }}
-                                        />
-                                    </div>
-                                    <div className="space-y-1">
-                                        <label className="text-[9px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1">
-                                            <Moon size={10} className={isActive ? "text-blue-400" : "text-slate-600"} /> End (HH:mm)
-                                        </label>
-                                        <input
-                                            type="text"
-                                            disabled={!isActive}
-                                            placeholder="17:00"
-                                            className={`glass-input text-[11px] p-2 h-10 w-full text-center ${!/^([01]\d|2[0-3]):[0-5]\d$/.test(hours.end_time) && hours.end_time ? 'border-red-500/50 text-red-400' : ''}`}
-                                            value={(hours.end_time || '').slice(0, 5)}
-                                            maxLength={5}
-                                            onChange={(e) => {
-                                                let val = e.target.value.replace(/[^\d:]/g, '');
-                                                if (val.length === 2 && !val.includes(':') && e.nativeEvent.inputType !== 'deleteContentBackward') {
-                                                    val += ':';
-                                                }
-                                                handleUpdateHours(idx, hours.start_time, val, isActive);
-                                            }}
-                                        />
-                                    </div>
-                                </div>
-                            </div>
-                        )
-                    })}
+                    {days.map((day, idx) => (
+                        <DayHoursRow
+                            key={day}
+                            day={day}
+                            idx={idx}
+                            initialHours={workingHours.find(h => h.day_of_week === idx)}
+                            onCommit={handleCommitHours}
+                            saveStatus={saveStatus}
+                        />
+                    ))}
                 </div>
             </section>
 

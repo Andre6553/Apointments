@@ -683,7 +683,7 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                     if (!p.accepts_transfers) return false // Skip if Transfers Disabled
 
                     // Filter by role (staff, provider, or admin)
-                    const allowedRoles = ['staff', 'provider', 'admin']
+                    const allowedRoles = ['staff', 'provider', 'admin', 'manager', 'owner']
                     if (!allowedRoles.includes(p.role?.toLowerCase())) return false
 
                     if (reqSkills.length === 0) return true // No skills required
@@ -1154,7 +1154,7 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
             .from('profiles')
             .select('whatsapp, full_name')
             .eq('business_id', profile.business_id)
-            .eq('role', 'Provider')
+            .in('role', ['Provider', 'Admin', 'Manager', 'Owner'])
             .eq('is_online', false);
 
         if (!offline?.length) {

@@ -101,7 +101,7 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
             .from('profiles')
             .select('id, full_name, whatsapp, skills, is_online')
             .eq('business_id', profile.business_id)
-            .eq('role', 'Provider');
+            .in('role', ['Provider', 'Admin', 'Manager', 'Owner']);
         if (data) setProviders(data);
     };
 

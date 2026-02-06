@@ -41,7 +41,7 @@ export const getSmartReassignments = async (businessId, forceAllOnline = false) 
         .from('profiles')
         .select('*')
         .eq('business_id', businessId)
-        .eq('role', 'Provider')
+        .in('role', ['Provider', 'Admin', 'Manager', 'Owner'])
         .eq('accepts_transfers', true);
 
     if (!forceAllOnline) {
@@ -245,7 +245,7 @@ export const analyzeSystemHealth = async (businessId, forceAllOnline = false) =>
         .from('profiles')
         .select('id, full_name, whatsapp')
         .eq('business_id', businessId)
-        .eq('role', 'Provider');
+        .in('role', ['Provider', 'Admin', 'Manager', 'Owner'])
 
     if (!forceAllOnline) {
         onlineQuery.eq('is_online', true);
