@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { format, isSameDay } from 'date-fns';
 import { useAuth } from '../hooks/useAuth';
 import AddAppointmentModal from './AddAppointmentModal';
-import { Edit2, Play, Square, AlertCircle, Clock, ArrowRight, Plus, Timer, Calendar as CalendarIcon, Loader2, CheckCircle2, Trash2, Sparkles } from 'lucide-react';
+import { Edit2, Play, Square, AlertCircle, Clock, ArrowRight, Plus, Timer, Calendar as CalendarIcon, Loader2, CheckCircle2, Trash2, Sparkles, Globe, User } from 'lucide-react';
 import TransferModal from './TransferModal';
 import CancelAppointmentModal from './CancelAppointmentModal';
 import AppointmentDetailsModal from './AppointmentDetailsModal';
@@ -116,6 +116,7 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
     const [selectedAptDetails, setSelectedAptDetails] = useState(null);
     const [isDetailsOpen, setIsDetailsOpen] = useState(false);
     const [now, setNow] = useState(new Date());
+    const [globalView, setGlobalView] = useState(true);
     const dateInputRef = useRef(null);
     const appointmentsRef = useRef(appointments);
 
@@ -202,7 +203,7 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
             .lte('scheduled_start', windowEnd.toISOString())
             .order('scheduled_start', { ascending: true });
 
-        if (profile?.role?.toLowerCase() !== 'admin') {
+        if (profile?.role?.toLowerCase() !== 'admin' || !globalView) {
             query = query.eq('assigned_profile_id', user?.id);
         }
 
@@ -217,9 +218,10 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
     useEffect(() => {
         if (!user || !profile) return;
         fetchAppointments();
-        const channel = supabase.channel(`list-updates-${user.id}`).on('postgres_changes', { event: '*', schema: 'public', table: 'appointments', filter: profile?.role?.toLowerCase() !== 'admin' ? `assigned_profile_id=eq.${user.id}` : undefined }, () => fetchAppointments(true)).subscribe();
+        const filter = (profile?.role?.toLowerCase() !== 'admin' || !globalView) ? `assigned_profile_id=eq.${user.id}` : undefined;
+        const channel = supabase.channel(`list-updates-${user.id}-${globalView}`).on('postgres_changes', { event: '*', schema: 'public', table: 'appointments', filter: filter }, () => fetchAppointments(true)).subscribe();
         return () => supabase.removeChannel(channel);
-    }, [user, profile, viewDate]);
+    }, [user, profile, viewDate, globalView]);
 
     const navigateDay = (direction) => {
         const newDate = new Date(viewDate);
@@ -300,8 +302,8 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
                         </span>
                     </div>
                 )}
-                {/* Next Appointment Countdown - Always shows upcoming appointment */}
-                {myNextAppointment && profile?.role?.toLowerCase() !== 'admin' && (
+                {/* Next Appointment Countdown - Show for providers, or for Admin when in "My Clients" view */}
+                {myNextAppointment && (profile?.role?.toLowerCase() !== 'admin' || !globalView) && (
                     <div className="hidden md:block">
                         <NextAppointmentCountdown nextAppointment={myNextAppointment} />
                     </div>
@@ -312,6 +314,34 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
                     </button>
                 </div>
             </div>
+
+            {/* View Switcher (Admin Only) */}
+            {profile?.role?.toLowerCase() === 'admin' && (
+                <div className="flex justify-start">
+                    <div className="bg-surface/50 p-1 rounded-2xl border border-white/5 flex items-center gap-1 shadow-inner">
+                        <button
+                            onClick={() => setGlobalView(false)}
+                            className={`flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold transition-all ${!globalView
+                                ? 'bg-primary text-white shadow-lg shadow-primary/20'
+                                : 'text-slate-400 hover:text-white hover:bg-white/5'
+                                }`}
+                        >
+                            <User size={16} />
+                            <span>My Clients</span>
+                        </button>
+                        <button
+                            onClick={() => setGlobalView(true)}
+                            className={`flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold transition-all ${globalView
+                                ? 'bg-primary text-white shadow-lg shadow-primary/20'
+                                : 'text-slate-400 hover:text-white hover:bg-white/5'
+                                }`}
+                        >
+                            <Globe size={16} />
+                            <span>Global Facility</span>
+                        </button>
+                    </div>
+                </div>
+            )}
 
             <AddAppointmentModal isOpen={isModalOpen} onClose={() => { setIsModalOpen(false); setEditData(null); }} onRefresh={fetchAppointments} editData={editData} />
             {selectedApt && <TransferModal isOpen={isTransferOpen} onClose={() => { setIsTransferOpen(false); setSelectedApt(null); }} appointment={selectedApt} onComplete={fetchAppointments} />}

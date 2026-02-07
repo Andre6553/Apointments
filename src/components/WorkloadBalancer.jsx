@@ -36,6 +36,9 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
     const [showActionModal, setShowActionModal] = useState(false)
     const [showRescheduleModal, setShowRescheduleModal] = useState(false)
     const [showCrisisInfo, setShowCrisisInfo] = useState(false)
+    const [showAttentionInfo, setShowAttentionInfo] = useState(false)
+    const [showAutopilotInfo, setShowAutopilotInfo] = useState(false)
+    const [showOptimizationInfo, setShowOptimizationInfo] = useState(false)
 
     // Messaging State
     const [showOnlineModal, setShowOnlineModal] = useState(false)
@@ -1542,7 +1545,16 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                                         <AlertTriangle size={24} className="text-slate-900" />
                                     </div>
                                     <div>
-                                        <h3 className="text-2xl font-bold text-white tracking-tight">Needs Your Attention</h3>
+                                        <h3 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
+                                            Needs Your Attention
+                                            <button
+                                                onClick={() => setShowAttentionInfo(true)}
+                                                className="p-1.5 hover:bg-white/10 rounded-lg transition-colors text-amber-200 hover:text-white"
+                                                title="Needs Attention Logic Explained"
+                                            >
+                                                <Info size={18} />
+                                            </button>
+                                        </h3>
                                         <p className="text-amber-300/80 font-medium text-sm">
                                             {needsAttentionApts.length} appointment{needsAttentionApts.length !== 1 ? 's' : ''} transferred from providers who changed their working hours
                                         </p>
@@ -1622,7 +1634,16 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                                         <Sparkles size={24} className="text-white animate-pulse" />
                                     </div>
                                     <div>
-                                        <h3 className="text-2xl font-bold text-white tracking-tight">Smart Autopilot</h3>
+                                        <h3 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
+                                            Smart Autopilot
+                                            <button
+                                                onClick={() => setShowAutopilotInfo(true)}
+                                                className="p-1.5 hover:bg-white/10 rounded-lg transition-colors text-indigo-300 hover:text-white"
+                                                title="Smart Autopilot Logic Explained"
+                                            >
+                                                <Info size={18} />
+                                            </button>
+                                        </h3>
                                         <p className="text-indigo-300/80 font-medium text-sm">Found {suggestions.length} optimal re-assignments to fix delays</p>
                                     </div>
                                 </div>
@@ -1716,8 +1737,15 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                                                 <Sparkles size={32} />
                                             </div>
                                             <div>
-                                                <h3 className="text-2xl font-black text-white tracking-tight mb-1">
+                                                <h3 className="text-2xl font-black text-white tracking-tight mb-1 flex items-center gap-2">
                                                     Optimization Available
+                                                    <button
+                                                        onClick={() => setShowOptimizationInfo(true)}
+                                                        className="p-1.5 hover:bg-white/10 rounded-lg transition-colors text-indigo-300 hover:text-white"
+                                                        title="Optimization Logic Explained"
+                                                    >
+                                                        <Info size={18} />
+                                                    </button>
                                                 </h3>
                                                 <p className="text-slate-400 font-medium text-lg">
                                                     Found <span className="text-white font-bold">{suggestions.length} delayed sessions</span> that can be rebalanced.
@@ -2300,6 +2328,298 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                                 <div className="mt-6 md:mt-10">
                                     <button
                                         onClick={() => setShowCrisisInfo(false)}
+                                        className="w-full py-3 md:py-4 bg-white hover:bg-slate-100 text-slate-900 font-extrabold md:font-black rounded-xl md:rounded-2xl transition-all shadow-xl active:scale-95 flex items-center justify-center gap-2 text-sm md:text-base"
+                                    >
+                                        RETURN TO WORKLOAD
+                                        <ArrowRightLeft size={18} />
+                                    </button>
+                                </div>
+                            </div>
+                        </motion.div>
+                    </div>
+                )}
+            </AnimatePresence>
+
+            {/* NEEDS ATTENTION INFO MODAL */}
+            <AnimatePresence>
+                {showAttentionInfo && (
+                    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            onClick={() => setShowAttentionInfo(false)}
+                            className="absolute inset-0 bg-slate-900/90 backdrop-blur-xl"
+                        />
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.9, y: 20 }}
+                            className="relative w-full max-w-2xl bg-slate-900 border border-amber-500/30 rounded-[2.5rem] shadow-2xl overflow-hidden"
+                        >
+                            <div className="absolute top-0 right-0 p-4 md:p-8">
+                                <button
+                                    onClick={() => setShowAttentionInfo(false)}
+                                    className="p-2 md:p-3 bg-white/5 hover:bg-white/10 text-white rounded-xl md:rounded-2xl transition-all active:scale-95"
+                                >
+                                    <X size={20} className="md:w-6 md:h-6" />
+                                </button>
+                            </div>
+
+                            <div className="p-6 md:p-12">
+                                <div className="flex items-center gap-3 md:gap-4 mb-6 md:mb-8">
+                                    <div className="p-2 md:p-3 bg-amber-500 rounded-xl md:rounded-2xl shadow-lg shadow-amber-500/20">
+                                        <Info className="text-slate-900 w-6 h-6 md:w-8 md:h-8" />
+                                    </div>
+                                    <h2 className="text-2xl md:text-3xl font-black text-white tracking-tight">Schedule Alignment Explained</h2>
+                                </div>
+
+                                <div className="space-y-6 md:space-y-8 max-h-[70vh] md:max-h-[60vh] overflow-y-auto pr-2 md:pr-4 custom-scrollbar">
+                                    <p className="text-slate-400 text-sm md:text-base font-medium leading-relaxed">
+                                        The "Needs Your Attention" board tracks appointments that have been displaced due to changes in provider schedules.
+                                    </p>
+
+                                    <div className="space-y-4 md:space-y-6 pb-4">
+                                        {/* Logic: Displacement */}
+                                        <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl md:rounded-2xl p-4 md:p-6 shadow-lg shadow-amber-500/5">
+                                            <div className="flex items-center gap-3 mb-3 md:mb-4">
+                                                <div className="p-1.5 md:p-2 bg-amber-500 rounded-lg text-slate-900 shadow-lg shadow-amber-500/20">
+                                                    <Clock size={18} className="md:w-5 md:h-5" />
+                                                </div>
+                                                <h3 className="text-lg md:text-xl font-bold text-amber-500 uppercase tracking-tight">The Displacement Logic</h3>
+                                            </div>
+                                            <div className="space-y-2 md:space-y-4 text-slate-300 text-sm md:text-base">
+                                                <p><span className="text-white font-bold opacity-70">Trigger:</span> When a doctor disables their working day or shifts their hours while they already had appointments booked.</p>
+                                                <p><span className="text-white font-bold opacity-70">Impact:</span> To prevent appointments from "vanishing," the system automatically catches them and assigns them to the Admin pool for triage.</p>
+                                                <div className="bg-white/5 rounded-xl p-3 md:p-4 border border-white/5">
+                                                    <ul className="list-disc list-inside space-y-1 text-slate-400 text-xs md:text-sm font-medium">
+                                                        <li>Ensures <span className="text-white">zero client loss</span> during schedule pivots.</li>
+                                                        <li>Flags these sessions as <span className="text-white">requiring immediate attention</span>.</li>
+                                                    </ul>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        {/* Logic: Resolution */}
+                                        <div className="bg-indigo-500/10 border border-indigo-500/20 rounded-xl md:rounded-2xl p-4 md:p-6 shadow-lg shadow-indigo-500/5">
+                                            <div className="flex items-center gap-3 mb-3 md:mb-4">
+                                                <div className="p-1.5 md:p-2 bg-indigo-500 rounded-lg text-white shadow-lg shadow-indigo-500/20">
+                                                    <Sparkles size={18} className="md:w-5 md:h-5" />
+                                                </div>
+                                                <h3 className="text-lg md:text-xl font-bold text-indigo-400 uppercase tracking-tight">Resolution Tools</h3>
+                                            </div>
+                                            <div className="space-y-4 md:space-y-6 text-slate-300 text-sm md:text-base">
+                                                <div className="border-l-2 border-indigo-500/30 pl-4">
+                                                    <p className="font-bold text-white text-sm mb-1 uppercase tracking-wider">1. Auto-Assign All</p>
+                                                    <p className="text-slate-400 text-xs md:text-sm">The smartest option. Scans all online providers for matching skills and available time slots to automatically rehome every displaced client.</p>
+                                                </div>
+                                                <div className="border-l-2 border-amber-500/30 pl-4">
+                                                    <p className="font-bold text-white text-sm mb-1 uppercase tracking-wider">2. Manual Reassign</p>
+                                                    <p className="text-slate-400 text-xs md:text-sm">Gives you full control. Pick a specific provider who you know can handle the session.</p>
+                                                </div>
+                                                <div className="border-l-2 border-emerald-500/30 pl-4">
+                                                    <p className="font-bold text-white text-sm mb-1 uppercase tracking-wider">3. Mark as Handled</p>
+                                                    <p className="text-slate-400 text-xs md:text-sm">Use this if you have manually rescheduled the client or resolved the conflict outside of the automated flow.</p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="mt-6 md:mt-10">
+                                    <button
+                                        onClick={() => setShowAttentionInfo(false)}
+                                        className="w-full py-3 md:py-4 bg-white hover:bg-slate-100 text-slate-900 font-extrabold md:font-black rounded-xl md:rounded-2xl transition-all shadow-xl active:scale-95 flex items-center justify-center gap-2 text-sm md:text-base"
+                                    >
+                                        RETURN TO WORKLOAD
+                                        <ArrowLeftRight size={18} />
+                                    </button>
+                                </div>
+                            </div>
+                        </motion.div>
+                    </div>
+                )}
+            </AnimatePresence>
+
+            {/* AUTOPILOT INFO MODAL */}
+            <AnimatePresence>
+                {showAutopilotInfo && (
+                    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            onClick={() => setShowAutopilotInfo(false)}
+                            className="absolute inset-0 bg-slate-900/90 backdrop-blur-xl"
+                        />
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.9, y: 20 }}
+                            className="relative w-full max-w-2xl bg-slate-900 border border-indigo-500/30 rounded-[2.5rem] shadow-2xl overflow-hidden"
+                        >
+                            <div className="absolute top-0 right-0 p-4 md:p-8">
+                                <button
+                                    onClick={() => setShowAutopilotInfo(false)}
+                                    className="p-2 md:p-3 bg-white/5 hover:bg-white/10 text-white rounded-xl md:rounded-2xl transition-all active:scale-95"
+                                >
+                                    <X size={20} className="md:w-6 md:h-6" />
+                                </button>
+                            </div>
+
+                            <div className="p-6 md:p-12">
+                                <div className="flex items-center gap-3 md:gap-4 mb-6 md:mb-8">
+                                    <div className="p-2 md:p-3 bg-indigo-500 rounded-xl md:rounded-2xl shadow-lg shadow-indigo-500/20">
+                                        <Sparkles className="text-white w-6 h-6 md:w-8 md:h-8" />
+                                    </div>
+                                    <h2 className="text-2xl md:text-3xl font-black text-white tracking-tight">Autopilot Intelligence Explained</h2>
+                                </div>
+
+                                <div className="space-y-6 md:space-y-8 max-h-[70vh] md:max-h-[60vh] overflow-y-auto pr-2 md:pr-4 custom-scrollbar">
+                                    <p className="text-slate-400 text-sm md:text-base font-medium leading-relaxed">
+                                        The Smart Autopilot is a proactive optimization engine that identifies the most efficient way to clear schedule delays across the entire facility.
+                                    </p>
+
+                                    <div className="space-y-4 md:space-y-6 pb-4">
+                                        {/* Logic: gap hunting */}
+                                        <div className="bg-indigo-500/10 border border-indigo-500/20 rounded-xl md:rounded-2xl p-4 md:p-6 shadow-lg shadow-indigo-500/5">
+                                            <div className="flex items-center gap-3 mb-3 md:mb-4">
+                                                <div className="p-1.5 md:p-2 bg-indigo-500 rounded-lg text-white shadow-lg shadow-indigo-500/20">
+                                                    <Target size={18} className="md:w-5 md:h-5" />
+                                                </div>
+                                                <h3 className="text-lg md:text-xl font-bold text-indigo-400 uppercase tracking-tight">Proactive Gap Hunting</h3>
+                                            </div>
+                                            <div className="space-y-2 md:space-y-4 text-slate-300 text-sm md:text-base">
+                                                <p><span className="text-white font-bold opacity-70">The Engine:</span> Continually monitors every provider's queue in real-time. It looks for "Air Pockets"—available time slots that are currently going unused.</p>
+                                                <p><span className="text-white font-bold opacity-70">The Opportunity:</span> When it finds a pocket, it automatically identifies clients downstream who are suffering from delays and suggests moving them to the free staff.</p>
+                                            </div>
+                                        </div>
+
+                                        {/* Logic: Smart matching */}
+                                        <div className="bg-purple-500/10 border border-purple-500/20 rounded-xl md:rounded-2xl p-4 md:p-6 shadow-lg shadow-purple-500/5">
+                                            <div className="flex items-center gap-3 mb-3 md:mb-4">
+                                                <div className="p-1.5 md:p-2 bg-purple-500 rounded-lg text-white shadow-lg shadow-purple-500/20">
+                                                    <Zap size={18} className="md:w-5 md:h-5" />
+                                                </div>
+                                                <h3 className="text-lg md:text-xl font-bold text-purple-400 uppercase tracking-tight">Multi-Factor Selection</h3>
+                                            </div>
+                                            <div className="space-y-4 md:space-y-6 text-slate-300 text-sm md:text-base">
+                                                <div className="border-l-2 border-indigo-500/30 pl-4">
+                                                    <p className="font-bold text-white text-sm mb-1 uppercase tracking-wider">Skill-Perfect Reassignments</p>
+                                                    <p className="text-slate-400 text-xs md:text-sm">Never suggests a move unless the receiving provider has the exact skill set required for the specific treatment.</p>
+                                                </div>
+                                                <div className="border-l-2 border-purple-500/30 pl-4">
+                                                    <p className="font-bold text-white text-sm mb-1 uppercase tracking-wider">Delay Minimization</p>
+                                                    <p className="text-slate-400 text-xs md:text-sm">Calculates the total minutes saved facility-wide. It prioritizes "High Impact" moves that clear the most aggregate delay.</p>
+                                                </div>
+                                                <div className="border-l-2 border-emerald-500/30 pl-4">
+                                                    <p className="font-bold text-white text-sm mb-1 uppercase tracking-wider">Available Capacity</p>
+                                                    <p className="text-slate-400 text-xs md:text-sm">Sorts suggestions by "Top Capacity"—ensuring staff with the least workload are tapped first to balance the team's stress levels.</p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="mt-6 md:mt-10">
+                                    <button
+                                        onClick={() => setShowAutopilotInfo(false)}
+                                        className="w-full py-3 md:py-4 bg-white hover:bg-slate-100 text-slate-900 font-extrabold md:font-black rounded-xl md:rounded-2xl transition-all shadow-xl active:scale-95 flex items-center justify-center gap-2 text-sm md:text-base"
+                                    >
+                                        RETURN TO WORKLOAD
+                                        <ArrowRightLeft size={18} />
+                                    </button>
+                                </div>
+                            </div>
+                        </motion.div>
+                    </div>
+                )}
+            </AnimatePresence>
+            {/* OPTIMIZATION INFO MODAL */}
+            <AnimatePresence>
+                {showOptimizationInfo && (
+                    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            onClick={() => setShowOptimizationInfo(false)}
+                            className="absolute inset-0 bg-slate-900/90 backdrop-blur-xl"
+                        />
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.9, y: 20 }}
+                            className="relative w-full max-w-2xl bg-slate-900 border border-emerald-500/30 rounded-[2.5rem] shadow-2xl overflow-hidden"
+                        >
+                            <div className="absolute top-0 right-0 p-4 md:p-8">
+                                <button
+                                    onClick={() => setShowOptimizationInfo(false)}
+                                    className="p-2 md:p-3 bg-white/5 hover:bg-white/10 text-white rounded-xl md:rounded-2xl transition-all active:scale-95"
+                                >
+                                    <X size={20} className="md:w-6 md:h-6" />
+                                </button>
+                            </div>
+
+                            <div className="p-6 md:p-12">
+                                <div className="flex items-center gap-3 md:gap-4 mb-6 md:mb-8">
+                                    <div className="p-2 md:p-3 bg-emerald-500 rounded-xl md:rounded-2xl shadow-lg shadow-emerald-500/20">
+                                        <Zap className="text-white w-6 h-6 md:w-8 md:h-8" />
+                                    </div>
+                                    <h2 className="text-2xl md:text-3xl font-black text-white tracking-tight">Delay Recovery Logic</h2>
+                                </div>
+
+                                <div className="space-y-6 md:space-y-8 max-h-[70vh] md:max-h-[60vh] overflow-y-auto pr-2 md:pr-4 custom-scrollbar">
+                                    <p className="text-slate-400 text-sm md:text-base font-medium leading-relaxed">
+                                        The <strong>Optimization Available</strong> dashboard is a tactical response unit that activates when the system detects active schedule overruns.
+                                    </p>
+
+                                    <div className="space-y-4 md:space-y-6 pb-4">
+                                        {/* Logic: Delay Mitigation */}
+                                        <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl md:rounded-2xl p-4 md:p-6 shadow-lg shadow-emerald-500/5">
+                                            <div className="flex items-center gap-3 mb-3 md:mb-4">
+                                                <div className="p-1.5 md:p-2 bg-emerald-500 rounded-lg text-white shadow-lg shadow-emerald-500/20">
+                                                    <Clock size={18} className="md:w-5 md:h-5" />
+                                                </div>
+                                                <h3 className="text-lg md:text-xl font-bold text-emerald-400 uppercase tracking-tight">Active Delay Mitigation</h3>
+                                            </div>
+                                            <div className="space-y-2 md:space-y-4 text-slate-300 text-sm md:text-base">
+                                                <p><span className="text-white font-bold opacity-70">The Trigger:</span> This card only appears when one or more providers are running behind their scheduled finish times.</p>
+                                                <p><span className="text-white font-bold opacity-70">The Logic:</span> It scans the entire facility for staff who are currently "Free" or "Available" and identifies the fastest way to move delayed clients to them.</p>
+                                                <div className="bg-white/5 rounded-xl p-3 md:p-4 border border-white/5">
+                                                    <ul className="list-disc list-inside space-y-1 text-slate-400 text-xs md:text-sm font-medium">
+                                                        <li>Prioritizes <span className="text-white">"Minutes Saved"</span> to fix the biggest delays first.</li>
+                                                        <li>Calculates the <span className="text-white">Total Facility Recovery</span> (aggregate time saved).</li>
+                                                    </ul>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        {/* Logic: Selection Criteria */}
+                                        <div className="bg-indigo-500/10 border border-indigo-500/20 rounded-xl md:rounded-2xl p-4 md:p-6 shadow-lg shadow-indigo-500/5">
+                                            <div className="flex items-center gap-3 mb-3 md:mb-4">
+                                                <div className="p-1.5 md:p-2 bg-indigo-500 rounded-lg text-white shadow-lg shadow-indigo-500/20">
+                                                    <Target size={18} className="md:w-5 md:h-5" />
+                                                </div>
+                                                <h3 className="text-lg md:text-xl font-bold text-indigo-400 uppercase tracking-tight">Selection Criteria</h3>
+                                            </div>
+                                            <div className="space-y-4 md:space-y-6 text-slate-300 text-sm md:text-base">
+                                                <div className="border-l-2 border-emerald-500/30 pl-4">
+                                                    <p className="font-bold text-white text-sm mb-1 uppercase tracking-wider">Tactical Skill Check</p>
+                                                    <p className="text-slate-400 text-xs md:text-sm">Only suggests rebalancing if the receiving provider has a 100% skill-match for the delayed treatment.</p>
+                                                </div>
+                                                <div className="border-l-2 border-indigo-500/30 pl-4">
+                                                    <p className="font-bold text-white text-sm mb-1 uppercase tracking-wider">Capacity Shielding</p>
+                                                    <p className="text-slate-400 text-xs md:text-sm">Ensures that the providers receiving clinical shifts have enough remaining capacity today to handle the additional load without going into overtime themselves.</p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="mt-6 md:mt-10">
+                                    <button
+                                        onClick={() => setShowOptimizationInfo(false)}
                                         className="w-full py-3 md:py-4 bg-white hover:bg-slate-100 text-slate-900 font-extrabold md:font-black rounded-xl md:rounded-2xl transition-all shadow-xl active:scale-95 flex items-center justify-center gap-2 text-sm md:text-base"
                                     >
                                         RETURN TO WORKLOAD

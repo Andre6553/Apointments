@@ -348,10 +348,12 @@ const Dashboard = () => {
     // Logic:
     // 1. Trial is always active until it expires (no amnesty for trial)
     // 2. Paid tiers get 24h amnesty after expires_at
+    // MasterAdmin bypasses all subscription locks
+    const isMasterAdmin = profile?.role === 'MasterAdmin';
     const isTrial = subscription?.tier === 'trial';
-    const isExpired = diffMs <= 0;
-    const isAmnesty = !isTrial && isExpired && Math.abs(diffMs) < AMNESTY_WINDOW;
-    const isHardExpired = isExpired && !isAmnesty;
+    const isExpired = !isMasterAdmin && diffMs <= 0;
+    const isAmnesty = !isMasterAdmin && !isTrial && isExpired && Math.abs(diffMs) < AMNESTY_WINDOW;
+    const isHardExpired = !isMasterAdmin && isExpired && !isAmnesty;
 
     // Calculate hours left in amnesty if applicable
     const amnestyHoursLeft = isAmnesty ? Math.ceil((AMNESTY_WINDOW - Math.abs(diffMs)) / (1000 * 60 * 60)) : 0;
@@ -514,7 +516,7 @@ const Dashboard = () => {
                     <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-4 px-4">Menu</p>
 
                     {/* Subscription Status Pill */}
-                    {subscription && (
+                    {subscription && !isMasterAdmin && (
                         <div className={`mx-4 mb-6 p-3 rounded-2xl border flex items-center justify-between transition-all ${daysLeft > 3 ? 'bg-primary/10 border-primary/20' : 'bg-red-500/10 border-red-500/20'}`}>
                             <div>
                                 <p className="text-[10px] font-bold text-slate-500 uppercase tracking-tight leading-none mb-1">

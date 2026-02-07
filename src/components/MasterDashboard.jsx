@@ -159,6 +159,13 @@ const MasterDashboard = () => {
             });
 
             setOrgs(orgData || []);
+
+            // Sync active modals with fresh data
+            if (showStaffModal) {
+                const refreshed = orgData?.find(o => o.id === showStaffModal.id);
+                if (refreshed) setShowStaffModal(refreshed);
+            }
+
             if (Object.keys(settingsMap).length > 0) {
                 setSettings(prev => ({ ...prev, ...settingsMap }));
             }
@@ -281,25 +288,34 @@ const MasterDashboard = () => {
         }
     };
 
-    const handleApplyPromo = async (subscriptionId, days) => {
+    const handleApplyPromo = async (days) => {
+        if (!showPromoModal) return;
         setSaving(true);
         try {
             const newExpiry = new Date();
             newExpiry.setDate(newExpiry.getDate() + days);
 
-            const { error } = await supabase
-                .from('subscriptions')
-                .update({
-                    expires_at: newExpiry.toISOString(),
-                    status: 'active'
-                })
-                .eq('id', subscriptionId);
+            const promoData = {
+                expires_at: newExpiry.toISOString(),
+                status: 'active',
+                tier: showPromoModal.tier || 'trial'
+            };
+
+            const { error } = showPromoModal.id
+                ? await supabase.from('subscriptions').update(promoData).eq('id', showPromoModal.id)
+                : await supabase.from('subscriptions').upsert({
+                    ...promoData,
+                    profile_id: showPromoModal.profile_id,
+                    business_id: showPromoModal.business_id,
+                    role: showPromoModal.role || 'provider'
+                });
 
             if (error) throw error;
             fetchMasterData();
             setShowPromoModal(null);
         } catch (err) {
             console.error('Promo failed:', err);
+            alert('Failed to apply promo extension.');
         } finally {
             setSaving(false);
         }
@@ -769,7 +785,14 @@ const MasterDashboard = () => {
                                         <td className="px-8 py-6">
                                             <div className="flex items-center justify-end gap-2">
                                                 <button
-                                                    onClick={() => setShowPromoModal(sub || { id: null, profile_id: org.profiles?.[0]?.id, business_id: org.id })}
+                                                    onClick={() => setShowPromoModal({
+                                                        id: sub?.id,
+                                                        profile_id: org.profiles?.find(p => p.role === 'Admin')?.id,
+                                                        business_id: org.id,
+                                                        tier: sub?.tier,
+                                                        role: 'admin',
+                                                        targetType: 'organization'
+                                                    })}
                                                     className="p-2.5 rounded-xl bg-white/5 hover:bg-orange-400/10 text-slate-400 hover:text-orange-400 transition-all border border-transparent hover:border-orange-400/20"
                                                     title="Apply Promo Days"
                                                 >
@@ -797,7 +820,7 @@ const MasterDashboard = () => {
             {/* Promo Modal */}
             <AnimatePresence>
                 {showPromoModal && (
-                    <div className="fixed inset-0 bg-background/80 backdrop-blur-md z-[100] flex items-center justify-center p-4">
+                    <div className="fixed inset-0 bg-background/80 backdrop-blur-md z-[110] flex items-center justify-center p-4">
                         <motion.div
                             initial={{ scale: 0.9, opacity: 0 }}
                             animate={{ scale: 1, opacity: 1 }}
@@ -816,14 +839,14 @@ const MasterDashboard = () => {
                                     <Gift size={32} />
                                 </div>
                                 <h3 className="text-2xl font-bold text-white mb-2">Apply Promo Days</h3>
-                                <p className="text-slate-400 text-sm">Extend subscription for this organization manually.</p>
+                                <p className="text-slate-400 text-sm">Extend subscription for this {showPromoModal.targetType === 'organization' ? 'organization' : 'selected provider'} manually.</p>
                             </div>
 
                             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                                 {[7, 10, 15, 30, 60, 90].map((days) => (
                                     <button
                                         key={days}
-                                        onClick={() => handleApplyPromo(showPromoModal.id, days)}
+                                        onClick={() => handleApplyPromo(days)}
                                         disabled={saving}
                                         className="py-4 rounded-xl bg-white/5 border border-white/5 text-white font-black hover:bg-orange-400 hover:text-white transition-all flex flex-col items-center group"
                                     >
@@ -965,6 +988,9 @@ const MasterDashboard = () => {
                                 {showStaffModal.profiles?.sort((a, b) => a.role === 'Admin' ? -1 : 1).map((staff) => {
                                     const staffSub = showStaffModal.subscriptions?.find(s => s.profile_id === staff.id);
                                     const isPaid = staffSub?.tier === 'monthly' || staffSub?.tier === 'yearly';
+                                    const now = new Date();
+                                    const expiryDate = staffSub?.expires_at ? new Date(staffSub.expires_at) : null;
+                                    const isExpired = expiryDate && expiryDate < now;
 
                                     return (
                                         <div key={staff.id} className="p-4 rounded-xl bg-white/2 border border-white/5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 group hover:bg-white/5 transition-all">
@@ -980,7 +1006,11 @@ const MasterDashboard = () => {
                                                                 Owner
                                                             </span>
                                                         )}
-                                                        {isPaid ? (
+                                                        {isExpired ? (
+                                                            <span className="text-[10px] px-1.5 py-0.2 rounded bg-red-500/20 text-red-400 border border-red-500/30 font-black uppercase tracking-tighter animate-pulse shadow-[0_0_10px_rgba(239,68,68,0.2)]">
+                                                                EXPIRED
+                                                            </span>
+                                                        ) : isPaid ? (
                                                             <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 font-black uppercase tracking-tighter">
                                                                 Paid
                                                             </span>
@@ -993,8 +1023,30 @@ const MasterDashboard = () => {
                                                     <div className="text-xs text-slate-500 truncate max-w-[200px] sm:max-w-none">{staff.email}</div>
                                                 </div>
                                             </div>
+                                            <div className="flex-1 flex justify-center sm:justify-end">
+                                                <button
+                                                    onClick={() => setShowPromoModal({
+                                                        id: staffSub?.id,
+                                                        profile_id: staff.id,
+                                                        business_id: showStaffModal.id,
+                                                        tier: staffSub?.tier,
+                                                        role: staff.role?.toLowerCase(),
+                                                        targetType: 'provider'
+                                                    })}
+                                                    className="p-2 rounded-lg bg-white/5 hover:bg-orange-400/10 text-slate-500 hover:text-orange-400 transition-all border border-transparent hover:border-orange-400/10"
+                                                    title="Apply Staff Promo"
+                                                >
+                                                    <Gift size={16} />
+                                                </button>
+                                            </div>
+
                                             <div className="text-left sm:text-right w-full sm:w-auto flex sm:flex-col justify-between items-center sm:items-end border-t border-white/5 sm:border-0 pt-4 sm:pt-0">
                                                 <div className="text-[10px] text-slate-500 uppercase font-black tracking-widest">{staff.role}</div>
+                                                {staffSub?.expires_at && (
+                                                    <div className={`text-[9px] font-bold ${isExpired ? 'text-red-400' : 'text-slate-400 opacity-60'}`}>
+                                                        {format(new Date(staffSub.expires_at), 'dd MMM yyyy')}
+                                                    </div>
+                                                )}
                                                 <div className="text-[10px] text-slate-600 italic">
                                                     ID: {staff.id.slice(0, 8)}
                                                 </div>
