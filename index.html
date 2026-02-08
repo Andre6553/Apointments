@@ -22,7 +22,18 @@
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
         navigator.serviceWorker.register('/sw.js')
-          .then(reg => console.log('SW registered', reg))
+          .then(reg => {
+            console.log('SW registered', reg);
+
+            // Ask for notification permission
+            if ('Notification' in window) {
+              Notification.requestPermission().then(permission => {
+                if (permission === 'granted') {
+                  console.log('Notification permission granted.');
+                }
+              });
+            }
+          })
           .catch(err => console.error('SW failed', err));
       });
     }
