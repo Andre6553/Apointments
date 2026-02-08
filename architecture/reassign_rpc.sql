@@ -1,7 +1,8 @@
 CREATE OR REPLACE FUNCTION reassign_appointment(
     appt_id UUID,
     new_provider_id UUID,
-    note_text TEXT
+    note_text TEXT,
+    flag_attention BOOLEAN DEFAULT FALSE
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -37,7 +38,8 @@ BEGIN
         assigned_profile_id = new_provider_id,
         shifted_from_id = v_old_provider_id,
         status = 'pending',
-        notes = COALESCE(notes, '') || E'\n' || note_text
+        notes = COALESCE(notes, '') || E'\n' || note_text,
+        requires_attention = flag_attention
     WHERE id = appt_id;
 
     RETURN jsonb_build_object('success', true);

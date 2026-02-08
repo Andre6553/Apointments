@@ -17,7 +17,10 @@ export const calculateAndApplyDelay = async (appointmentId, actualTime, type = '
         .eq('id', appointmentId)
         .single()
 
-    if (fetchError || !currentApt) return;
+    if (fetchError || !currentApt) {
+        console.warn(`[DelayEngine] Triggering appointment ${appointmentId} not found. Rip-current aborted.`);
+        return;
+    }
 
     // AVOID FEEDBACK LOOPS: If this appointment already has a set delay close to what we're calculating, skip.
     const currentRecordedDelay = currentApt.delay_minutes || 0;

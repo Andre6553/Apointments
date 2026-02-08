@@ -40,7 +40,10 @@ export const startAppointmentAction = async (id, profile, onRefresh = () => { })
             .eq('id', id)
             .single();
 
-        if (fetchError || !apt) throw new Error('Appointment not found');
+        if (fetchError || !apt) {
+            console.log(`[StartAction] Appointment ${id} no longer exists. Aborting.`);
+            return { error: new Error('Appointment not found'), aborted: true };
+        }
 
         const { error } = await supabase
             .from('appointments')
@@ -93,7 +96,10 @@ export const endAppointmentAction = async (id, profile, onRefresh = () => { }) =
             .eq('id', id)
             .single();
 
-        if (fetchError || !apt) throw new Error('Appointment not found');
+        if (fetchError || !apt) {
+            console.log(`[EndAction] Appointment ${id} no longer exists. Aborting.`);
+            return { error: new Error('Appointment not found'), aborted: true };
+        }
 
         const { error } = await supabase
             .from('appointments')

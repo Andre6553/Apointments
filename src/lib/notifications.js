@@ -5,6 +5,11 @@ import { supabase } from './supabase'
  * In simulation mode, every message is redirected to +27761963997.
  */
 export const sendWhatsApp = async (phone, message) => {
+    if (!phone || !message) {
+        console.warn('[WhatsApp] Aborted: Missing phone number or message content.', { phone, message });
+        return { success: false, error: 'Missing phone or message' };
+    }
+
     const isSim = localStorage.getItem('simulation_mode') === 'true'
     const targetPhone = isSim ? "+27761963997" : phone
 

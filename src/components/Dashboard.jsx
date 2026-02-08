@@ -84,7 +84,9 @@ const Dashboard = () => {
 
     // HEARTBEAT: Dedicated effect to pick up state changes
     useEffect(() => {
-        if (!isLocal || !profile?.business_id || !user) return;
+        // Only the Local server OR the authorized Admin on Live can act as the 'Bot Engine'
+        const isAuthorizedOperator = isLocal || user?.email === 'admin@demo.com';
+        if (!isAuthorizedOperator || !profile?.business_id || !user) return;
 
         const heartbeatInterval = setInterval(async () => {
             // IMPORTANT: Must include current states in upsert to prevent wiping them

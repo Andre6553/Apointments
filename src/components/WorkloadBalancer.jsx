@@ -480,8 +480,12 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                 throw error
             }
         } catch (error) {
-            console.error(error)
-            alert('Action Failed: Could not process shift.')
+            console.error('[Balancer] Shift failed:', error);
+            if (error?.message?.includes('Appointment not found')) {
+                console.log('[Balancer] Appointment missing (likely wiped). Silently aborting.');
+                return;
+            }
+            alert('Action Failed: Could not process shift.');
         }
     }
 

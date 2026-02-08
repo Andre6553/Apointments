@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createClient } from '@supabase/supabase-js';
-import { format, addMinutes, subMinutes, subDays } from 'date-fns';
+import { format, addMinutes, subMinutes, subDays, startOfDay } from 'date-fns';
 import { uploadToDrive } from './driveUtils.js';
 
 // Simple ENV loader
@@ -349,6 +349,98 @@ const checkSupabaseLogsRotation = async () => {
     }
 };
 
+// --- CRON: Daily Rotation & Archival ---
+const runDailyBackup = async () => {
+    try {
+        const now = new Date();
+        const todayStr = format(now, 'yyyy-MM-dd');
+        const startOfTodayVal = startOfDay(now).toISOString();
+
+        console.log(`[DailyBackup] Checking for previous day logs... (Today: ${todayStr})`);
+
+        // 1. Local Log Files
+        if (fs.existsSync(LOGS_DIR)) {
+            const files = fs.readdirSync(LOGS_DIR);
+            for (const file of files) {
+                // Upload any .log file that doesn't belong to today (avoid active writing)
+                if (file.endsWith('.log') && !file.includes(todayStr)) {
+                    const filePath = path.join(LOGS_DIR, file);
+                    console.log(`[DailyBackup] Archiving old local log: ${file}`);
+                    const success = await uploadToDrive(filePath);
+                    if (success) {
+                        fs.unlinkSync(filePath);
+                        console.log(`[DailyBackup] Successfully archived: ${file}`);
+                    }
+                }
+            }
+        }
+
+        // 2. Supabase Tables Archival
+        const archivableTables = [
+            { name: 'audit_logs', tsCol: 'ts', days: 1 },
+            { name: 'appointment_logs', tsCol: 'created_at', days: 1 },
+            { name: 'notifications', tsCol: 'created_at', days: 3 },
+            { name: 'temporary_messages', tsCol: 'created_at', days: 3 }
+        ];
+
+        for (const tableConfig of archivableTables) {
+            const { name: tableName, tsCol, days } = tableConfig;
+            const thresholdDate = startOfToday(subDays(now, days - 1)).toISOString();
+            let hasMore = true;
+
+            console.log(`[DailyBackup] Checking ${tableName} for records older than ${thresholdDate} (Days threshold: ${days})...`);
+
+            while (hasMore) {
+                const { data: oldLogs, error: fetchErr } = await supabase
+                    .from(tableName)
+                    .select('*')
+                    .lt(tsCol, thresholdDate)
+                    .order(tsCol, { ascending: true })
+                    .limit(1000);
+
+                if (fetchErr) {
+                    console.error(`[DailyBackup] ${tableName} query error:`, fetchErr.message);
+                    hasMore = false;
+                    continue;
+                }
+
+                if (oldLogs && oldLogs.length > 0) {
+                    console.log(`[DailyBackup] Archiving batch of ${oldLogs.length} records from ${tableName}...`);
+                    const tsSuffix = format(subDays(now, days), 'yyyy-MM-dd');
+                    const tempFileName = `supabase_${tableName}_${tsSuffix}_${Date.now()}.log`;
+                    const tempPath = path.join(LOGS_DIR, tempFileName);
+
+                    const content = oldLogs.map(l => JSON.stringify(l)).join('\n');
+                    fs.writeFileSync(tempPath, content);
+
+                    const success = await uploadToDrive(tempPath);
+                    if (success) {
+                        const lastTsVal = oldLogs[oldLogs.length - 1][tsCol];
+                        console.log(`[DailyBackup] Upload success for ${tableName}. Clearing records up to ${lastTsVal}...`);
+                        const { error: delErr } = await supabase.from(tableName).delete().lte(tsCol, lastTsVal);
+
+                        if (!delErr) {
+                            console.log(`[DailyBackup] ${tableName} batch cleared.`);
+                            if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+                            hasMore = oldLogs.length === 1000;
+                        } else {
+                            console.error(`[DailyBackup] ${tableName} cleanup failed:`, delErr.message);
+                            hasMore = false;
+                        }
+                    } else {
+                        hasMore = false;
+                    }
+                } else {
+                    console.log(`[DailyBackup] No (more) records to archive in ${tableName}.`);
+                    hasMore = false;
+                }
+            }
+        }
+    } catch (err) {
+        console.error('[DailyBackup] Critical error:', err.message);
+    }
+};
+
 // Start the Loops
 setInterval(checkReminders, 60000);
 checkReminders(); // Run once immediately on start
@@ -356,8 +448,11 @@ checkReminders(); // Run once immediately on start
 setInterval(checkStuckSessions, 60000);
 checkStuckSessions(); // Run immediately
 
-setInterval(checkSupabaseLogsRotation, 300000); // Check DB every 5 minutes
+setInterval(checkSupabaseLogsRotation, 300000); // Check DB size every 5 minutes
 checkSupabaseLogsRotation();
+
+setInterval(runDailyBackup, 900000); // Check for daily rotation every 15 minutes
+runDailyBackup();
 
 const server = http.createServer((req, res) => {
     // CORS
