@@ -376,7 +376,7 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
                                     transition={{ delay: Math.min(index * 0.03, 0.5), duration: 0.3 }}
                                     key={apt.id}
                                     onClick={() => { setSelectedAptDetails(apt); setIsDetailsOpen(true); }}
-                                    className={`relative glass-card group overflow-hidden transition-all duration-300 hover:border-white/10 hover:translate-x-1 cursor-pointer active:scale-[0.99] optimize-gpu ${index > 5 ? 'content-auto' : ''} ${apt.status === 'active' ? 'border-emerald-500 shadow-[0_0_20px_rgba(16,185,129,0.3)] bg-emerald-500/5' : ''} ${apt.requires_attention ? 'border-amber-500/50 shadow-[0_0_15px_rgba(245,158,11,0.2)] bg-amber-500/5' : ''} ${showGreenHighlight ? 'bg-emerald-500/20 border-emerald-500/30' : ''}`}
+                                    className={`relative glass-card group overflow-hidden transition-all duration-300 hover:border-white/10 hover:translate-x-1 cursor-pointer active:scale-[0.99] optimize-gpu ${apt.status === 'active' ? 'border-emerald-500 shadow-[0_0_20px_rgba(16,185,129,0.3)] bg-emerald-500/5' : ''} ${apt.requires_attention ? 'border-amber-500/50 shadow-[0_0_15px_rgba(245,158,11,0.2)] bg-amber-500/5' : ''} ${showGreenHighlight ? 'bg-emerald-500/20 border-emerald-500/30' : ''}`}
                                 >
                                     {/* Green stripe for available provider - Admin only */}
                                     {showGreenHighlight && <div className="absolute top-0 left-0 bottom-0 w-1 bg-emerald-500/50" />}

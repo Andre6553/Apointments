@@ -83,10 +83,7 @@ body {
     will-change: transform, opacity;
   }
 
-  .content-auto {
-    content-visibility: auto;
-    contain-intrinsic-size: 200px;
-  }
+
 }
 
 h1,

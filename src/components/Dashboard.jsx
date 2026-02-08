@@ -441,7 +441,7 @@ const Dashboard = () => {
     };
 
     return (
-        <div className="min-h-screen flex flex-col md:flex-row font-sans overflow-hidden">
+        <div className="h-screen flex flex-col md:flex-row font-sans overflow-hidden">
             {/* Mobile Header */}
             <header className="md:hidden bg-surface/80 backdrop-blur-md border-b border-white/5 p-4 flex justify-between items-center sticky top-0 z-50">
                 <div className="flex items-center gap-2">
@@ -752,7 +752,7 @@ const Dashboard = () => {
             </nav>
 
             {/* Main Content */}
-            <main ref={mainContentRef} className="flex-grow overflow-y-auto h-screen relative">
+            <main ref={mainContentRef} className="flex-1 overflow-y-auto relative">
                 {/* Amnesty Warning Banner */}
                 {isAmnesty && (
                     <div className="bg-amber-500/10 border-b border-amber-500/20 px-4 py-2 flex items-center justify-between sticky top-0 z-50 backdrop-blur-md">

@@ -37,9 +37,9 @@ function AppContent() {
     }
 
     return (
-        <main>
+        <>
             {!user ? <Auth /> : <Dashboard />}
-        </main>
+        </>
     )
 }
 

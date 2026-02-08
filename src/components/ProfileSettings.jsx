@@ -16,6 +16,7 @@ const ProfileSettings = () => {
     const [togglingProtection, setTogglingProtection] = useState(false)
     const [status, setStatus] = useState(null) // 'saved' | 'error'
     const [treatments, setTreatments] = useState([])
+    const [businessSkills, setBusinessSkills] = useState([])
 
     const [isLeavingOrg, setIsLeavingOrg] = useState(false)
 
@@ -36,8 +37,22 @@ const ProfileSettings = () => {
             setCurrencySymbol(profile.currency_symbol || '$')
             setSkills(profile.skills || [])
             fetchTreatments()
+            if (profile.business_id) fetchBusinessSkills()
         }
     }, [profile])
+
+    const fetchBusinessSkills = async () => {
+        try {
+            const { data, error } = await supabase
+                .from('business_skills')
+                .select('*')
+                .eq('business_id', profile.business_id)
+            if (error) throw error
+            setBusinessSkills(data || [])
+        } catch (err) {
+            console.error('Error fetching business skills:', err)
+        }
+    }
 
     const fetchTreatments = async () => {
         if (!user) return
@@ -206,7 +221,8 @@ const ProfileSettings = () => {
                                 {skills.map((skill, idx) => {
                                     const isObj = typeof skill === 'object'
                                     const code = isObj ? skill.code : skill
-                                    const label = isObj ? skill.label : skill
+                                    const skillInfo = businessSkills.find(s => s.code === code)
+                                    const label = isObj ? skill.label : (skillInfo?.name || code)
                                     const isPriority = isObj && skill.priority === true
 
                                     const togglePriority = () => {
@@ -354,7 +370,8 @@ const ProfileSettings = () => {
                                 {skills.map((skill, idx) => {
                                     const isObj = typeof skill === 'object'
                                     const code = isObj ? skill.code : skill
-                                    const label = isObj ? skill.label : skill
+                                    const skillInfo = businessSkills.find(s => s.code === code)
+                                    const label = isObj ? skill.label : (skillInfo?.name || code)
                                     const isPriority = isObj && skill.priority === true
 
                                     // Find matching treatment for this skill (by code match)
