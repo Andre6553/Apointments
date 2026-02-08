@@ -49,6 +49,10 @@ function App() {
             <ToastProvider>
                 <AppContent />
                 <SpeedInsights />
+                <footer className="fixed bottom-4 right-6 flex gap-4 text-[10px] text-slate-500 font-medium opacity-40 hover:opacity-100 transition-opacity z-50">
+                    <a href="/privacy.html" target="_blank" rel="noopener noreferrer" className="hover:text-primary transition-colors">Privacy Policy</a>
+                    <a href="/terms.html" target="_blank" rel="noopener noreferrer" className="hover:text-primary transition-colors">Terms of Service</a>
+                </footer>
             </ToastProvider>
         </AuthProvider>
     )
