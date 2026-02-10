@@ -13,6 +13,7 @@ import { checkActiveOverruns } from '../lib/delayEngine'
 
 const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEnabled }) => {
     const { user, profile } = useAuth()
+    console.log('[WorkloadBalancer] Current User Email:', user?.email);
 
     const [delayedApts, setDelayedApts] = useState([])
     const [needsAttentionApts, setNeedsAttentionApts] = useState([])
@@ -272,7 +273,7 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
 
                     // If schedule is explicitly active, or if we are in demo mode and can't find schedule 
                     // (RLS might block providers from seeing others' schedules, so we fallback to assuming true for doctors in demo)
-                    if (hasWorkToday === true || (hasWorkToday === null && p.full_name?.startsWith('Dr.'))) {
+                    if (hasWorkToday === true || (hasWorkToday === null && (p.full_name?.startsWith('Dr.') || p.role === 'Provider'))) {
                         isOnline = true;
                     }
                 }
@@ -1294,6 +1295,18 @@ const WorkloadBalancer = ({ initialChatSender, onChatHandled, virtualAssistantEn
                                     }`}>
                                     {systemHealth.status} ({systemHealth.loadPercentage}%)
                                 </span>
+                                {(user?.email?.toLowerCase() === 'admin@demo.com' || profile?.role === 'admin') && (
+                                    <button
+                                        onClick={() => {
+                                            const payload = JSON.stringify(systemHealth.atRiskAppointments || [], null, 2);
+                                            navigator.clipboard.writeText(payload);
+                                        }}
+                                        className="ml-2 p-1.5 hover:bg-white/10 rounded-lg transition-colors text-slate-400 hover:text-white"
+                                        title="Copy Data to JSON"
+                                    >
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-copy"><rect width="14" height="14" x="8" y="8" rx="2" ry="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></svg>
+                                    </button>
+                                )}
                             </div>
                             <div className="w-full max-w-[256px] h-2 bg-slate-700 rounded-full overflow-hidden border border-white/5">
                                 <motion.div

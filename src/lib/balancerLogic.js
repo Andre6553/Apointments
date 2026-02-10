@@ -399,11 +399,28 @@ export const generateCrisisRecoveryPlan = async (businessId) => {
 
     // Group by Provider
     const providerQueues = {}; // { providerId: [Tasks] }
+    const providerIds = new Set();
     uniqueWorkload.forEach(task => {
         const pid = task.provider.id;
         if (!providerQueues[pid]) providerQueues[pid] = [];
         providerQueues[pid].push(task);
+        providerIds.add(pid);
     });
+
+    // Fetch Hours & Breaks for Capacity Check
+    const dayOfWeek = new Date().getDay();
+    const { data: allHours } = await supabase
+        .from('working_hours')
+        .select('*')
+        .in('profile_id', Array.from(providerIds))
+        .eq('day_of_week', dayOfWeek)
+        .eq('is_active', true);
+
+    const { data: allBreaks } = await supabase
+        .from('breaks')
+        .select('*')
+        .in('profile_id', Array.from(providerIds))
+        .eq('day_of_week', dayOfWeek);
 
     const crisisPlans = [];
 
@@ -421,40 +438,68 @@ export const generateCrisisRecoveryPlan = async (businessId) => {
 
         console.log(`[CrisisEngine] Provider ${providerName} priority skills:`, prioritySkillCodes);
 
-        // Calculate "Head of Line" Delay (The accumulated cascading delay)
-        // We estimate true delay based on the *first* pending item.
+        // --- CALC 1: HEAD-OF-LINE DELAY ---
         const firstPending = queue.find(t => t.status === 'pending');
-        if (!firstPending) continue; // Only active task? Can't do much.
+        const cascadeDelay = firstPending?.delay_minutes || 0;
 
-        // True cascading delay is roughly the delay of the first pending item
-        const cascadeDelay = firstPending.delay_minutes || 0;
+        // --- CALC 2: CAPACITY OVERLOAD ---
+        let loadRatio = 0;
+        let capacityMinutes = 0;
+        let loadMinutes = 0;
+
+        const myHours = allHours?.find(h => h.profile_id === providerId);
+        if (myHours) {
+            const now = new Date();
+            const [hE, mE] = myHours.end_time.split(':').map(Number);
+            const shiftEnd = new Date(now); shiftEnd.setHours(hE, mE, 0, 0);
+
+            // Initial minutes left
+            let minutesLeft = (shiftEnd - now) / 60000;
+
+            // Deduct breaks
+            const myBreaks = allBreaks?.filter(b => b.profile_id === providerId) || [];
+            for (const b of myBreaks) {
+                const [bS_h, bS_m] = b.start_time.split(':').map(Number);
+                const breakStart = new Date(now); breakStart.setHours(bS_h, bS_m, 0, 0);
+                if (breakStart > now && breakStart < shiftEnd) {
+                    minutesLeft -= b.duration_minutes;
+                }
+            }
+            capacityMinutes = Math.max(1, minutesLeft); // Avoid div by 0
+
+            loadMinutes = queue.reduce((sum, t) => sum + t.duration_minutes, 0);
+            loadRatio = loadMinutes / capacityMinutes;
+        }
 
         // --- ENHANCED: Priority Check (DB-Driven + Keyword Fallback) ---
         const criticalKeywords = ['surgery', 'theater', 'priority', 'vip', 'critical', 'complex'];
-
         const criticalAppt = queue.find(t => {
-            // 1. Check if appointment's required_skills include any of the provider's priority skills
             const apptSkills = (t.required_skills || []).map(s => s.toUpperCase());
             const hasDbPriority = apptSkills.some(skill => prioritySkillCodes.includes(skill));
             if (hasDbPriority) return true;
-
-            // 2. Fallback: Keyword matching for treatment names (legacy support)
             const txt = (t.treatment_name + ' ' + (t.required_skills || []).join(' ')).toLowerCase();
             return criticalKeywords.some(k => txt.includes(k));
         });
 
-        // Trigger if delay is high OR if a Critical Appt is present (lower barrier to act)
-        const threshold = criticalAppt ? 20 : 45;
+        // Trigger Conditions:
+        // 1. High cascading delay (Standard)
+        // 2. Critical Appointment present (Standard)
+        // 3. Predicted Overload > 110% (New)
+        const delayThreshold = criticalAppt ? 20 : 45;
+        const isOverloaded = loadRatio > 1.1;
+        const isDelayed = cascadeDelay >= delayThreshold;
 
-        if (cascadeDelay < threshold) continue;
+        if (!isDelayed && !isOverloaded) continue;
+
+        const crisisType = isOverloaded && !isDelayed ? 'PREDICTED_OVERLOAD' : 'CASCADING_DELAY';
+        const displayDelay = isOverloaded && !isDelayed ? Math.round(loadMinutes - capacityMinutes) + 'm (Forecast)' : cascadeDelay;
 
         // --- PRIORITY STRATEGY: Path Clearing ---
         if (criticalAppt) {
             console.log(`[CrisisEngine] 🛡️ Protecting Critical Appt: ${criticalAppt.treatment_name}`);
             const actions = [];
-            let minutesToRecover = cascadeDelay;
+            let minutesToRecover = isOverloaded ? (loadMinutes - capacityMinutes) : cascadeDelay;
 
-            // Move anyone who is NOT the VIP and HAS NOT been recently shifted
             const moveable = queue.filter(t => t.id !== criticalAppt.id && t.status === 'pending' && !t.shifted_from_id)
                 .sort((a, b) => b.duration_minutes - a.duration_minutes);
 
@@ -473,33 +518,32 @@ export const generateCrisisRecoveryPlan = async (businessId) => {
                 crisisPlans.push({
                     providerId,
                     providerName,
-                    delayMinutes: cascadeDelay,
+                    delayMinutes: displayDelay,
+                    crisisType,
                     recommendedActions: actions
                 });
             }
-            continue; // <--- SKIP STANDARD STRATEGY
+            continue;
         }
 
-        console.log(`[CrisisEngine] 🚨 CRISIS DETECTED: ${providerName} is ${cascadeDelay}m behind.`);
+        console.log(`[CrisisEngine] 🚨 CRISIS DETECTED: ${providerName} - Type: ${crisisType}`);
 
-        // Strategy A: Load Shedding (Move tasks to others)
-        // We reuse getSmartReassignments logic partially here but focused on this provider's queue
-        // For simplicity in this "Clever" logic, we just tag who needs moving.
+        // Strategy A: Load Shedding
+        const candidates = [...queue.filter(t => t.status === 'pending' && !t.shifted_from_id)].sort((a, b) => b.duration_minutes - a.duration_minutes);
 
-        // Find "Sacrificial" or "Movable" candidates (Exclude already-shifted to prevent ping-ponging)
-        const candidates = [...queue.filter(t => t.status === 'pending' && !t.shifted_from_id)].sort((a, b) => b.duration_minutes - a.duration_minutes); // Longest first
-
-        let minutesToRecover = cascadeDelay;
+        // Target: Recover enough time to eliminate the delay OR reduce load to 100%
+        let minutesToRecover = isOverloaded ? (loadMinutes - capacityMinutes) : cascadeDelay;
         const actions = [];
 
         for (const candidate of candidates) {
-            if (minutesToRecover <= 15) break; // Manageable
+            if (minutesToRecover <= 15) break;
 
-            // Action: Shed
             actions.push({
                 type: 'TRANSFER_RECOMMENDATION',
                 appointment: candidate,
-                reason: `Shedding this ${candidate.duration_minutes}m task recovers ${candidate.duration_minutes}m for the queue.`,
+                reason: crisisType === 'PREDICTED_OVERLOAD'
+                    ? `Proactive Shedding: Capacity is ${Math.round(loadRatio * 100)}%. Moving this saves ${candidate.duration_minutes}m.`
+                    : `Shedding this ${candidate.duration_minutes}m task recovers ${candidate.duration_minutes}m for the queue.`,
                 impact_score: candidate.duration_minutes
             });
             minutesToRecover -= candidate.duration_minutes;
@@ -507,20 +551,17 @@ export const generateCrisisRecoveryPlan = async (businessId) => {
 
         // Strategy B: Strategic Deferral (If still behind)
         if (minutesToRecover > 30) {
-            // BATCH DEFERRAL: Find candidates from the bottom up until the delay is cleared
             const existingActionIds = new Set(actions.map(a => a.appointment.id));
             const deferralCandidates = [...queue].reverse().filter(t => t.status === 'pending' && !existingActionIds.has(t.id));
 
             for (const candidate of deferralCandidates) {
                 if (minutesToRecover <= 30) break;
-                // Safety: Don't defer if it's the only thing left in the queue
                 if (queue.filter(t => t.status === 'pending').length - actions.filter(a => a.type === 'DEFERRAL_RECOMMENDATION').length <= 1) break;
 
                 let suggestedDate = 'Tomorrow';
                 let suggestionDetails = 'Checking availability...';
 
                 try {
-                    // Check next 14 days for THIS provider
                     const startSearch = new Date(); startSearch.setDate(startSearch.getDate() + 1);
                     const endSearch = new Date(); endSearch.setDate(startSearch.getDate() + 14);
 
@@ -594,7 +635,8 @@ export const generateCrisisRecoveryPlan = async (businessId) => {
             crisisPlans.push({
                 providerId,
                 providerName,
-                delayMinutes: cascadeDelay,
+                delayMinutes: displayDelay,
+                crisisType,
                 recommendedActions: actions
             });
         }

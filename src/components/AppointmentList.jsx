@@ -116,7 +116,7 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
     const [selectedAptDetails, setSelectedAptDetails] = useState(null);
     const [isDetailsOpen, setIsDetailsOpen] = useState(false);
     const [now, setNow] = useState(new Date());
-    const [globalView, setGlobalView] = useState(true);
+    const [viewMode, setViewMode] = useState('global'); // 'global', 'my', 'active'
     const dateInputRef = useRef(null);
     const appointmentsRef = useRef(appointments);
 
@@ -179,7 +179,11 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
         const cached = getCache(cacheKey);
 
         // Local filter for display
-        const filterToSelectedDay = (allDocs) => {
+        const filterToView = (allDocs) => {
+            if (viewMode === 'active') {
+                return allDocs.filter(a => a.status === 'active');
+            }
+
             const { start, end } = getDayRange(viewDate);
             return allDocs.filter(a => {
                 const d = new Date(a.scheduled_start);
@@ -188,7 +192,7 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
         };
 
         if (cached && !silent) {
-            setAppointments(filterToSelectedDay(cached));
+            setAppointments(filterToView(cached));
         }
 
         let query = supabase
@@ -199,18 +203,27 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
                 transfer_requests(id, status, receiver_id, sender_id)
             `)
             .or(`status.eq.active,status.eq.pending`)
-            .gte('scheduled_start', windowStart.toISOString())
-            .lte('scheduled_start', windowEnd.toISOString())
+            // Only limit by date if NOT in active view (Active view shows ALL active regardless of date)
             .order('scheduled_start', { ascending: true });
 
-        if (profile?.role?.toLowerCase() !== 'admin' || !globalView) {
+        if (viewMode !== 'active') {
+            query = query
+                .gte('scheduled_start', windowStart.toISOString())
+                .lte('scheduled_start', windowEnd.toISOString());
+        }
+
+        if (profile?.role?.toLowerCase() !== 'admin' || viewMode === 'my') {
             query = query.eq('assigned_profile_id', user?.id);
+        } else if (viewMode === 'active') {
+            query = query.eq('status', 'active');
         }
 
         const { data } = await query;
         if (data) {
-            setCache(cacheKey, data);
-            setAppointments(filterToSelectedDay(data));
+            if (viewMode !== 'active') {
+                setCache(cacheKey, data);
+            }
+            setAppointments(filterToView(data));
         }
         setLoading(false);
     };
@@ -218,10 +231,17 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
     useEffect(() => {
         if (!user || !profile) return;
         fetchAppointments();
-        const filter = (profile?.role?.toLowerCase() !== 'admin' || !globalView) ? `assigned_profile_id=eq.${user.id}` : undefined;
-        const channel = supabase.channel(`list-updates-${user.id}-${globalView}`).on('postgres_changes', { event: '*', schema: 'public', table: 'appointments', filter: filter }, () => fetchAppointments(true)).subscribe();
+
+        let filter = undefined;
+        if (profile?.role?.toLowerCase() !== 'admin' || viewMode === 'my') {
+            filter = `assigned_profile_id=eq.${user.id}`;
+        } else if (viewMode === 'active') {
+            filter = `status=eq.active`;
+        }
+
+        const channel = supabase.channel(`list-updates-${user.id}-${viewMode}`).on('postgres_changes', { event: '*', schema: 'public', table: 'appointments', filter: filter }, () => fetchAppointments(true)).subscribe();
         return () => supabase.removeChannel(channel);
-    }, [user, profile, viewDate, globalView]);
+    }, [user, profile, viewDate, viewMode]);
 
     const navigateDay = (direction) => {
         const newDate = new Date(viewDate);
@@ -266,7 +286,7 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
                             <span className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-0.5 whitespace-nowrap">Current View</span>
                             <div className="flex items-center gap-2 font-heading font-bold text-white whitespace-nowrap overflow-hidden">
                                 <CalendarIcon size={16} className="text-primary shrink-0" />
-                                <span className="truncate">{isSameDay(viewDate, new Date()) ? "Today's Schedule" : format(viewDate, 'EEEE, MMM d')}</span>
+                                <span className="truncate">{viewMode === 'active' ? "Active Sessions" : (isSameDay(viewDate, new Date()) ? "Today's Schedule" : format(viewDate, 'EEEE, MMM d'))}</span>
                             </div>
                         </div>
                         <button onClick={() => navigateDay(1)} className="p-3 hover:bg-white/10 rounded-xl text-slate-400 hover:text-white transition-all active:scale-90 shrink-0"><ArrowRight size={20} /></button>
@@ -303,7 +323,7 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
                     </div>
                 )}
                 {/* Next Appointment Countdown - Show for providers, or for Admin when in "My Clients" view */}
-                {myNextAppointment && (profile?.role?.toLowerCase() !== 'admin' || !globalView) && (
+                {myNextAppointment && (profile?.role?.toLowerCase() !== 'admin' || viewMode === 'my') && (
                     <div className="hidden md:block">
                         <NextAppointmentCountdown nextAppointment={myNextAppointment} />
                     </div>
@@ -317,11 +337,11 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
 
             {/* View Switcher (Admin Only) */}
             {profile?.role?.toLowerCase() === 'admin' && (
-                <div className="flex justify-start">
-                    <div className="bg-surface/50 p-1 rounded-2xl border border-white/5 flex items-center gap-1 shadow-inner">
+                <div className="flex justify-start w-full overflow-x-auto pb-2 -mb-2 scrollbar-hide">
+                    <div className="bg-surface/50 p-1 rounded-2xl border border-white/5 flex items-center gap-1 shadow-inner min-w-max">
                         <button
-                            onClick={() => setGlobalView(false)}
-                            className={`flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold transition-all ${!globalView
+                            onClick={() => setViewMode('my')}
+                            className={`flex items-center gap-2 px-4 md:px-6 py-2.5 rounded-xl font-bold transition-all whitespace-nowrap ${viewMode === 'my'
                                 ? 'bg-primary text-white shadow-lg shadow-primary/20'
                                 : 'text-slate-400 hover:text-white hover:bg-white/5'
                                 }`}
@@ -330,14 +350,24 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
                             <span>My Clients</span>
                         </button>
                         <button
-                            onClick={() => setGlobalView(true)}
-                            className={`flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold transition-all ${globalView
+                            onClick={() => setViewMode('global')}
+                            className={`flex items-center gap-2 px-4 md:px-6 py-2.5 rounded-xl font-bold transition-all whitespace-nowrap ${viewMode === 'global'
                                 ? 'bg-primary text-white shadow-lg shadow-primary/20'
                                 : 'text-slate-400 hover:text-white hover:bg-white/5'
                                 }`}
                         >
                             <Globe size={16} />
                             <span>Global Facility</span>
+                        </button>
+                        <button
+                            onClick={() => setViewMode('active')}
+                            className={`flex items-center gap-2 px-4 md:px-6 py-2.5 rounded-xl font-bold transition-all whitespace-nowrap ${viewMode === 'active'
+                                ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20'
+                                : 'text-slate-400 hover:text-white hover:bg-white/5'
+                                }`}
+                        >
+                            <Sparkles size={16} />
+                            <span>Active Sessions</span>
                         </button>
                     </div>
                 </div>

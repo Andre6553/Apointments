@@ -4,6 +4,106 @@ import { useAuth } from '../hooks/useAuth'
 import { User, Save, Check, Loader2, Trash2, Edit2, XCircle, Shield, ShieldOff, AlertTriangle, Sparkles, Building2, LogOut } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
+const TreatmentRow = ({ code, label, isPriority, treatment, currencySymbol, onSave }) => {
+    const [duration, setDuration] = useState(treatment?.duration_minutes || 30)
+    const [cost, setCost] = useState(treatment?.cost || 0)
+    const [isSaving, setIsSaving] = useState(false)
+    const [isDirty, setIsDirty] = useState(false)
+
+    useEffect(() => {
+        setDuration(treatment?.duration_minutes || 30)
+        setCost(treatment?.cost || 0)
+        setIsDirty(false)
+    }, [treatment])
+
+    const handleSave = async () => {
+        if (!isDirty) return
+
+        setIsSaving(true)
+        await onSave(duration, cost)
+        setIsSaving(false)
+        setIsDirty(false)
+    }
+
+    const handleChange = (setter) => (e) => {
+        setter(e.target.value)
+        setIsDirty(true)
+    }
+
+    return (
+        <div className={`grid grid-cols-12 gap-3 items-center p-4 rounded-xl border transition-all group ${isPriority ? 'bg-amber-500/5 border-amber-500/20' : 'bg-white/[0.02] border-white/5 hover:bg-white/[0.04]'}`}>
+            {/* Service Name */}
+            <div className="col-span-3 flex items-center gap-2 overflow-hidden">
+                <div className={`w-10 h-10 rounded-lg flex items-center justify-center font-bold text-xs shrink-0 ${isPriority ? 'bg-amber-500/20 text-amber-400' : 'bg-indigo-500/10 text-indigo-400'}`}>
+                    {code}
+                </div>
+                <div className="min-w-0 flex-1">
+                    <p className="text-sm font-bold text-white truncate" title={label}>{label}</p>
+                    {isPriority && <span className="text-[9px] text-amber-500 font-bold uppercase">⭐ VIP Priority</span>}
+                </div>
+            </div>
+
+            {/* Duration Field */}
+            <div className="col-span-3">
+                <div className="relative group/input">
+                    <input
+                        type="number"
+                        className="glass-input w-full h-10 text-sm text-center bg-transparent border-transparent group-hover/input:border-white/10 focus:border-primary/50 transition-all"
+                        value={duration}
+                        onChange={handleChange(setDuration)}
+                        onBlur={handleSave}
+                        min="5"
+                        step="5"
+                    />
+                    <span className="absolute left-1/2 ml-2 top-1/2 -translate-y-1/2 text-xs text-slate-500 pointer-events-none opacity-50 group-hover/input:opacity-100 transition-opacity">min</span>
+                </div>
+            </div>
+
+            {/* Cost Field */}
+            <div className="col-span-3">
+                <div className="relative group/input">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none">{currencySymbol}</span>
+                    <input
+                        type="number"
+                        className="glass-input w-full h-10 text-sm text-center bg-transparent border-transparent group-hover/input:border-white/10 focus:border-primary/50 transition-all"
+                        value={cost}
+                        onChange={handleChange(setCost)}
+                        onBlur={handleSave}
+                        min="0"
+                        step="10"
+                    />
+                </div>
+            </div>
+
+            {/* Status */}
+            <div className="col-span-3 flex justify-end gap-2 items-center h-10">
+                <AnimatePresence>
+                    {isSaving ? (
+                        <motion.div
+                            initial={{ opacity: 0, x: -5 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            exit={{ opacity: 0 }}
+                            className="flex items-center gap-1.5 text-emerald-400 text-[10px] font-bold"
+                        >
+                            <Loader2 size={10} className="animate-spin" />
+                            Saving...
+                        </motion.div>
+                    ) : isDirty && (
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            className="text-amber-500/80 text-[10px] italic pr-2"
+                        >
+                            Unsaved
+                        </motion.div>
+                    )}
+                </AnimatePresence>
+            </div>
+        </div>
+    )
+}
+
 const ProfileSettings = () => {
     const { user, profile, fetchProfile, updateProfile } = useAuth()
     const [fullName, setFullName] = useState('')
@@ -23,9 +123,52 @@ const ProfileSettings = () => {
     // Skills State (assigned by Admin, provider can only toggle priority)
     const [skills, setSkills] = useState([]) // e.g. [{ label: 'Haircut', code: 'HC', priority: true }]
 
-    // Treatment editing state (skills-based, only duration/cost editable)
-    const [editingId, setEditingId] = useState(null)
-    const [editValues, setEditValues] = useState({ duration: 30, cost: 0 })
+    // Helper to save treatment updates from rows
+    const handleSaveTreatment = async (skill, duration, cost) => {
+        const isObj = typeof skill === 'object'
+        const code = isObj ? skill.code : skill
+        // Find existing treatment by name OR by required_skills match
+        const treatment = treatments.find(t =>
+            t.name?.toUpperCase() === code?.toUpperCase() ||
+            (Array.isArray(t.required_skills) && t.required_skills.includes(code))
+        )
+
+        try {
+            let result;
+            const payload = {
+                duration_minutes: parseInt(duration),
+                cost: parseFloat(cost)
+            }
+
+            if (treatment?.id) {
+                // Update
+                const { data, error } = await supabase.from('treatments').update(payload).eq('id', treatment.id).select().single()
+                if (error) throw error
+                result = data
+            } else {
+                // Insert
+                const { data, error } = await supabase.from('treatments').insert([{
+                    profile_id: user.id,
+                    name: code,
+                    required_skills: [code],
+                    ...payload
+                }]).select().single()
+                if (error) throw error
+                result = data
+            }
+
+            // Optimistic / Real Update
+            if (result) {
+                setTreatments(prev => {
+                    const exists = prev.find(p => p.id === result.id)
+                    if (exists) return prev.map(p => p.id === result.id ? result : p)
+                    return [...prev, result]
+                })
+            }
+        } catch (err) {
+            console.error('Error saving treatment:', err)
+        }
+    }
 
 
     useEffect(() => {
@@ -350,7 +493,7 @@ const ProfileSettings = () => {
                 </div>
 
                 <div className="glass-card p-8 border-white/5 space-y-6">
-                    {/* Skill-Based Service List - Providers can only edit Duration and Cost */}
+                    {/* Skill-Based Service List */}
                     <div className="space-y-3">
                         {skills.length === 0 ? (
                             <div className="py-8 text-center text-slate-500 italic text-sm">
@@ -361,9 +504,9 @@ const ProfileSettings = () => {
                                 {/* Header Row */}
                                 <div className="grid grid-cols-12 gap-3 px-4 py-2 text-[10px] font-bold text-slate-500 uppercase tracking-widest">
                                     <div className="col-span-3">Service (Skill)</div>
-                                    <div className="col-span-2">Duration</div>
+                                    <div className="col-span-3">Duration</div>
                                     <div className="col-span-3">Cost</div>
-                                    <div className="col-span-4"></div>
+                                    <div className="col-span-3"></div>
                                 </div>
 
                                 {/* Skill/Service Rows */}
@@ -374,122 +517,21 @@ const ProfileSettings = () => {
                                     const label = isObj ? skill.label : (skillInfo?.name || code)
                                     const isPriority = isObj && skill.priority === true
 
-                                    // Find matching treatment for this skill (by code match)
                                     const treatment = treatments.find(t =>
                                         t.name?.toUpperCase() === code?.toUpperCase() ||
                                         (Array.isArray(t.required_skills) && t.required_skills.includes(code))
                                     )
 
-                                    const isEditing = editingId === code
-
                                     return (
-                                        <div key={`${code}-${idx}`} className={`grid grid-cols-12 gap-3 items-center p-4 rounded-xl border transition-all group ${isPriority ? 'bg-amber-500/5 border-amber-500/20' : 'bg-white/[0.02] border-white/5 hover:bg-white/[0.04]'}`}>
-                                            {/* Service Name (read-only) */}
-                                            <div className="col-span-3 flex items-center gap-2">
-                                                <div className={`w-10 h-10 rounded-lg flex items-center justify-center font-bold text-xs shrink-0 ${isPriority ? 'bg-amber-500/20 text-amber-400' : 'bg-indigo-500/10 text-indigo-400'}`}>
-                                                    {code}
-                                                </div>
-                                                <div>
-                                                    <p className="text-sm font-bold text-white">{label || code}</p>
-                                                    {isPriority && <span className="text-[9px] text-amber-500 font-bold uppercase">⭐ VIP Priority</span>}
-                                                </div>
-                                            </div>
-
-                                            {/* Duration Field */}
-                                            <div className="col-span-2">
-                                                {isEditing ? (
-                                                    <input
-                                                        type="number"
-                                                        className="glass-input w-full h-10 text-sm text-center"
-                                                        value={editValues.duration}
-                                                        onChange={e => setEditValues({ ...editValues, duration: e.target.value })}
-                                                        min="5"
-                                                        step="5"
-                                                    />
-                                                ) : (
-                                                    <div className="text-sm text-slate-300 font-medium">
-                                                        {treatment?.duration_minutes || 30} min
-                                                    </div>
-                                                )}
-                                            </div>
-
-                                            {/* Cost Field */}
-                                            <div className="col-span-3">
-                                                {isEditing ? (
-                                                    <input
-                                                        type="number"
-                                                        className="glass-input w-full h-10 text-sm text-center"
-                                                        value={editValues.cost}
-                                                        onChange={e => setEditValues({ ...editValues, cost: e.target.value })}
-                                                        min="0"
-                                                        step="10"
-                                                    />
-                                                ) : (
-                                                    <div className="text-sm text-slate-300 font-medium">
-                                                        {currencySymbol}{treatment?.cost || 0}
-                                                    </div>
-                                                )}
-                                            </div>
-
-                                            {/* Actions */}
-                                            <div className="col-span-4 flex justify-end gap-2">
-                                                {isEditing ? (
-                                                    <>
-                                                        <button
-                                                            onClick={async () => {
-                                                                // Save/Update treatment for this skill
-                                                                try {
-                                                                    if (treatment?.id) {
-                                                                        // Update existing
-                                                                        await supabase.from('treatments').update({
-                                                                            duration_minutes: parseInt(editValues.duration),
-                                                                            cost: parseFloat(editValues.cost)
-                                                                        }).eq('id', treatment.id)
-                                                                        setTreatments(treatments.map(t => t.id === treatment.id ? { ...t, duration_minutes: parseInt(editValues.duration), cost: parseFloat(editValues.cost) } : t))
-                                                                    } else {
-                                                                        // Create new treatment for this skill
-                                                                        const { data, error } = await supabase.from('treatments').insert([{
-                                                                            profile_id: user.id,
-                                                                            name: code,
-                                                                            duration_minutes: parseInt(editValues.duration),
-                                                                            cost: parseFloat(editValues.cost),
-                                                                            required_skills: [code]
-                                                                        }]).select().single()
-                                                                        if (!error && data) setTreatments([...treatments, data])
-                                                                    }
-                                                                    setEditingId(null)
-                                                                } catch (err) {
-                                                                    console.error('Error saving treatment:', err)
-                                                                }
-                                                            }}
-                                                            className="px-3 py-2 bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 rounded-lg text-xs font-bold flex items-center gap-1"
-                                                        >
-                                                            <Check size={14} /> Save
-                                                        </button>
-                                                        <button
-                                                            onClick={() => setEditingId(null)}
-                                                            className="px-2 py-2 text-slate-500 hover:bg-white/5 rounded-lg text-xs"
-                                                            title="Cancel"
-                                                        >
-                                                            Cancel
-                                                        </button>
-                                                    </>
-                                                ) : (
-                                                    <button
-                                                        onClick={() => {
-                                                            setEditingId(code)
-                                                            setEditValues({
-                                                                duration: treatment?.duration_minutes || 30,
-                                                                cost: treatment?.cost || 0
-                                                            })
-                                                        }}
-                                                        className="p-2 text-slate-500 hover:text-primary transition-colors hover:bg-white/5 rounded-lg opacity-0 group-hover:opacity-100"
-                                                    >
-                                                        <Edit2 size={16} />
-                                                    </button>
-                                                )}
-                                            </div>
-                                        </div>
+                                        <TreatmentRow
+                                            key={`${code}-${idx}`}
+                                            code={code}
+                                            label={label}
+                                            isPriority={isPriority}
+                                            treatment={treatment}
+                                            currencySymbol={currencySymbol}
+                                            onSave={(d, c) => handleSaveTreatment(skill, d, c)}
+                                        />
                                     )
                                 })}
                             </>

@@ -45,6 +45,23 @@ export const startAppointmentAction = async (id, profile, onRefresh = () => { })
             return { error: new Error('Appointment not found'), aborted: true };
         }
 
+        // 🛡️ STRICT CONCURRENCY CHECK 🛡️
+        // Prevent manual double-booking even if UI allows it (e.g. race condition or multiple tabs)
+        if (apt.assigned_profile_id) {
+            const { data: existingActive } = await supabase
+                .from('appointments')
+                .select('id')
+                .eq('assigned_profile_id', apt.assigned_profile_id)
+                .eq('status', 'active')
+                .neq('id', id) // Don't count self if retrying
+                .maybeSingle();
+
+            if (existingActive) {
+                console.warn(`[StartAction] 🛑 Blocked double-booking for provider ${apt.assigned_profile_id}. existing: ${existingActive.id}`);
+                return { error: new Error('Provider is currently in another session'), aborted: true };
+            }
+        }
+
         const { error } = await supabase
             .from('appointments')
             .update({ actual_start: startTime, status: 'active', delay_minutes: 0 })
@@ -171,7 +188,9 @@ export const runVirtualAssistantCycle = async (businessId, profile) => {
         const endOfDay = new Date(now);
         endOfDay.setHours(23, 59, 59, 999);
 
-        const { data: apts, error } = await supabase
+        // QUERY 1: Fetch ALL active appointments for this business (Global Concurrency Check)
+        // We need this to know who is GENUINELY busy, even if the session started yesterday.
+        const { data: activeApts, error: activeError } = await supabase
             .from('appointments')
             .select(`
                 *,
@@ -179,23 +198,36 @@ export const runVirtualAssistantCycle = async (businessId, profile) => {
                 provider:profiles!appointments_assigned_profile_id_fkey(full_name, id)
             `)
             .eq('business_id', businessId)
-            .or('status.eq.pending,status.eq.active')
+            .eq('status', 'active');
+
+        // QUERY 2: Fetch PENDING appointments for TODAY only (Scheduling Window)
+        const { data: pendingApts, error: pendingError } = await supabase
+            .from('appointments')
+            .select(`
+                *,
+                client:clients(first_name, last_name, phone),
+                provider:profiles!appointments_assigned_profile_id_fkey(full_name, id)
+             `)
+            .eq('business_id', businessId)
+            .eq('status', 'pending')
             .gte('scheduled_start', startOfDay.toISOString())
             .lte('scheduled_start', endOfDay.toISOString());
 
-        if (error || !apts) {
-            console.error('[Assistant] Query error or no appointments:', error);
+        if (activeError || pendingError) {
+            console.error('[Assistant] Query error:', activeError || pendingError);
             isProcessingAssistant = false;
             return;
         }
 
-        console.log(`[Assistant] Scanning ${apts.length} sessions for today...`);
+        const apts = [...(activeApts || []), ...(pendingApts || [])];
+
+        console.log(`[Assistant] Scanning ${apts.length} sessions (${activeApts?.length} active globally, ${pendingApts?.length} pending today)...`);
 
         const tasks = [];
         const busyProviders = new Set();
         const providersBeingFreed = new Set();
 
-        // 1. First Pass: Identify sessions that must END
+        // 1. First Pass: Identify sessions that must END (from Global Active list)
         for (const apt of apts) {
             if (apt.status === 'active' && apt.actual_start) {
                 const scheduledDuration = (apt.duration_minutes || 30) * 60000;
@@ -221,7 +253,8 @@ export const runVirtualAssistantCycle = async (businessId, profile) => {
                     providersBeingFreed.add(apt.assigned_profile_id);
                 } else {
                     const remaining = Math.ceil((endTime - nowTime) / 60000);
-                    console.log(`[Assistant] ⏳ Provider ${apt.assigned_profile_id} busy with ${apt.client?.first_name}. ${remaining}m left (Incl. ${varianceMin}m variance).`);
+                    // Only log if it's vastly different from last time to avoid spam? No, spam is fine for debug.
+                    // console.log(`[Assistant] ⏳ Provider ${apt.assigned_profile_id} busy with ${apt.client?.first_name}. ${remaining}m left.`);
                     busyProviders.add(apt.assigned_profile_id);
                 }
             }

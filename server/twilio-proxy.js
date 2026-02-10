@@ -385,7 +385,7 @@ const runDailyBackup = async () => {
 
         for (const tableConfig of archivableTables) {
             const { name: tableName, tsCol, days } = tableConfig;
-            const thresholdDate = startOfToday(subDays(now, days - 1)).toISOString();
+            const thresholdDate = startOfDay(subDays(now, days - 1)).toISOString();
             let hasMore = true;
 
             console.log(`[DailyBackup] Checking ${tableName} for records older than ${thresholdDate} (Days threshold: ${days})...`);
