@@ -1,14 +1,31 @@
-// This is the "Offline copy of pages" service worker
-
-const CACHE = "pwabuilder-offline";
+// This is the "Offline copy of pages" service worker with Background Sync and Push Notifications
 
 importScripts('https://storage.googleapis.com/workbox-cdn/releases/5.1.2/workbox-sw.js');
+
+const CACHE = "pwabuilder-offline";
+const offlineFallbackPage = "offline.html";
+
+// Background Sync Logic
+const bgSyncPlugin = new workbox.backgroundSync.BackgroundSyncPlugin('supabase-sync', {
+  maxRetentionTime: 24 * 60 // Retry for max of 24 Hours
+});
 
 self.addEventListener("message", (event) => {
   if (event.data && event.data.type === "SKIP_WAITING") {
     self.skipWaiting();
   }
 });
+
+self.addEventListener('install', async (event) => {
+  event.waitUntil(
+    caches.open(CACHE)
+      .then((cache) => cache.add(offlineFallbackPage))
+  );
+});
+
+if (workbox.navigationPreload.isSupported()) {
+  workbox.navigationPreload.enable();
+}
 
 // Push Notification Listener
 self.addEventListener('push', (event) => {
@@ -19,7 +36,6 @@ self.addEventListener('push', (event) => {
       data = event.data.json();
     }
   } catch (e) {
-    // If it's not JSON, use the raw text
     data.body = event.data.text();
   }
 
@@ -43,7 +59,6 @@ self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   event.waitUntil(
     clients.matchAll({ type: 'window' }).then(windowClients => {
-      // Check if there is already a window open and focus it, or open a new one
       for (var i = 0; i < windowClients.length; i++) {
         var client = windowClients[i];
         if (client.url === event.notification.data.url && 'focus' in client) {
@@ -57,6 +72,52 @@ self.addEventListener('notificationclick', (event) => {
   );
 });
 
+// Register Background Sync for Supabase API requests (POST, PUT, DELETE)
+workbox.routing.registerRoute(
+  ({ url }) => url.origin === 'https://wxwparezjiourhlvyalw.supabase.co',
+  new workbox.strategies.NetworkOnly({
+    plugins: [bgSyncPlugin]
+  }),
+  'POST'
+);
+
+workbox.routing.registerRoute(
+  ({ url }) => url.origin === 'https://wxwparezjiourhlvyalw.supabase.co',
+  new workbox.strategies.NetworkOnly({
+    plugins: [bgSyncPlugin]
+  }),
+  'PUT'
+);
+
+workbox.routing.registerRoute(
+  ({ url }) => url.origin === 'https://wxwparezjiourhlvyalw.supabase.co',
+  new workbox.strategies.NetworkOnly({
+    plugins: [bgSyncPlugin]
+  }),
+  'DELETE'
+);
+
+// Offline Fallback for Navigation
+self.addEventListener('fetch', (event) => {
+  if (event.request.mode === 'navigate') {
+    event.respondWith((async () => {
+      try {
+        const preloadResp = await event.preloadResponse;
+        if (preloadResp) {
+          return preloadResp;
+        }
+        const networkResp = await fetch(event.request);
+        return networkResp;
+      } catch (error) {
+        const cache = await caches.open(CACHE);
+        const cachedResp = await cache.match(offlineFallbackPage);
+        return cachedResp;
+      }
+    })());
+  }
+});
+
+// General Caching Strategy
 workbox.routing.registerRoute(
   new RegExp('/*'),
   new workbox.strategies.StaleWhileRevalidate({
