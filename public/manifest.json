@@ -1,11 +1,15 @@
 {
-    "id": "apointment-tracker-v1",
-    "name": "Apointment Tracker",
-    "short_name": "Apointment Tracker",
+    "id": "appointment-tracker-v1",
+    "name": "Appointment Tracker",
+    "short_name": "Appointments",
     "description": "Professional Schedule Management and Appointment Booking System",
     "start_url": "/",
     "scope": "/",
     "display": "standalone",
+    "display_override": [
+        "window-controls-overlay",
+        "minimal-ui"
+    ],
     "background_color": "#0A0B14",
     "theme_color": "#6366f1",
     "orientation": "any",
