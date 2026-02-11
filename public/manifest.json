@@ -2,7 +2,7 @@
     "id": "appointment-tracker-v1",
     "name": "Appointment Tracker",
     "short_name": "Appointments",
-    "description": "Professional Schedule Management and Appointment Booking System",
+    "description": "Professional scheduling with offline sync and native desktop experience.",
     "start_url": "/",
     "scope": "/",
     "display": "standalone",

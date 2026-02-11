@@ -15,7 +15,7 @@ export default defineConfig({
       manifest: {
         name: "Appointment Tracker",
         short_name: "Appointments",
-        description: "Professional Schedule Management",
+        description: "Professional scheduling with offline sync and native desktop experience.",
         theme_color: "#6366f1",
         background_color: "#0A0B14",
         display: "standalone",
