@@ -34,7 +34,16 @@ export default defineConfig({
             type: "image/png",
             purpose: "maskable"
           }
-        ]
+        ],
+        "share_target": {
+          "action": "/appointments",
+          "method": "GET",
+          "params": {
+            "title": "share-title",
+            "text": "share-text",
+            "url": "share-url"
+          }
+        }
       }
     })
   ],

@@ -8,7 +8,7 @@ import { getCache, setCache, CACHE_KEYS } from '../lib/cache';
 import { sendWhatsApp } from '../lib/notifications';
 import { logAppointment } from '../lib/logger';
 
-const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) => {
+const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null, initialData = null }) => {
     const { user, profile } = useAuth();
     const [clients, setClients] = useState([]);
     const [formData, setFormData] = useState({
@@ -76,19 +76,30 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null }) =>
                 });
             } else {
                 setTargetProviderId(user?.id);
+
+                // Pre-fill from shared data if available
+                let initialNotes = '';
+                if (initialData) {
+                    const parts = [];
+                    if (initialData.title) parts.push(`Title: ${initialData.title}`);
+                    if (initialData.text) parts.push(`Shared: ${initialData.text}`);
+                    if (initialData.url) parts.push(`Link: ${initialData.url}`);
+                    initialNotes = parts.join('\n');
+                }
+
                 setFormData({
                     clientId: '',
                     date: format(new Date(), 'yyyy-MM-dd'),
                     time: '09:00',
                     duration: 30,
-                    notes: '',
+                    notes: initialNotes,
                     treatmentId: '',
                     treatmentName: '',
                     cost: 0
                 });
             }
         }
-    }, [isOpen, editData, profile?.business_id]);
+    }, [isOpen, editData, initialData, profile?.business_id]);
 
     useEffect(() => {
         if (isOpen && profile?.business_id && isAdmin) {

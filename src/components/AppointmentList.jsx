@@ -142,6 +142,30 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
     // Check if current user is busy (has an active appointment)
     const isCurrentUserBusy = busyProviderIds.has(user?.id);
 
+    const location = useLocation();
+    const [sharedData, setSharedData] = useState(null);
+
+    // Share Target Detection
+    useEffect(() => {
+        const params = new URLSearchParams(location.search);
+        const title = params.get('share-title');
+        const text = params.get('share-text');
+        const url = params.get('share-url');
+
+        if (title || text || url) {
+            console.log('[AppointmentList] Share data detected:', { title, text, url });
+            setSharedData({
+                title: title || '',
+                text: text || '',
+                url: url || ''
+            });
+            setIsModalOpen(true);
+
+            // Clean up the URL so reloads don't re-trigger the modal
+            navigate('/appointments', { replace: true });
+        }
+    }, [location.search, navigate]);
+
     // Keep appointmentsRef in sync
     useEffect(() => { appointmentsRef.current = appointments; }, [appointments]);
 
@@ -373,7 +397,17 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
                 </div>
             )}
 
-            <AddAppointmentModal isOpen={isModalOpen} onClose={() => { setIsModalOpen(false); setEditData(null); }} onRefresh={fetchAppointments} editData={editData} />
+            <AddAppointmentModal
+                isOpen={isModalOpen}
+                onClose={() => {
+                    setIsModalOpen(false);
+                    setEditData(null);
+                    setSharedData(null);
+                }}
+                onRefresh={fetchAppointments}
+                editData={editData}
+                initialData={sharedData}
+            />
             {selectedApt && <TransferModal isOpen={isTransferOpen} onClose={() => { setIsTransferOpen(false); setSelectedApt(null); }} appointment={selectedApt} onComplete={fetchAppointments} />}
             {selectedCancelApt && <CancelAppointmentModal isOpen={isCancelOpen} onClose={() => { setIsCancelOpen(false); setSelectedCancelApt(null); }} appointment={selectedCancelApt} onRefresh={fetchAppointments} />}
             <AppointmentDetailsModal isOpen={isDetailsOpen} onClose={() => { setIsDetailsOpen(false); setSelectedAptDetails(null); }} appointment={selectedAptDetails} onStart={startAppointment} />

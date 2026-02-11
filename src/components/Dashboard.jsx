@@ -448,7 +448,7 @@ const Dashboard = () => {
                     <div className="p-1 rounded-lg bg-primary/20 border border-primary/20">
                         <img src={logo} alt="Logo" className="w-8 h-8 rounded-md object-contain" />
                     </div>
-                    <span className="font-heading font-bold text-lg text-white">Apointment Tracker</span>
+                    <span className="font-heading font-bold text-lg text-white">Appointment Tracker</span>
                 </div>
                 <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-2 text-slate-400 hover:text-white hover:bg-white/5 rounded-xl transition-all">
                     {isSidebarOpen ? <X size={24} /> : <Menu size={24} />}
@@ -481,7 +481,7 @@ const Dashboard = () => {
                         </div>
                     </div>
                     <div>
-                        <h2 className="font-heading font-bold text-2xl text-white tracking-tight leading-none text-wrap max-w-[150px]">Apointment Tracker</h2>
+                        <h2 className="font-heading font-bold text-2xl text-white tracking-tight leading-none text-wrap max-w-[150px]">Appointment Tracker</h2>
                         <span className="text-[10px] text-primary font-bold uppercase tracking-[0.2em] relative top-1 flex items-center gap-1">
                             <Sparkles size={10} /> Pro
                         </span>
