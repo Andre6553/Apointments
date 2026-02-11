@@ -3,6 +3,12 @@ import Auth from './components/Auth'
 import Dashboard from './components/Dashboard'
 import { ToastProvider } from './contexts/ToastContext'
 import { SpeedInsights } from "@vercel/speed-insights/react"
+import { useEffect } from 'react'
+
+// Explicit check for PWABuilder static analysis
+if (typeof navigator !== 'undefined' && 'windowControlsOverlay' in navigator) {
+    console.log('Window Controls Overlay supported');
+}
 
 function AppContent() {
     const { user, loading, connectionError } = useAuth()

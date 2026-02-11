@@ -13,13 +13,13 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['logo.png', 'robots.txt'],
       manifest: {
-        name: "Apointment Tracker",
-        short_name: "Apointment Tracker",
+        name: "Appointment Tracker",
+        short_name: "Appointments",
         description: "Professional Schedule Management",
         theme_color: "#6366f1",
         background_color: "#0A0B14",
         display: "standalone",
-        display_override: ["window-controls-overlay"],
+        display_override: ["window-controls-overlay", "minimal-ui"],
         start_url: "/",
         icons: [
           {
