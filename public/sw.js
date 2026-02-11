@@ -5,6 +5,16 @@ importScripts('https://storage.googleapis.com/workbox-cdn/releases/5.1.2/workbox
 const CACHE = "pwabuilder-offline";
 const offlineFallbackPage = "offline.html";
 
+// Precache manifest from Vite
+workbox.precaching.precacheAndRoute(self.__WB_MANIFEST || []);
+
+// Explicit Sync Listener for PWABuilder Detection
+self.addEventListener('sync', (event) => {
+  if (event.tag === 'supabase-sync') {
+    console.log('Background Sync triggered for Supabase');
+  }
+});
+
 // Background Sync Logic
 const bgSyncPlugin = new workbox.backgroundSync.BackgroundSyncPlugin('supabase-sync', {
   maxRetentionTime: 24 * 60 // Retry for max of 24 Hours
