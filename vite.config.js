@@ -19,6 +19,7 @@ export default defineConfig({
         theme_color: "#6366f1",
         background_color: "#0A0B14",
         display: "standalone",
+        display_override: ["window-controls-overlay"],
         start_url: "/",
         icons: [
           {

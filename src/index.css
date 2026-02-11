@@ -11,6 +11,30 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+
+  /* Window Controls Overlay padding */
+  --titlebar-height: env(titlebar-area-height, 32px);
+}
+
+.titlebar {
+  position: fixed;
+  left: env(titlebar-area-x, 0);
+  top: env(titlebar-area-y, 0);
+  width: env(titlebar-area-width, 100%);
+  height: var(--titlebar-height);
+  -webkit-app-region: drag;
+  app-region: drag;
+  z-index: 9999;
+  pointer-events: auto;
+  display: none;
+  /* Only show in installed PWA mode */
+}
+
+@media (display-mode: standalone),
+(display-mode: window-controls-overlay) {
+  .titlebar {
+    display: block;
+  }
 }
 
 body {

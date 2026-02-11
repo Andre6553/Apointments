@@ -46,6 +46,7 @@ function AppContent() {
 function App() {
     return (
         <AuthProvider>
+            <div className="titlebar" />
             <ToastProvider>
                 <AppContent />
                 <SpeedInsights />
