@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { motion, AnimatePresence } from 'framer-motion';
 import { format, isSameDay } from 'date-fns';
@@ -141,7 +142,7 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
 
     // Check if current user is busy (has an active appointment)
     const isCurrentUserBusy = busyProviderIds.has(user?.id);
-
+    const navigate = useNavigate();
     const location = useLocation();
     const [sharedData, setSharedData] = useState(null);
 
