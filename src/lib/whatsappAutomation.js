@@ -207,36 +207,37 @@ export const checkAndRunReminders = async (supabase, businessId) => {
         if (shouldRun(settings.whatsapp_reminder_enabled, settings.whatsapp_reminder_send_day, settings.whatsapp_reminder_send_time, settings.whatsapp_reminder_last_ran)) {
             console.log('[WhatsAppAutomation] Triggering Schedule 1');
 
-            // Use Global/Default Start/End Days (or whatever is configured for Schedule 1)
-            // Note: The UI for Schedule 1 uses the "main" start/end days which are whatsapp_reminder_start_day/whatsapp_reminder_end_day
-            const result = await sendReminders(supabase, businessId, {
-                startDay: settings.whatsapp_reminder_start_day,
-                endDay: settings.whatsapp_reminder_end_day
-            });
-
+            // UPDATE TIMESTAMP FIRST to prevent race conditions (double sends)
             await supabase
                 .from('business_settings')
                 .update({ whatsapp_reminder_last_ran: new Date().toISOString() })
                 .eq('business_id', businessId);
 
-            console.log('[WhatsAppAutomation] Schedule 1 Complete:', result);
+            // Use Global/Default Start/End Days
+            await sendReminders(supabase, businessId, {
+                startDay: settings.whatsapp_reminder_start_day,
+                endDay: settings.whatsapp_reminder_end_day
+            });
+
+            console.log('[WhatsAppAutomation] Schedule 1 Execution Complete');
         }
 
         // --- Schedule 2 ---
         if (shouldRun(settings.whatsapp_reminder_enabled_2, settings.whatsapp_reminder_send_day_2, settings.whatsapp_reminder_send_time_2, settings.whatsapp_reminder_last_ran_2)) {
             console.log('[WhatsAppAutomation] Triggering Schedule 2');
 
-            const result2 = await sendReminders(supabase, businessId, {
-                startDay: settings.whatsapp_reminder_start_day_2,
-                endDay: settings.whatsapp_reminder_end_day_2
-            });
-
+            // UPDATE TIMESTAMP FIRST
             await supabase
                 .from('business_settings')
                 .update({ whatsapp_reminder_last_ran_2: new Date().toISOString() })
                 .eq('business_id', businessId);
 
-            console.log('[WhatsAppAutomation] Schedule 2 Complete:', result2);
+            await sendReminders(supabase, businessId, {
+                startDay: settings.whatsapp_reminder_start_day_2,
+                endDay: settings.whatsapp_reminder_end_day_2
+            });
+
+            console.log('[WhatsAppAutomation] Schedule 2 Execution Complete');
         }
 
     } catch (err) {
