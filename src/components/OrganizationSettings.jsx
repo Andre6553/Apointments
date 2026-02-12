@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../lib/supabase'
+import { sendReminders, getNextDayOfWeek } from '../lib/whatsappAutomation'
 import { useAuth } from '../hooks/useAuth'
-import { Building2, Save, Users, Plus, Loader2, Trash2, ShieldCheck, Mail, CheckCircle2, Sparkles } from 'lucide-react'
+import { Building2, Save, Users, Plus, Loader2, Trash2, ShieldCheck, Mail, CheckCircle2, Sparkles, Clock } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useToast } from '../contexts/ToastContext'
 import EditStaffModal from './EditStaffModal'
@@ -36,6 +37,16 @@ const OrganizationSettings = () => {
     const [targetEndDay, setTargetEndDay] = useState('Saturday')
     const [isSendingReminders, setIsSendingReminders] = useState(false)
     const [reminderStats, setReminderStats] = useState(null)
+    const [scheduleDay, setScheduleDay] = useState('')
+    const [scheduleTime, setScheduleTime] = useState('')
+    const [scheduleEnabled, setScheduleEnabled] = useState(false)
+
+    // Schedule 2
+    const [scheduleDay2, setScheduleDay2] = useState('')
+    const [scheduleTime2, setScheduleTime2] = useState('')
+    const [scheduleEnabled2, setScheduleEnabled2] = useState(false)
+    const [targetStartDay2, setTargetStartDay2] = useState('Wednesday')
+    const [targetEndDay2, setTargetEndDay2] = useState('Saturday')
 
     const [broadcastMessage, setBroadcastMessage] = useState('')
     const [broadcastImage, setBroadcastImage] = useState(null)
@@ -46,6 +57,8 @@ const OrganizationSettings = () => {
     // Progress State
     const [reminderProgress, setReminderProgress] = useState(0)
     const [broadcastProgress, setBroadcastProgress] = useState(0)
+    const settingsLoadedRef = useRef(false) // Track if initial fetch is done
+    const [saveStatus, setSaveStatus] = useState('idle') // 'idle', 'saving', 'saved', 'error'
 
     const showToast = useToast()
     const isDemoOn = getDemoStatus()
@@ -82,18 +95,105 @@ const OrganizationSettings = () => {
         try {
             const { data, error } = await supabase
                 .from('business_settings')
-                .select('whatsapp_reminder_template, whatsapp_reminder_start_day, whatsapp_reminder_end_day, whatsapp_broadcast_template')
+                .select('whatsapp_reminder_template, whatsapp_reminder_start_day, whatsapp_reminder_end_day, whatsapp_broadcast_template, whatsapp_reminder_send_day, whatsapp_reminder_send_time, whatsapp_reminder_enabled, whatsapp_reminder_enabled_2, whatsapp_reminder_send_day_2, whatsapp_reminder_send_time_2, whatsapp_reminder_start_day_2, whatsapp_reminder_end_day_2')
                 .eq('business_id', profile.business_id)
                 .single()
 
             if (data) {
+                console.log('✅ Fetched Settings from DB:', data)
                 if (data.whatsapp_reminder_template) setReminderMessage(data.whatsapp_reminder_template)
                 if (data.whatsapp_reminder_start_day) setTargetStartDay(data.whatsapp_reminder_start_day)
                 if (data.whatsapp_reminder_end_day) setTargetEndDay(data.whatsapp_reminder_end_day)
                 if (data.whatsapp_broadcast_template) setBroadcastMessage(data.whatsapp_broadcast_template)
+
+                // Schedule 1
+                setScheduleDay(data.whatsapp_reminder_send_day || '')
+                setScheduleTime(data.whatsapp_reminder_send_time ? data.whatsapp_reminder_send_time.slice(0, 5) : '')
+                setScheduleEnabled(data.whatsapp_reminder_enabled || false)
+
+                // Schedule 2
+                setScheduleDay2(data.whatsapp_reminder_send_day_2 || '')
+                setScheduleTime2(data.whatsapp_reminder_send_time_2 ? data.whatsapp_reminder_send_time_2.slice(0, 5) : '')
+                setScheduleEnabled2(data.whatsapp_reminder_enabled_2 || false)
+                if (data.whatsapp_reminder_start_day_2) setTargetStartDay2(data.whatsapp_reminder_start_day_2)
+                if (data.whatsapp_reminder_end_day_2) setTargetEndDay2(data.whatsapp_reminder_end_day_2)
+
+                // Only show toast if we actually loaded some schedule data (to avoid spam on empty new accounts)
+                if (data.whatsapp_reminder_send_day || data.whatsapp_reminder_send_day_2) {
+                    showToast('Scheduled reminders loaded', 'success')
+                }
             }
         } catch (err) {
-            console.error('Error fetching WhatsApp settings:', err)
+            console.error('❌ Error fetching WhatsApp settings:', err)
+        } finally {
+            // Allow auto-save to run after initial fetch is complete
+            setTimeout(() => { settingsLoadedRef.current = true }, 500)
+        }
+    }
+
+    // 1. Immediate Save (Selects, Toggles)
+    useEffect(() => {
+        if (!processSave()) return
+        saveWhatsAppSettings()
+    }, [
+        scheduleDay, scheduleEnabled, targetStartDay, targetEndDay,
+        scheduleDay2, scheduleEnabled2, targetStartDay2, targetEndDay2
+    ])
+
+    // 2. Debounced Save (Time Inputs, Text Areas)
+    useEffect(() => {
+        if (!processSave()) return
+        const timer = setTimeout(() => {
+            saveWhatsAppSettings()
+        }, 800)
+        return () => clearTimeout(timer)
+    }, [
+        scheduleTime, scheduleTime2,
+        reminderMessage, broadcastMessage
+    ])
+
+    const processSave = () => {
+        if (!profile?.business_id) return false
+        if (!settingsLoadedRef.current) return false
+        // Prevent saving if we are currently fetching/loading to avoid overwriting with empty state
+        return true
+    }
+
+    const saveWhatsAppSettings = async () => {
+        if (!profile?.business_id) return
+
+        setSaveStatus('saving')
+        try {
+            const updates = {
+                business_id: profile.business_id,
+                whatsapp_reminder_template: reminderMessage,
+                whatsapp_reminder_start_day: targetStartDay,
+                whatsapp_reminder_end_day: targetEndDay,
+                whatsapp_broadcast_template: broadcastMessage,
+
+                // Schedule 1
+                whatsapp_reminder_send_day: scheduleDay || null,
+                whatsapp_reminder_send_time: scheduleTime || null,
+                whatsapp_reminder_enabled: scheduleEnabled,
+
+                // Schedule 2
+                whatsapp_reminder_send_day_2: scheduleDay2 || null,
+                whatsapp_reminder_send_time_2: scheduleTime2 || null,
+                whatsapp_reminder_enabled_2: scheduleEnabled2,
+                whatsapp_reminder_start_day_2: targetStartDay2,
+                whatsapp_reminder_end_day_2: targetEndDay2,
+            }
+            console.log('💾 Sending Updates to DB:', updates)
+
+            const { error } = await supabase.from('business_settings').upsert(updates)
+            if (error) throw error
+
+            setSaveStatus('saved')
+            setTimeout(() => setSaveStatus('idle'), 2000)
+        } catch (err) {
+            console.error('Failed to save settings:', err)
+            setSaveStatus('error')
+            showToast('Failed to save settings. Check connection.', 'error')
         }
     }
 
@@ -316,26 +416,7 @@ const OrganizationSettings = () => {
     }
 
     // --- WhatsApp Logic ---
-
-    const getNextDayOfWeek = (dayName) => {
-        const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
-        const dayIdx = days.indexOf(dayName.toLowerCase())
-        if (dayIdx === -1) return null
-
-        const today = new Date()
-        const currentDay = today.getDay()
-        let distance = dayIdx - currentDay
-
-        // Fix: If today is the day we want, distance is 0. 
-        // original logic: if (distance <= 0) distance += 7
-        // valid logic: 
-        // if user selects "Monday" and today is "Monday", do they mean TODAY or NEXT Monday?
-        // Usually in a "Range" context (Monday to Friday), they mean the current upcoming week, including today.
-        // So if distance < 0, add 7. If distance == 0, keep it 0 (Today).
-
-        if (distance < 0) distance += 7
-        return addDays(today, distance)
-    }
+    // getNextDayOfWeek is now imported from ../lib/whatsappAutomation
 
     const handleSendReminders = async () => {
         if (!reminderMessage.trim()) {
@@ -343,48 +424,17 @@ const OrganizationSettings = () => {
             return
         }
 
-        // Calculate Target Date Range based on inputs
-        // Logic: "On Monday (today), send for Wednesday -> Saturday"
-        // This tool assumes "Today" is the trigger day, and we look for the *next* occurrence of StartDay and EndDay
-
-        // However, the user asked for a selector.
-        // Let's interpret: "Find appointments between Next [StartDay] and Next [EndDay]"
-
+        // Preview Range Logic (replicated from service for confirmation dialog)
         let startDate, endDate
+        if (targetStartDay === 'Today') startDate = new Date()
+        else startDate = getNextDayOfWeek(targetStartDay)
 
-        if (targetStartDay === 'Today') {
-            startDate = new Date()
-        } else {
-            startDate = getNextDayOfWeek(targetStartDay)
-        }
-
-        if (targetEndDay === 'Today') {
-            endDate = new Date()
-        } else {
-            endDate = getNextDayOfWeek(targetEndDay)
-        }
-
-        // If end day is before start day in the week cycle, add 7 days to end date (wrap around)
-        // But for simplicity, let's just trust getNextDayOfWeek returns the very next one.
-        // If user says "Wed to Sat", and today is Mon: Wed is +2, Sat is +5. Range: Wed->Sat.
-        // If user says "Sun to Tue", and today is Fri: Sun is +2, Tue is +4. Range: Sun->Tue.
-        // Adjustment: if endDate < startDate, assumes endDate is the following week? 
-        // Let's strictly follow the "Next Occurrence" logic for now, but sort them.
+        if (targetEndDay === 'Today') endDate = new Date()
+        else endDate = getNextDayOfWeek(targetEndDay)
 
         let start = startDate < endDate ? startDate : endDate
         let end = startDate < endDate ? endDate : startDate
-
-        // Actually, user likely means "Start Day" to "End Day" sequence. 
-        // If Start=Wed, End=Sat -> Wed, Thu, Fri, Sat.
-        if (endDate < startDate) {
-            // If End is "earlier" in the week index but technically "next", we might need to push it a week if the intention was a span?
-            // Simple approach: Use absolute dates.
-            end = addDays(end, 7)
-        }
-
-        // Just ensure we cover the whole day
-        const rangeStart = startOfDay(start).toISOString()
-        const rangeEnd = endOfDay(end).toISOString()
+        if (endDate < startDate) end = addDays(end, 7)
 
         if (!confirm(`Send reminders to all appointments from ${format(start, 'MMM do')} to ${format(end, 'MMM do')}?`)) return
 
@@ -392,82 +442,29 @@ const OrganizationSettings = () => {
         setReminderStats(null)
         setReminderProgress(0)
 
-        // Save Settings
-        try {
-            await supabase
-                .from('business_settings')
-                .upsert({
-                    business_id: profile.business_id,
-                    whatsapp_reminder_template: reminderMessage,
-                    whatsapp_reminder_start_day: targetStartDay,
-                    whatsapp_reminder_end_day: targetEndDay
-                })
-        } catch (err) {
-            console.error('Failed to save settings:', err)
-        }
+        // Save Settings (Now handled by auto-save, but we ensure it's called here too)
+        await saveWhatsAppSettings()
 
         try {
-            // 1. Fetch Appointments
-            const { data: appointments, error } = await supabase
-                .from('appointments')
-                .select(`
-                    id, scheduled_start,
-                    client:clients(first_name, last_name, phone, whatsapp_opt_in),
-                    provider:profiles!appointments_assigned_profile_id_fkey(full_name)
-                `)
-                .eq('business_id', profile.business_id)
-                .eq('business_id', profile.business_id)
-                .gte('scheduled_start', rangeStart)
-                .lte('scheduled_start', rangeEnd)
-                .in('status', ['pending', 'confirmed']) // Broaden status to include confirmed
-
-            console.log('DEBUG Whatsapp Reminders:', {
-                rangeStart,
-                rangeEnd,
-                business_id: profile.business_id,
-                appointmentsFound: appointments?.length,
-                error
+            // Use Service
+            const result = await sendReminders(supabase, profile.business_id, {
+                startDay: targetStartDay,
+                endDay: targetEndDay,
+                message: reminderMessage
             })
 
-            if (error) throw error
+            if (result.error) throw new Error(result.error)
 
-            if (!appointments || appointments.length === 0) {
+            if (result.total === 0) {
                 showToast('No appointments found in this range', 'error')
-                setIsSendingReminders(false)
-                return
+            } else {
+                showToast(`Sent ${result.sent} reminders (${result.failed} failed)`, 'success')
+                setReminderStats(result)
             }
-
-            showToast(`Found ${appointments.length} clients. Sending reminders one by one...`, 'info')
-
-            let sentCount = 0
-            let failCount = 0
-
-            // 2. Send Loop
-            for (const apt of appointments) {
-                if (!apt.client?.phone) continue
-
-                // Templating
-                let msg = reminderMessage
-                    .replace(/\[Client Name\]/g, apt.client.first_name || 'Client')
-                    .replace(/\[Date\]/g, format(new Date(apt.scheduled_start), 'MMM do'))
-                    .replace(/\[Time\]/g, format(new Date(apt.scheduled_start), 'HH:mm'))
-                    .replace(/\[Provider\]/g, apt.provider?.full_name || 'Us')
-
-                // Send
-                const res = await sendWhatsApp(apt.client.phone, msg)
-                if (res.success) sentCount++
-                else failCount++
-
-                // Rate Limiting: 1.5s delay
-                await new Promise(r => setTimeout(r, 1500))
-            }
-
-            showToast(`Sent ${sentCount} reminders (${failCount} failed)`, 'success')
-            setReminderStats({ sent: sentCount, failed: failCount, total: appointments.length })
 
         } catch (err) {
-            console.error('Reminder blast failed:', err)
-            showToast('Failed to process reminders', 'error')
+            console.error('Error sending reminders:', err)
+            showToast('Failed to send reminders', 'error')
         } finally {
             setIsSendingReminders(false)
         }
@@ -910,39 +907,199 @@ const OrganizationSettings = () => {
                                 </div>
                                 <div>
                                     <h4 className="font-bold text-white">Smart Reminders</h4>
-                                    <p className="text-xs text-slate-500">Bulk send reminders for a specific date range</p>
+                                    <div className="flex items-center gap-2">
+                                        <p className="text-xs text-slate-500">Bulk send reminders for a specific date range</p>
+                                        {saveStatus === 'saving' && <span className="text-[10px] text-amber-400 animate-pulse">Saving...</span>}
+                                        {saveStatus === 'saved' && <span className="text-[10px] text-emerald-400">Saved</span>}
+                                        {saveStatus === 'error' && <span className="text-[10px] text-red-400">Not Saved</span>}
+                                    </div>
                                 </div>
                             </div>
 
                             <div className="space-y-4">
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div className="space-y-2">
-                                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">From Day</label>
-                                        <select
-                                            value={targetStartDay}
-                                            onChange={(e) => setTargetStartDay(e.target.value)}
-                                            className="glass-input h-12 w-full text-sm bg-surface"
-                                            disabled={isBusy}
-                                        >
-                                            {['Today', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].map(d => (
-                                                <option key={d} value={d}>{d}</option>
-                                            ))}
-                                        </select>
+                                {/* Scheduling Section */}
+                                <div className="p-4 rounded-xl bg-emerald-500/5 border border-emerald-500/10 space-y-3">
+                                    <div className="flex items-center justify-between mb-2">
+                                        <div className="flex items-center gap-2 text-emerald-400">
+                                            <Clock size={16} />
+                                            <span className="text-xs font-bold uppercase tracking-wider">Automated Schedule 1</span>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            <label className="text-xs text-slate-400 font-bold uppercase tracking-wider cursor-pointer" htmlFor="schedule-toggle">
+                                                {scheduleEnabled ? 'Enabled' : 'Disabled'}
+                                            </label>
+                                            <input
+                                                id="schedule-toggle"
+                                                type="checkbox"
+                                                checked={scheduleEnabled}
+                                                onChange={(e) => setScheduleEnabled(e.target.checked)}
+                                                className="w-5 h-5 accent-emerald-500 rounded cursor-pointer"
+                                                disabled={isBusy}
+                                            />
+                                        </div>
                                     </div>
-                                    <div className="space-y-2">
-                                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">To Day</label>
-                                        <select
-                                            value={targetEndDay}
-                                            onChange={(e) => setTargetEndDay(e.target.value)}
-                                            className="glass-input h-12 w-full text-sm bg-surface"
-                                            disabled={isBusy}
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div className="space-y-2">
+                                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Send Every</label>
+                                            <select
+                                                value={scheduleDay}
+                                                onChange={(e) => setScheduleDay(e.target.value)}
+                                                className="glass-input h-12 w-full text-sm bg-surface"
+                                                disabled={isBusy}
+                                            >
+                                                <option value="">Manual Only</option>
+                                                {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].map(d => (
+                                                    <option key={d} value={d}>{d}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                        <div className="space-y-2">
+                                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">At Time</label>
+                                            <input
+                                                type="time"
+                                                value={scheduleTime}
+                                                onChange={(e) => setScheduleTime(e.target.value)}
+                                                className="glass-input h-12 w-full text-sm bg-surface"
+                                                disabled={isBusy}
+                                            />
+                                        </div>
+                                    </div>
+                                    {/* Schedule 1 Target Range (Moved Here) */}
+                                    <div className="grid grid-cols-2 gap-4 pt-2 border-t border-emerald-500/10">
+                                        <div className="space-y-2">
+                                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Targets From</label>
+                                            <select
+                                                value={targetStartDay}
+                                                onChange={(e) => setTargetStartDay(e.target.value)}
+                                                className="glass-input h-10 w-full text-xs bg-surface"
+                                                disabled={isBusy}
+                                            >
+                                                {['Today', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].map(d => (
+                                                    <option key={d} value={d}>{d}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                        <div className="space-y-2">
+                                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Targets To</label>
+                                            <select
+                                                value={targetEndDay}
+                                                onChange={(e) => setTargetEndDay(e.target.value)}
+                                                className="glass-input h-10 w-full text-xs bg-surface"
+                                                disabled={isBusy}
+                                            >
+                                                {['Today', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].map(d => (
+                                                    <option key={d} value={d}>{d}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div className="flex justify-between items-center mt-2">
+                                        <p className="text-[10px] text-slate-500 italic max-w-[200px]">
+                                            * Schedule 1: Sends on {scheduleDay || '...'} at {scheduleTime || '...'}
+                                        </p>
+                                        <button
+                                            onClick={saveWhatsAppSettings}
+                                            className="px-3 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-[10px] font-bold uppercase tracking-wider rounded border border-emerald-500/20 transition-all flex items-center gap-1"
                                         >
-                                            {['Today', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].map(d => (
-                                                <option key={d} value={d}>{d}</option>
-                                            ))}
-                                        </select>
+                                            <Save size={10} />
+                                            Save Settings
+                                        </button>
                                     </div>
                                 </div>
+
+                                {/* Schedule 2 Block */}
+                                <div className="p-4 rounded-xl bg-blue-500/5 border border-blue-500/10 space-y-3">
+                                    <div className="flex items-center justify-between mb-2">
+                                        <div className="flex items-center gap-2 text-blue-400">
+                                            <Clock size={16} />
+                                            <span className="text-xs font-bold uppercase tracking-wider">Automated Schedule 2</span>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            <label className="text-xs text-slate-400 font-bold uppercase tracking-wider cursor-pointer" htmlFor="schedule-toggle-2">
+                                                {scheduleEnabled2 ? 'Enabled' : 'Disabled'}
+                                            </label>
+                                            <input
+                                                id="schedule-toggle-2"
+                                                type="checkbox"
+                                                checked={scheduleEnabled2}
+                                                onChange={(e) => setScheduleEnabled2(e.target.checked)}
+                                                className="w-5 h-5 accent-blue-500 rounded cursor-pointer"
+                                                disabled={isBusy}
+                                            />
+                                        </div>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div className="space-y-2">
+                                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Send Every</label>
+                                            <select
+                                                value={scheduleDay2}
+                                                onChange={(e) => setScheduleDay2(e.target.value)}
+                                                className="glass-input h-12 w-full text-sm bg-surface"
+                                                disabled={isBusy}
+                                            >
+                                                <option value="">Manual Only</option>
+                                                {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].map(d => (
+                                                    <option key={d} value={d}>{d}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                        <div className="space-y-2">
+                                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">At Time</label>
+                                            <input
+                                                type="time"
+                                                value={scheduleTime2}
+                                                onChange={(e) => setScheduleTime2(e.target.value)}
+                                                className="glass-input h-12 w-full text-sm bg-surface"
+                                                disabled={isBusy}
+                                            />
+                                        </div>
+                                    </div>
+
+                                    {/* Schedule 2 Target Range */}
+                                    <div className="grid grid-cols-2 gap-4 pt-2 border-t border-blue-500/10">
+                                        <div className="space-y-2">
+                                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Targets From</label>
+                                            <select
+                                                value={targetStartDay2}
+                                                onChange={(e) => setTargetStartDay2(e.target.value)}
+                                                className="glass-input h-10 w-full text-xs bg-surface"
+                                                disabled={isBusy}
+                                            >
+                                                {['Today', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].map(d => (
+                                                    <option key={d} value={d}>{d}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                        <div className="space-y-2">
+                                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Targets To</label>
+                                            <select
+                                                value={targetEndDay2}
+                                                onChange={(e) => setTargetEndDay2(e.target.value)}
+                                                className="glass-input h-10 w-full text-xs bg-surface"
+                                                disabled={isBusy}
+                                            >
+                                                {['Today', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].map(d => (
+                                                    <option key={d} value={d}>{d}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    </div>
+
+                                    <div className="flex justify-between items-center mt-2">
+                                        <p className="text-[10px] text-slate-500 italic max-w-[200px]">
+                                            * Schedule 2: Sends on {scheduleDay2 || '...'} at {scheduleTime2 || '...'}
+                                        </p>
+                                        <button
+                                            onClick={saveWhatsAppSettings}
+                                            className="px-3 py-1 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 text-[10px] font-bold uppercase tracking-wider rounded border border-blue-500/20 transition-all flex items-center gap-1"
+                                        >
+                                            <Save size={10} />
+                                            Save Settings
+                                        </button>
+                                    </div>
+                                </div>
+
+
 
                                 <div className="space-y-2">
                                     <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Message Template</label>

@@ -40,6 +40,7 @@ import SubscriptionPage from './SubscriptionPage';
 import MasterDashboard from './MasterDashboard';
 import { initializeMedicalDemo, runStressTest, getDemoStatus, setDemoStatus, seedBusinessSkills } from '../lib/demoSeeder';
 import { clearLocalLogs } from '../lib/logger';
+import { checkAndRunReminders } from '../lib/whatsappAutomation';
 
 const Dashboard = () => {
     const { user, profile, signOut } = useAuth();
@@ -99,7 +100,24 @@ const Dashboard = () => {
         }, 15000); // Pulse every 15s
 
         return () => clearInterval(heartbeatInterval);
-    }, [isLocal, profile?.business_id, user, virtualAssistantEnabled, demoMode]);
+    }, [profile?.business_id, user, virtualAssistantEnabled, demoMode, isLocal]);
+
+    // AUTOMATION: Scheduled Tasks (WhatsApp Reminders)
+    useEffect(() => {
+        if (!profile?.business_id) return;
+
+        // Check every 5 minutes
+        const automationInterval = setInterval(() => {
+            checkAndRunReminders(supabase, profile.business_id);
+        }, 5 * 60 * 1000);
+
+        // Initial check
+        setTimeout(() => checkAndRunReminders(supabase, profile.business_id), 10000);
+
+        return () => clearInterval(automationInterval);
+    }, [profile?.business_id]);
+
+
 
     // MAIN BACKGROUND SYSTEMS
     useEffect(() => {
