@@ -127,10 +127,33 @@ self.addEventListener('fetch', (event) => {
   }
 });
 
+// 1. Claim clients immediately to update open tabs
+self.addEventListener('activate', (event) => {
+  event.waitUntil(self.clients.claim());
+});
+
 // General Caching Strategy
+// Use NetworkFirst for HTML (navigation) to ensure fresh updates
 workbox.routing.registerRoute(
-  new RegExp('/*'),
-  new workbox.strategies.StaleWhileRevalidate({
-    cacheName: CACHE
+  ({ request }) => request.mode === 'navigate',
+  new workbox.strategies.NetworkFirst({
+    cacheName: 'pages',
+    plugins: [
+      new workbox.cacheableResponse.CacheableResponsePlugin({
+        statuses: [200],
+      }),
+    ],
   })
 );
+
+// Use StaleWhileRevalidate for CSS, JS, and Images
+workbox.routing.registerRoute(
+  ({ request }) => ['style', 'script', 'worker', 'image'].includes(request.destination),
+  new workbox.strategies.StaleWhileRevalidate({
+    cacheName: 'assets',
+  })
+);
+
+// Fallback catch-all (be careful with this, it can cache API errors)
+// Removed the aggressive regex '/*' to prevent caching API calls intended for the network
+
