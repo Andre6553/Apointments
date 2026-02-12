@@ -7,6 +7,8 @@ import { useToast } from '../contexts/ToastContext'
 import EditStaffModal from './EditStaffModal'
 import { getCache, setCache, CACHE_KEYS } from '../lib/cache'
 import { getDemoStatus, seedBusinessSkills } from '../lib/demoSeeder'
+import { sendWhatsApp } from '../lib/notifications'
+import { format, addDays, isWithinInterval, parseISO, startOfDay, endOfDay } from 'date-fns'
 
 const OrganizationSettings = () => {
     const { profile, fetchProfile } = useAuth()
@@ -27,6 +29,24 @@ const OrganizationSettings = () => {
     const [newSkillCode, setNewSkillCode] = useState('')
     const [isAddingSkill, setIsAddingSkill] = useState(false)
     const [isSeedingDemo, setIsSeedingDemo] = useState(false)
+
+    // --- WhatsApp Feature States ---
+    const [reminderMessage, setReminderMessage] = useState(`Dear [Client Name] please remember your appointment on [Date] at [Time]\n\n‼️Please NOTE CANCELLATION less than 24 hours, FULL FEE will be charged.\n💅🏻EFT payments in Salon or Card machine. 3% yoco fee will be added\n💅🏻Please be on time\n💅🏻Please confirm`)
+    const [targetStartDay, setTargetStartDay] = useState('Wednesday')
+    const [targetEndDay, setTargetEndDay] = useState('Saturday')
+    const [isSendingReminders, setIsSendingReminders] = useState(false)
+    const [reminderStats, setReminderStats] = useState(null)
+
+    const [broadcastMessage, setBroadcastMessage] = useState('')
+    const [broadcastImage, setBroadcastImage] = useState(null)
+    const [broadcastPreview, setBroadcastPreview] = useState(null)
+    const [isSendingBroadcast, setIsSendingBroadcast] = useState(false)
+    const [isUploading, setIsUploading] = useState(false)
+
+    // Progress State
+    const [reminderProgress, setReminderProgress] = useState(0)
+    const [broadcastProgress, setBroadcastProgress] = useState(0)
+
     const showToast = useToast()
     const isDemoOn = getDemoStatus()
 
@@ -54,8 +74,28 @@ const OrganizationSettings = () => {
         if (profile?.business_id) {
             fetchStaff()
             fetchSkills()
+            fetchWhatsAppSettings()
         }
     }, [profile?.business_id])
+
+    const fetchWhatsAppSettings = async () => {
+        try {
+            const { data, error } = await supabase
+                .from('business_settings')
+                .select('whatsapp_reminder_template, whatsapp_reminder_start_day, whatsapp_reminder_end_day, whatsapp_broadcast_template')
+                .eq('business_id', profile.business_id)
+                .single()
+
+            if (data) {
+                if (data.whatsapp_reminder_template) setReminderMessage(data.whatsapp_reminder_template)
+                if (data.whatsapp_reminder_start_day) setTargetStartDay(data.whatsapp_reminder_start_day)
+                if (data.whatsapp_reminder_end_day) setTargetEndDay(data.whatsapp_reminder_end_day)
+                if (data.whatsapp_broadcast_template) setBroadcastMessage(data.whatsapp_broadcast_template)
+            }
+        } catch (err) {
+            console.error('Error fetching WhatsApp settings:', err)
+        }
+    }
 
     const fetchStaff = async () => {
         setIsLoadingStaff(true)
@@ -274,6 +314,283 @@ const OrganizationSettings = () => {
             setIsTransferring(false)
         }
     }
+
+    // --- WhatsApp Logic ---
+
+    const getNextDayOfWeek = (dayName) => {
+        const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
+        const dayIdx = days.indexOf(dayName.toLowerCase())
+        if (dayIdx === -1) return null
+
+        const today = new Date()
+        const currentDay = today.getDay()
+        let distance = dayIdx - currentDay
+
+        // Fix: If today is the day we want, distance is 0. 
+        // original logic: if (distance <= 0) distance += 7
+        // valid logic: 
+        // if user selects "Monday" and today is "Monday", do they mean TODAY or NEXT Monday?
+        // Usually in a "Range" context (Monday to Friday), they mean the current upcoming week, including today.
+        // So if distance < 0, add 7. If distance == 0, keep it 0 (Today).
+
+        if (distance < 0) distance += 7
+        return addDays(today, distance)
+    }
+
+    const handleSendReminders = async () => {
+        if (!reminderMessage.trim()) {
+            showToast('Please enter a message', 'error')
+            return
+        }
+
+        // Calculate Target Date Range based on inputs
+        // Logic: "On Monday (today), send for Wednesday -> Saturday"
+        // This tool assumes "Today" is the trigger day, and we look for the *next* occurrence of StartDay and EndDay
+
+        // However, the user asked for a selector.
+        // Let's interpret: "Find appointments between Next [StartDay] and Next [EndDay]"
+
+        let startDate, endDate
+
+        if (targetStartDay === 'Today') {
+            startDate = new Date()
+        } else {
+            startDate = getNextDayOfWeek(targetStartDay)
+        }
+
+        if (targetEndDay === 'Today') {
+            endDate = new Date()
+        } else {
+            endDate = getNextDayOfWeek(targetEndDay)
+        }
+
+        // If end day is before start day in the week cycle, add 7 days to end date (wrap around)
+        // But for simplicity, let's just trust getNextDayOfWeek returns the very next one.
+        // If user says "Wed to Sat", and today is Mon: Wed is +2, Sat is +5. Range: Wed->Sat.
+        // If user says "Sun to Tue", and today is Fri: Sun is +2, Tue is +4. Range: Sun->Tue.
+        // Adjustment: if endDate < startDate, assumes endDate is the following week? 
+        // Let's strictly follow the "Next Occurrence" logic for now, but sort them.
+
+        let start = startDate < endDate ? startDate : endDate
+        let end = startDate < endDate ? endDate : startDate
+
+        // Actually, user likely means "Start Day" to "End Day" sequence. 
+        // If Start=Wed, End=Sat -> Wed, Thu, Fri, Sat.
+        if (endDate < startDate) {
+            // If End is "earlier" in the week index but technically "next", we might need to push it a week if the intention was a span?
+            // Simple approach: Use absolute dates.
+            end = addDays(end, 7)
+        }
+
+        // Just ensure we cover the whole day
+        const rangeStart = startOfDay(start).toISOString()
+        const rangeEnd = endOfDay(end).toISOString()
+
+        if (!confirm(`Send reminders to all appointments from ${format(start, 'MMM do')} to ${format(end, 'MMM do')}?`)) return
+
+        setIsSendingReminders(true)
+        setReminderStats(null)
+        setReminderProgress(0)
+
+        // Save Settings
+        try {
+            await supabase
+                .from('business_settings')
+                .upsert({
+                    business_id: profile.business_id,
+                    whatsapp_reminder_template: reminderMessage,
+                    whatsapp_reminder_start_day: targetStartDay,
+                    whatsapp_reminder_end_day: targetEndDay
+                })
+        } catch (err) {
+            console.error('Failed to save settings:', err)
+        }
+
+        try {
+            // 1. Fetch Appointments
+            const { data: appointments, error } = await supabase
+                .from('appointments')
+                .select(`
+                    id, scheduled_start,
+                    client:clients(first_name, last_name, phone, whatsapp_opt_in),
+                    provider:profiles!appointments_assigned_profile_id_fkey(full_name)
+                `)
+                .eq('business_id', profile.business_id)
+                .eq('business_id', profile.business_id)
+                .gte('scheduled_start', rangeStart)
+                .lte('scheduled_start', rangeEnd)
+                .in('status', ['pending', 'confirmed']) // Broaden status to include confirmed
+
+            console.log('DEBUG Whatsapp Reminders:', {
+                rangeStart,
+                rangeEnd,
+                business_id: profile.business_id,
+                appointmentsFound: appointments?.length,
+                error
+            })
+
+            if (error) throw error
+
+            if (!appointments || appointments.length === 0) {
+                showToast('No appointments found in this range', 'error')
+                setIsSendingReminders(false)
+                return
+            }
+
+            showToast(`Found ${appointments.length} clients. Sending reminders one by one...`, 'info')
+
+            let sentCount = 0
+            let failCount = 0
+
+            // 2. Send Loop
+            for (const apt of appointments) {
+                if (!apt.client?.phone) continue
+
+                // Templating
+                let msg = reminderMessage
+                    .replace(/\[Client Name\]/g, apt.client.first_name || 'Client')
+                    .replace(/\[Date\]/g, format(new Date(apt.scheduled_start), 'MMM do'))
+                    .replace(/\[Time\]/g, format(new Date(apt.scheduled_start), 'HH:mm'))
+                    .replace(/\[Provider\]/g, apt.provider?.full_name || 'Us')
+
+                // Send
+                const res = await sendWhatsApp(apt.client.phone, msg)
+                if (res.success) sentCount++
+                else failCount++
+
+                // Rate Limiting: 1.5s delay
+                await new Promise(r => setTimeout(r, 1500))
+            }
+
+            showToast(`Sent ${sentCount} reminders (${failCount} failed)`, 'success')
+            setReminderStats({ sent: sentCount, failed: failCount, total: appointments.length })
+
+        } catch (err) {
+            console.error('Reminder blast failed:', err)
+            showToast('Failed to process reminders', 'error')
+        } finally {
+            setIsSendingReminders(false)
+        }
+    }
+
+    const handleImageUpload = async (e) => {
+        const file = e.target.files[0]
+        if (!file) return
+
+        if (file.size > 5 * 1024 * 1024) { // 5MB limit
+            showToast('Image too large (Max 5MB)', 'error')
+            return
+        }
+
+        const preview = URL.createObjectURL(file)
+        setBroadcastPreview(preview)
+        setBroadcastImage(file)
+    }
+
+    const handleSendBroadcast = async () => {
+        if (!broadcastMessage.trim()) {
+            showToast('Please enter a message', 'error')
+            return
+        }
+
+        if (!confirm('This will send a message to ALL clients in your organization. Are you sure?')) return
+
+        setIsSendingBroadcast(true)
+        setIsUploading(true)
+        setBroadcastProgress(0)
+        let publicUrl = null
+
+        // Save Template
+        try {
+            await supabase
+                .from('business_settings')
+                .upsert({
+                    business_id: profile.business_id,
+                    whatsapp_broadcast_template: broadcastMessage
+                })
+        } catch (err) {
+            console.error('Failed to save broadcast template:', err)
+        }
+
+        try {
+            // 1. Upload Image if exists
+            if (broadcastImage) {
+                const fileExt = broadcastImage.name.split('.').pop()
+                const fileName = `${profile.business_id}/broadcast_${Date.now()}.${fileExt}`
+
+                // Delete old ones? (Optional cleanup, but Storage is cheap-ish. Let's just upload new)
+                // User asked: "current photo upload must delete the previouse upload"
+                // detailed cleanup might be slow, let's just overwrite a "latest" file?
+                // Or list and delete. 
+                // Listing is safer to avoid stale files.
+
+                const { data: listData } = await supabase.storage.from('organization-assets').list(profile.business_id)
+                if (listData && listData.length > 0) {
+                    const filesToRemove = listData.map(x => `${profile.business_id}/${x.name}`)
+                    await supabase.storage.from('organization-assets').remove(filesToRemove)
+                }
+
+                const { error: uploadError } = await supabase.storage
+                    .from('organization-assets')
+                    .upload(fileName, broadcastImage, { upsert: true })
+
+                if (uploadError) throw uploadError
+
+                const { data: { publicUrl: url } } = supabase.storage
+                    .from('organization-assets')
+                    .getPublicUrl(fileName)
+
+                publicUrl = url
+            }
+            setIsUploading(false)
+
+            // 2. Fetch All Clients
+            const { data: clients, error: clientError } = await supabase
+                .from('clients')
+                .select('id, first_name, phone')
+                .eq('business_id', profile.business_id)
+
+            if (clientError) throw clientError
+
+            if (!clients || clients.length === 0) {
+                showToast('No clients found', 'error')
+                return
+            }
+
+            showToast(`Found ${clients.length} clients. Sending broadcast one by one...`, 'info')
+
+            let sentCount = 0
+
+            // 3. Send Loop
+            for (const client of clients) {
+                if (!client.phone) continue
+
+                let msg = broadcastMessage
+                    .replace(/\[Client Name\]/g, client.first_name || 'Client')
+
+                await sendWhatsApp(client.phone, msg, publicUrl)
+                sentCount++
+
+                // Rate Limiting: 1.5s delay
+                await new Promise(r => setTimeout(r, 1500))
+            }
+
+            showToast(`Broadcast sent to ${sentCount} clients`, 'success')
+            setBroadcastMessage('')
+            setBroadcastImage(null)
+            setBroadcastPreview(null)
+
+        } catch (err) {
+            console.error('Broadcast failed:', err)
+            showToast('Failed to send broadcast', 'error')
+        } finally {
+            setIsSendingBroadcast(false)
+            setIsUploading(false)
+        }
+    }
+
+    // Shared Busy State to prevent concurrency
+    const isBusy = isSendingReminders || isSendingBroadcast
 
     return (
         <div className="max-w-4xl space-y-8 pb-12">
@@ -580,7 +897,175 @@ const OrganizationSettings = () => {
                         </div>
                     </div>
                 </div>
-            </div>
+
+                {/* WhatsApp Automation Section */}
+                <div className="lg:col-span-12">
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+
+                        {/* 1. Appointment Reminders */}
+                        <div className="glass-card p-8 border-white/5 space-y-6">
+                            <div className="flex items-center gap-4">
+                                <div className="p-3 rounded-2xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                    <Mail size={24} />
+                                </div>
+                                <div>
+                                    <h4 className="font-bold text-white">Smart Reminders</h4>
+                                    <p className="text-xs text-slate-500">Bulk send reminders for a specific date range</p>
+                                </div>
+                            </div>
+
+                            <div className="space-y-4">
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div className="space-y-2">
+                                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">From Day</label>
+                                        <select
+                                            value={targetStartDay}
+                                            onChange={(e) => setTargetStartDay(e.target.value)}
+                                            className="glass-input h-12 w-full text-sm bg-surface"
+                                            disabled={isBusy}
+                                        >
+                                            {['Today', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].map(d => (
+                                                <option key={d} value={d}>{d}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                    <div className="space-y-2">
+                                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">To Day</label>
+                                        <select
+                                            value={targetEndDay}
+                                            onChange={(e) => setTargetEndDay(e.target.value)}
+                                            className="glass-input h-12 w-full text-sm bg-surface"
+                                            disabled={isBusy}
+                                        >
+                                            {['Today', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].map(d => (
+                                                <option key={d} value={d}>{d}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <div className="space-y-2">
+                                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Message Template</label>
+                                    <textarea
+                                        value={reminderMessage}
+                                        onChange={(e) => setReminderMessage(e.target.value)}
+                                        className="glass-input w-full p-4 text-sm min-h-[120px]"
+                                        placeholder="Enter reminder message..."
+                                        disabled={isBusy}
+                                    />
+                                    <p className="text-[10px] text-slate-500">Available variables: [Client Name], [Date], [Time], [Provider]</p>
+                                </div>
+
+                                <button
+                                    onClick={handleSendReminders}
+                                    disabled={isBusy}
+                                    className="w-full h-14 bg-emerald-500 hover:bg-emerald-600 rounded-xl font-bold text-white flex items-center justify-center gap-2 transition-all shadow-lg shadow-emerald-500/20 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    {isSendingReminders ? <Loader2 size={20} className="animate-spin" /> : <Mail size={20} />}
+                                    <span>{isSendingReminders ? 'Sending Reminders...' : 'Send Reminders'}</span>
+                                </button>
+
+                                {isSendingReminders && (
+                                    <div className="w-full bg-white/10 rounded-full h-2 overflow-hidden">
+                                        <div
+                                            className="bg-emerald-500 h-full transition-all duration-300 ease-out"
+                                            style={{ width: `${reminderProgress}%` }}
+                                        />
+                                    </div>
+                                )}
+
+                                {reminderStats && (
+                                    <div className="text-center text-xs text-slate-400 bg-white/5 rounded-lg p-2">
+                                        Processed {reminderStats.total} appointments. <br />
+                                        <span className="text-emerald-400">{reminderStats.sent} Sent</span> • <span className="text-rose-400">{reminderStats.failed} Failed</span>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* 2. Marketing Broadcast */}
+                        <div className="glass-card p-8 border-white/5 space-y-6">
+                            <div className="flex items-center gap-4">
+                                <div className="p-3 rounded-2xl bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                                    <Sparkles size={24} />
+                                </div>
+                                <div>
+                                    <h4 className="font-bold text-white">Marketing Broadcast</h4>
+                                    <p className="text-xs text-slate-500">Send a message + photo to ALL clients</p>
+                                </div>
+                            </div>
+
+                            <div className="space-y-4">
+                                {/* Image Upload */}
+                                <div
+                                    className={`relative w-full h-40 rounded-xl border border-dashed border-white/20 flex flex-col items-center justify-center transition-all overflow-hidden ${isBusy ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-white/5'}`}
+                                    onClick={() => !isBusy && document.getElementById('broadcast-upload').click()}
+                                >
+                                    {broadcastPreview ? (
+                                        <img src={broadcastPreview} alt="Preview" className="w-full h-full object-cover" />
+                                    ) : (
+                                        <>
+                                            <div className="p-3 rounded-full bg-white/10 text-slate-400 mb-2">
+                                                <Plus size={20} />
+                                            </div>
+                                            <p className="text-xs text-slate-400 font-medium">Click to upload photo</p>
+                                        </>
+                                    )}
+                                    <input
+                                        id="broadcast-upload"
+                                        type="file"
+                                        accept="image/*"
+                                        className="hidden"
+                                        onChange={handleImageUpload}
+                                        disabled={isBusy}
+                                    />
+                                </div>
+
+
+                                <div className="space-y-2">
+                                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Broadcast Message</label>
+                                    <textarea
+                                        value={broadcastMessage}
+                                        onChange={(e) => setBroadcastMessage(e.target.value)}
+                                        className="glass-input w-full p-4 text-sm min-h-[80px]"
+                                        placeholder="Check out our new specials!..."
+                                        disabled={isBusy}
+                                    />
+                                    <p className="text-[10px] text-slate-500">Available variables: [Client Name]</p>
+                                </div>
+
+                                <button
+                                    onClick={handleSendBroadcast}
+                                    disabled={isBusy}
+                                    className="w-full h-14 bg-purple-500 hover:bg-purple-600 rounded-xl font-bold text-white flex items-center justify-center gap-2 transition-all shadow-lg shadow-purple-500/20 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    {isSendingBroadcast ? (
+                                        <div className="flex items-center gap-2">
+                                            <Loader2 size={20} className="animate-spin" />
+                                            <span>{isUploading ? 'Uploading...' : 'Sending...'}</span>
+                                        </div>
+                                    ) : (
+                                        <>
+                                            <Mail size={20} />
+                                            <span>Send Broadcast</span>
+                                        </>
+                                    )}
+                                </button>
+
+                                {isSendingBroadcast && (
+                                    <div className="w-full bg-white/10 rounded-full h-2 overflow-hidden">
+                                        <div
+                                            className="bg-purple-500 h-full transition-all duration-300 ease-out"
+                                            style={{ width: `${broadcastProgress}%` }}
+                                        />
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+            </div >
 
             <EditStaffModal
                 isOpen={isEditModalOpen}
@@ -588,7 +1073,7 @@ const OrganizationSettings = () => {
                 member={selectedStaff}
                 onUpdate={fetchStaff}
             />
-        </div>
+        </div >
     )
 }
 

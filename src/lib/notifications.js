@@ -4,7 +4,7 @@ import { supabase } from './supabase'
  * Centrally manages WhatsApp notifications for both real and simulation modes.
  * In simulation mode, every message is redirected to +27761963997.
  */
-export const sendWhatsApp = async (phone, message) => {
+export const sendWhatsApp = async (phone, message, mediaUrl = null) => {
     if (!phone || !message) {
         console.warn('[WhatsApp] Aborted: Missing phone number or message content.', { phone, message });
         return { success: false, error: 'Missing phone or message' };
@@ -12,7 +12,7 @@ export const sendWhatsApp = async (phone, message) => {
 
     const isSim = localStorage.getItem('simulation_mode') === 'true'
     // Ensure minimal formatting (E.164-ish)
-    let formattedPhone = (targetPhone || '').replace(/\s+/g, '');
+    let formattedPhone = (phone || '').replace(/\s+/g, '');
     if (formattedPhone.startsWith('0')) {
         formattedPhone = '+27' + formattedPhone.substring(1);
     }
@@ -22,12 +22,12 @@ export const sendWhatsApp = async (phone, message) => {
         const useProxy = isSim || window.location.hostname === 'localhost';
 
         if (useProxy) {
-            console.log(`[WhatsApp] Attempting local proxy send to ${formattedPhone}...`);
+            console.log(`[WhatsApp] Attempting local proxy send to ${formattedPhone} (Media: ${!!mediaUrl})...`);
             try {
                 const proxyRes = await fetch('http://localhost:3001/send-whatsapp', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ to: formattedPhone, message })
+                    body: JSON.stringify({ to: formattedPhone, message, mediaUrl })
                 });
 
                 if (proxyRes.ok) {
@@ -50,7 +50,7 @@ export const sendWhatsApp = async (phone, message) => {
 
         // Production / Edge Function path
         const { data, error } = await supabase.functions.invoke('send-whatsapp', {
-            body: { to: formattedPhone, message }
+            body: { to: formattedPhone, message, mediaUrl }
         })
 
         if (error) {

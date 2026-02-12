@@ -471,17 +471,23 @@ const server = http.createServer((req, res) => {
         req.on('data', chunk => body += chunk);
         req.on('end', async () => {
             try {
-                const { to, message } = JSON.parse(body);
+                const { to, message, mediaUrl } = JSON.parse(body);
 
                 if (!ACCOUNT_SID || !AUTH_TOKEN) {
                     throw new Error('Twilio Credentials Missing');
                 }
 
-                const postData = new URLSearchParams({
+                const bodyMap = {
                     'To': to.startsWith('whatsapp:') ? to : `whatsapp:${to}`,
                     'From': FROM_NUMBER,
                     'Body': message
-                }).toString();
+                };
+
+                if (mediaUrl) {
+                    bodyMap['MediaUrl'] = mediaUrl;
+                }
+
+                const postData = new URLSearchParams(bodyMap).toString();
 
                 const makeRequest = () => new Promise((resolve, reject) => {
                     const twilioReq = https.request({

@@ -12,7 +12,7 @@ serve(async (req) => {
     }
 
     try {
-        const { to, message } = await req.json();
+        const { to, message, mediaUrl } = await req.json();
 
         const accountSid = Deno.env.get('TWILIO_ACCOUNT_SID');
         const authToken = Deno.env.get('TWILIO_AUTH_TOKEN');
@@ -26,11 +26,17 @@ serve(async (req) => {
         const formattedTo = to.startsWith('whatsapp:') ? to : `whatsapp:${to}`;
 
         // Prepare Twilio API Request
-        const body = new URLSearchParams({
+        const bodyMap = {
             'To': formattedTo,
             'From': fromNumber,
             'Body': message,
-        });
+        };
+
+        if (mediaUrl) {
+            bodyMap['MediaUrl'] = mediaUrl;
+        }
+
+        const body = new URLSearchParams(bodyMap);
 
         console.log(`Sending WhatsApp to ${formattedTo} via ${fromNumber}`);
 
