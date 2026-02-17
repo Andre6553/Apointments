@@ -36,7 +36,7 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey);
 async function migrate() {
     console.log('Running migration...');
     try {
-        const sqlPath = path.join(__dirname, 'supabase/migrations/20260212_add_second_schedule.sql');
+        const sqlPath = path.join(__dirname, 'architecture/special_subscription_migration.sql');
         const sql = fs.readFileSync(sqlPath, 'utf8');
 
         console.log(`Executing SQL from ${sqlPath}`);

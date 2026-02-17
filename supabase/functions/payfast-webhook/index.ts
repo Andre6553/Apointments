@@ -79,8 +79,18 @@ serve(async (req: Request) => {
             const item_name = payload.item_name // Admin Monthly, Provider Yearly etc.
 
             const isYearly = item_name.toLowerCase().includes('yearly')
-            const daysToAdd = isYearly ? 365 : 30
-            const tier = isYearly ? 'yearly' : 'monthly'
+            const isSpecial = item_name.toLowerCase().includes('special')
+
+            let tier = 'monthly'
+            let daysToAdd = 30
+
+            if (isYearly) {
+                tier = 'yearly'
+                daysToAdd = 365
+            } else if (isSpecial) {
+                tier = 'special_admin'
+                daysToAdd = 30 // Assuming monthly for special plan by default
+            }
 
             // Update Subscriptions
             const { data: sub, error: subError } = await supabase
@@ -95,6 +105,20 @@ serve(async (req: Request) => {
                 }, { onConflict: 'profile_id, business_id' })
 
             if (subError) throw subError
+
+            // Activate Special Plan Feature on Business if applicable
+            if (tier === 'special_admin') {
+                const { error: bizError } = await supabase
+                    .from('businesses')
+                    .update({ special_plan_active: true })
+                    .eq('id', custom_str1)
+
+                if (bizError) {
+                    console.error('Error activating special plan on business:', bizError)
+                } else {
+                    console.log(`Special plan activated for business ${custom_str1}`)
+                }
+            }
 
             // Log Payment
             const { error: historyError } = await supabase

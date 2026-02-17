@@ -7,6 +7,7 @@ const AuthContext = createContext({})
 export const AuthProvider = ({ children }) => {
     const [user, setUser] = useState(null)
     const [profile, setProfile] = useState(null)
+    const [settings, setSettings] = useState({}) // Global App Settings
     const [loading, setLoading] = useState(true)
     const [connectionError, setConnectionError] = useState(null)
 
@@ -22,23 +23,92 @@ export const AuthProvider = ({ children }) => {
             if (error) console.error('Failed to set online status:', error)
         })
 
-        // 2. Fetch Data (including subscription)
-        const { data, error } = await supabase
-            .from('profiles')
-            .select(`
+        // 2a. Fetch Global Settings & Profile
+        const [settingsResult, profileResult] = await Promise.all([
+            supabase.from('app_settings').select('*'),
+            supabase
+                .from('profiles')
+                .select(`
                 *,
-                business:businesses!profiles_business_id_fkey(name, owner_id),
+                business:businesses!profiles_business_id_fkey(name, owner_id, special_plan_active, special_plan_limit, special_plan_price, special_plan_updated_at),
                 subscription:subscriptions(tier, role, status, expires_at)
             `)
-            .eq('id', userId)
-            .single()
+                .eq('id', userId)
+                .single()
+        ]);
+
+        const settingsData = settingsResult.data;
+        const { data, error } = profileResult;
+
+        // Process Settings
+        const globalSettings = {};
+        if (settingsData) {
+            settingsData.forEach(s => globalSettings[s.key] = s.value);
+            setSettings(globalSettings);
+        }
 
         if (data) {
             // Flatten subscription if it exists
             // CRITIAL FIX: Sort by expiry to ensure we grab the LATEST/ACTIVE one, not an old expired one
-            const sortedSubs = data.subscription?.sort((a, b) =>
+            let sortedSubs = data.subscription?.sort((a, b) =>
                 new Date(b.expires_at || 0) - new Date(a.expires_at || 0)
             ) || [];
+
+            // ---------------------------------------------------------
+            // SPECIAL SUBSCRIPTION LOGIC (Seniority Based Slot System)
+            // ---------------------------------------------------------
+            // ---------------------------------------------------------
+            // SPECIAL SUBSCRIPTION LOGIC (Seniority Based Slot System)
+            // ---------------------------------------------------------
+            if (data.business?.special_plan_active) {
+                try {
+                    // 1. Check if the Business Owner has an active Special subscription record
+                    const { data: ownerSub } = await supabase
+                        .from('subscriptions')
+                        .select('tier, status, expires_at')
+                        .eq('profile_id', data.business.owner_id)
+                        .eq('tier', 'special_admin')
+                        .eq('status', 'active')
+                        .gt('expires_at', new Date().toISOString())
+                        .maybeSingle(); // Use maybeSingle to avoid errors if missing
+
+                    // 2. Get all staff for this business sorted by join date
+                    const { data: staffMembers } = await supabase
+                        .from('profiles')
+                        .select('id, created_at')
+                        .eq('business_id', data.business_id)
+                        .order('created_at', { ascending: true }); // Oldest first
+
+                    // 3. Find my rank
+                    const myRank = staffMembers?.findIndex(p => p.id === userId);
+
+                    // Use Business Specific Limit OR Global Default
+                    const limit = data.business.special_plan_limit ?? globalSettings.limit_special?.default ?? 5;
+
+                    // 4. Calculate Expiry for Manually Enabled Plan (30 days from activation/update)
+                    const activationDate = new Date(data.business.special_plan_updated_at || data.business.created_at);
+                    const manualExpiry = new Date(activationDate.getTime() + 30 * 24 * 60 * 60 * 1000);
+                    const expiresAt = ownerSub?.expires_at || manualExpiry.toISOString();
+
+                    // 5. If I am within the limit AND the plan hasn't expired (including 24h grace period)
+                    const AMNESTY_WINDOW = 24 * 60 * 60 * 1000;
+                    const isWithinAmnesty = new Date(expiresAt).getTime() + AMNESTY_WINDOW > new Date().getTime();
+
+                    if (myRank !== -1 && myRank < limit && isWithinAmnesty) {
+                        const virtualSub = {
+                            tier: 'special_admin',
+                            status: 'active',
+                            role: data.role,
+                            expires_at: expiresAt,
+                            is_virtual: true
+                        };
+                        // Unshift to make it the primary subscription
+                        sortedSubs.unshift(virtualSub);
+                    }
+                } catch (err) {
+                    console.error('Error calculating special plan eligibility:', err);
+                }
+            }
 
             const profileData = {
                 ...data,
@@ -205,7 +275,7 @@ export const AuthProvider = ({ children }) => {
     }
 
     return (
-        <AuthContext.Provider value={{ user, profile, loading, connectionError, signOut, fetchProfile, updateProfile, verifyPassword }}>
+        <AuthContext.Provider value={{ user, profile, settings, loading, connectionError, signOut, fetchProfile, updateProfile, verifyPassword }}>
             {children}
         </AuthContext.Provider>
     )

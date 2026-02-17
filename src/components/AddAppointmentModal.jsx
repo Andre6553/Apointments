@@ -8,7 +8,7 @@ import { getCache, setCache, CACHE_KEYS } from '../lib/cache';
 import { sendWhatsApp } from '../lib/notifications';
 import { logAppointment } from '../lib/logger';
 
-const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null, initialData = null }) => {
+const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null, initialData = null, preselectedClientId = null }) => {
     const { user, profile } = useAuth();
     const [clients, setClients] = useState([]);
     const [formData, setFormData] = useState({
@@ -88,7 +88,7 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null, init
                 }
 
                 setFormData({
-                    clientId: '',
+                    clientId: preselectedClientId || '',
                     date: format(new Date(), 'yyyy-MM-dd'),
                     time: '09:00',
                     duration: 30,
@@ -99,7 +99,7 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null, init
                 });
             }
         }
-    }, [isOpen, editData, initialData, profile?.business_id]);
+    }, [isOpen, editData, initialData, profile?.business_id, preselectedClientId]);
 
     useEffect(() => {
         if (isOpen && profile?.business_id && isAdmin) {

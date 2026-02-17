@@ -51,7 +51,10 @@ const MasterDashboard = () => {
     const [orgs, setOrgs] = useState([]);
     const [settings, setSettings] = useState({
         pricing_admin: { monthly: 5, yearly: 55 },
-        pricing_provider: { monthly: 3, yearly: 33 }
+        pricing_provider: { monthly: 3, yearly: 33 },
+        pricing_special: { monthly: 0 },
+        limit_special: { default: 5 },
+        special_plan_enabled: false
     });
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
@@ -59,6 +62,7 @@ const MasterDashboard = () => {
     const [showPromoModal, setShowPromoModal] = useState(null);
     const [showReportModal, setShowReportModal] = useState(null);
     const [showStaffModal, setShowStaffModal] = useState(null);
+    const [showSpecialSubModal, setShowSpecialSubModal] = useState(null);
     const [businessDetails, setBusinessDetails] = useState({ appointments: [], clients: [], payments: [] });
     const [fetchingDetails, setFetchingDetails] = useState(false);
     const [saving, setSaving] = useState(false);
@@ -264,7 +268,10 @@ const MasterDashboard = () => {
         try {
             const updates = [
                 { key: 'pricing_admin', value: settings.pricing_admin },
-                { key: 'pricing_provider', value: settings.pricing_provider }
+                { key: 'pricing_provider', value: settings.pricing_provider },
+                { key: 'pricing_special', value: settings.pricing_special },
+                { key: 'limit_special', value: settings.limit_special },
+                { key: 'special_plan_enabled', value: settings.special_plan_enabled }
             ];
 
             console.log('[MasterDashboard] Saving settings:', updates);
@@ -403,6 +410,38 @@ const MasterDashboard = () => {
             </div>
         );
     }
+
+    const handleUpdateSpecialSub = async () => {
+        if (!showSpecialSubModal) return;
+        setSaving(true);
+        try {
+            const updates = {
+                special_plan_active: showSpecialSubModal.special_plan_active,
+                special_plan_price: showSpecialSubModal.special_plan_price,
+                special_plan_limit: showSpecialSubModal.special_plan_limit
+            };
+
+            // Only update activation timestamp if we are toggling it FROM off TO on
+            if (showSpecialSubModal.special_plan_active && !showSpecialSubModal.original_active) {
+                updates.special_plan_updated_at = new Date().toISOString();
+            }
+
+            const { error } = await supabase
+                .from('businesses')
+                .update(updates)
+                .eq('id', showSpecialSubModal.business_id);
+
+            if (error) throw error;
+            alert('Special subscription settings updated.');
+            setShowSpecialSubModal(null);
+            fetchMasterData();
+        } catch (err) {
+            console.error('Update failed:', err);
+            alert('Failed to update special subscription: ' + err.message);
+        } finally {
+            setSaving(false);
+        }
+    };
 
     return (
         <div className="space-y-8 pb-20 px-4 md:px-0 max-w-[1600px] mx-auto">
@@ -573,7 +612,7 @@ const MasterDashboard = () => {
                                         <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs">$</span>
                                         <input
                                             type="number"
-                                            value={settings.pricing_provider.yearly}
+                                            value={settings.pricing_provider?.yearly || 0}
                                             onChange={(e) => setSettings({ ...settings, pricing_provider: { ...settings.pricing_provider, yearly: Number(e.target.value) } })}
                                             className="w-full bg-surface border border-white/10 rounded-xl pl-6 pr-3 py-2 text-white text-sm font-bold focus:border-primary/50 outline-none transition-all"
                                         />
@@ -581,6 +620,60 @@ const MasterDashboard = () => {
                                 </div>
                             </div>
                         </div>
+
+                        {/* Special Subscription */}
+                        <div className={`p-4 rounded-2xl border transition-all ${settings.special_plan_enabled ? 'bg-amber-500/5 border-amber-500/10' : 'bg-white/5 border-white/5'}`}>
+                            <div className="flex items-center justify-between mb-4">
+                                <p className={`text-[10px] font-black uppercase tracking-widest ${settings.special_plan_enabled ? 'text-amber-500/80' : 'text-slate-500'}`}>
+                                    Special Subscription (Global Defaults)
+                                </p>
+                                <label className="relative inline-flex items-center cursor-pointer">
+                                    <input
+                                        type="checkbox"
+                                        className="sr-only peer"
+                                        checked={settings.special_plan_enabled || false}
+                                        onChange={(e) => setSettings({ ...settings, special_plan_enabled: e.target.checked })}
+                                    />
+                                    <div className="w-9 h-5 bg-slate-700 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-amber-500/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-500"></div>
+                                </label>
+                            </div>
+
+                            {settings.special_plan_enabled && (
+                                <div className="grid grid-cols-2 gap-4 animate-in fade-in slide-in-from-top-2 duration-300">
+                                    <div>
+                                        <label className="text-[10px] text-slate-400 block mb-1">Monthly Fee</label>
+                                        <div className="relative">
+                                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs">$</span>
+                                            <input
+                                                type="number"
+                                                value={settings.pricing_special?.monthly || 0}
+                                                onChange={(e) => setSettings({
+                                                    ...settings,
+                                                    pricing_special: { ...settings.pricing_special, monthly: Number(e.target.value) }
+                                                })}
+                                                className="w-full bg-surface border border-white/10 rounded-xl pl-6 pr-3 py-2 text-white text-sm font-bold focus:border-amber-500/50 outline-none transition-all"
+                                            />
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="text-[10px] text-slate-400 block mb-1">Free Limit</label>
+                                        <div className="relative">
+                                            <Users size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                                            <input
+                                                type="number"
+                                                value={settings.limit_special?.default || 5}
+                                                onChange={(e) => setSettings({
+                                                    ...settings,
+                                                    limit_special: { ...settings.limit_special, default: Number(e.target.value) }
+                                                })}
+                                                className="w-full bg-surface border border-white/10 rounded-xl pl-8 pr-3 py-2 text-white text-sm font-bold focus:border-amber-500/50 outline-none transition-all"
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
 
                         <button
                             onClick={handleUpdateSettings}
@@ -590,12 +683,12 @@ const MasterDashboard = () => {
                             {saving ? <Loader2 className="animate-spin" size={20} /> : <Settings size={18} />}
                             Update Global Fees
                         </button>
-                    </div>
-                </div>
-            </div>
+                    </div >
+                </div >
+            </div >
 
             {/* System Operations & Logs */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            < div className="grid grid-cols-1 lg:grid-cols-2 gap-8" >
                 <div className="glass-card p-6 md:p-8">
                     <div className="flex justify-between items-start mb-6">
                         <div>
@@ -701,10 +794,10 @@ const MasterDashboard = () => {
                         ))}
                     </div>
                 </div>
-            </div>
+            </div >
 
             {/* Organizations Directory */}
-            <div className="glass-card overflow-hidden">
+            < div className="glass-card overflow-hidden" >
                 <div className="p-6 md:p-8 border-b border-white/5 flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
                     <div>
                         <h3 className="text-xl font-bold text-white flex items-center gap-2">
@@ -799,6 +892,20 @@ const MasterDashboard = () => {
                                                     <Gift size={18} />
                                                 </button>
                                                 <button
+                                                    onClick={() => setShowSpecialSubModal({
+                                                        business_id: org.id,
+                                                        name: org.name,
+                                                        special_plan_active: org.special_plan_active,
+                                                        original_active: org.special_plan_active, // Keep track of original state
+                                                        special_plan_price: org.special_plan_price,
+                                                        special_plan_limit: org.special_plan_limit
+                                                    })}
+                                                    className="p-2.5 rounded-xl bg-white/5 hover:bg-emerald-400/10 text-slate-400 hover:text-emerald-400 transition-all border border-transparent hover:border-emerald-400/20"
+                                                    title="Manage Special Subscription"
+                                                >
+                                                    <CreditCard size={18} />
+                                                </button>
+                                                <button
                                                     onClick={() => {
                                                         setShowReportModal(org);
                                                         fetchBusinessDetails(org.id);
@@ -815,10 +922,10 @@ const MasterDashboard = () => {
                         </tbody>
                     </table>
                 </div>
-            </div>
+            </div >
 
             {/* Promo Modal */}
-            <AnimatePresence>
+            < AnimatePresence >
                 {showPromoModal && (
                     <div className="fixed inset-0 bg-background/80 backdrop-blur-md z-[110] flex items-center justify-center p-4">
                         <motion.div
@@ -869,10 +976,10 @@ const MasterDashboard = () => {
                         </motion.div>
                     </div>
                 )}
-            </AnimatePresence>
+            </AnimatePresence >
 
             {/* Deep Dive Modal */}
-            <AnimatePresence>
+            < AnimatePresence >
                 {showReportModal && (
                     <div className="fixed inset-0 bg-background/80 backdrop-blur-md z-[100] flex items-center justify-center p-4">
                         <motion.div
@@ -957,10 +1064,10 @@ const MasterDashboard = () => {
                         </motion.div>
                     </div>
                 )}
-            </AnimatePresence>
+            </AnimatePresence >
 
             {/* Staff List Modal */}
-            <AnimatePresence>
+            < AnimatePresence >
                 {showStaffModal && (
                     <div className="fixed inset-0 bg-background/80 backdrop-blur-md z-[101] flex items-center justify-center p-4">
                         <motion.div
@@ -1067,7 +1174,104 @@ const MasterDashboard = () => {
                         </motion.div>
                     </div>
                 )}
-            </AnimatePresence>
+            </AnimatePresence >
+            {/* Special Subscription Modal */}
+            < AnimatePresence >
+                {showSpecialSubModal && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.95 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            exit={{ opacity: 0, scale: 0.95 }}
+                            className="bg-[#0f172a] border border-white/10 rounded-2xl p-6 md:p-8 w-full max-w-lg shadow-2xl relative overflow-hidden"
+                        >
+                            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-emerald-500 to-emerald-400" />
+                            <button
+                                onClick={() => setShowSpecialSubModal(null)}
+                                className="absolute top-4 right-4 text-slate-400 hover:text-white transition-colors"
+                            >
+                                <X size={20} />
+                            </button>
+
+                            <div className="flex items-center gap-4 mb-6">
+                                <div className="p-3 rounded-xl bg-emerald-500/10 text-emerald-400">
+                                    <CreditCard size={24} />
+                                </div>
+                                <div>
+                                    <h3 className="text-xl font-bold text-white">Special Subscription Manager</h3>
+                                    <p className="text-slate-400 text-sm">Managing for: <span className="text-white font-medium">{showSpecialSubModal.name}</span></p>
+                                </div>
+                            </div>
+
+                            <div className="space-y-6">
+                                <div className="flex items-center justify-between p-4 rounded-xl bg-white/5 border border-white/5">
+                                    <div>
+                                        <label className="text-sm font-bold text-white block">Status</label>
+                                        <p className="text-xs text-slate-400">Enable special tiered access</p>
+                                    </div>
+                                    <label className="relative inline-flex items-center cursor-pointer">
+                                        <input
+                                            type="checkbox"
+                                            className="sr-only peer"
+                                            checked={showSpecialSubModal.special_plan_active || false}
+                                            onChange={(e) => setShowSpecialSubModal({ ...showSpecialSubModal, special_plan_active: e.target.checked })}
+                                        />
+                                        <div className="w-11 h-6 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500"></div>
+                                    </label>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 block">Price (Monthly)</label>
+                                        <div className="relative">
+                                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm font-bold">$</span>
+                                            <input
+                                                type="number"
+                                                value={showSpecialSubModal.special_plan_price || 0}
+                                                onChange={(e) => setShowSpecialSubModal({ ...showSpecialSubModal, special_plan_price: Number(e.target.value) })}
+                                                className="w-full bg-black/20 border border-white/10 rounded-xl pl-8 pr-4 py-3 text-white font-bold outline-none focus:border-emerald-500/50 transition-all"
+                                            />
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 block">Provider Limit</label>
+                                        <div className="relative">
+                                            <Users size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                                            <input
+                                                type="number"
+                                                value={showSpecialSubModal.special_plan_limit || 5}
+                                                onChange={(e) => setShowSpecialSubModal({ ...showSpecialSubModal, special_plan_limit: Number(e.target.value) })}
+                                                className="w-full bg-black/20 border border-white/10 rounded-xl pl-9 pr-4 py-3 text-white font-bold outline-none focus:border-emerald-500/50 transition-all"
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="p-4 rounded-xl bg-blue-500/10 border border-blue-500/20">
+                                    <div className="flex gap-3">
+                                        <Activity className="text-blue-400 shrink-0 mt-0.5" size={16} />
+                                        <div className="space-y-1">
+                                            <p className="text-xs font-bold text-blue-100">Plan Logic</p>
+                                            <p className="text-[11px] text-blue-200/70 leading-relaxed">
+                                                Enabling this plan grants free access to the first <span className="text-white font-bold">{showSpecialSubModal.special_plan_limit}</span> providers (sorted by seniority). Any staff members beyond this limit must pay for a standard subscription.
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <button
+                                    onClick={handleUpdateSpecialSub}
+                                    disabled={saving}
+                                    className="w-full bg-emerald-500 hover:bg-emerald-400 text-white font-black py-4 rounded-xl shadow-lg shadow-emerald-500/20 hover:shadow-emerald-500/40 transition-all flex items-center justify-center gap-2"
+                                >
+                                    {saving ? <Loader2 className="animate-spin" size={20} /> : <Shield size={20} />}
+                                    Save Configuration
+                                </button>
+                            </div>
+                        </motion.div>
+                    </div>
+                )}
+            </AnimatePresence >
         </div >
     );
 };

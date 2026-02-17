@@ -5,7 +5,7 @@ import { Check, ShieldCheck, Clock, CreditCard, ExternalLink, AlertCircle, Loade
 import { supabase } from '../lib/supabase';
 
 const SubscriptionPage = () => {
-    const { user, profile, fetchProfile } = useAuth();
+    const { user, profile, fetchProfile, settings } = useAuth();
     const [loading, setLoading] = useState(false);
     const [verifying, setVerifying] = useState(false);
     const [paymentStatus, setPaymentStatus] = useState(null);
@@ -131,6 +131,20 @@ const SubscriptionPage = () => {
     const yearlyPrice = pricing?.[role]?.yearly ?? 0;
     const pricingLoaded = pricing !== null;
 
+    // Special Plan Calculated Values
+    // User requested to prioritize Global Defaults over Business Specific overrides for now.
+    // Ensure settings are loaded before defaulting to 0, otherwise it might flash "R 0.00"
+    const settingsLoaded = settings && Object.keys(settings).length > 0;
+
+    // Explicitly use Global Settings as Primary Source
+    const specialPrice = settings?.pricing_special?.monthly ?? 0;
+    const specialLimit = settings?.limit_special?.default ?? 5;
+
+    // Fallback logic for enabled state: STRICTLY Global Toggle
+    const isSpecialEnabled = settings?.special_plan_enabled;
+
+    const isSpecialActive = subscription?.tier === 'special_admin' || profile?.business?.special_plan_active;
+
     const formatCurrency = (amount) => {
         if (isSA) {
             return `R ${(amount * exchangeRate).toFixed(2)}`;
@@ -140,13 +154,25 @@ const SubscriptionPage = () => {
 
     const handlePayment = (tier) => {
         setLoading(true);
-        const amount = tier === 'monthly' ? monthlyPrice : yearlyPrice;
-        const zarAmount = (amount * exchangeRate).toFixed(2);
-        const itemName = `${role} ${tier === 'monthly' ? 'Monthly' : 'Yearly'} Subscription`;
+        let amount = 0;
+        let itemName = '';
 
-        // PayFast Live Credentials (matching Omni Bible pattern)
+        if (tier === 'monthly') {
+            amount = monthlyPrice;
+            itemName = `${role} Monthly Subscription`;
+        } else if (tier === 'yearly') {
+            amount = yearlyPrice;
+            itemName = `${role} Yearly Subscription`;
+        } else if (tier === 'special') {
+            amount = specialPrice;
+            itemName = `Special Admin Subscription`;
+        }
+
+        const zarAmount = (amount * exchangeRate).toFixed(2);
+
+        // PayFast Live Credentials
         const baseUrl = 'https://www.payfast.co.za/eng/process';
-        const receiver = '11945617'; // merchant_id
+        const receiver = '11945617';
         const merchantKey = '9anvup217hdck';
 
         // URLs
@@ -159,7 +185,6 @@ const SubscriptionPage = () => {
 
         console.log('[SubscriptionPage] Redirecting to PayFast with amount:', finalAmount);
 
-        // Build URL params (matching working Omni Bible pattern)
         const payParams = new URLSearchParams({
             cmd: '_paynow',
             receiver: receiver,
@@ -173,7 +198,6 @@ const SubscriptionPage = () => {
             merchant_key: merchantKey
         });
 
-        // Simple redirect (no signature needed for this method)
         window.location.href = `${baseUrl}?${payParams.toString()}`;
     };
 
@@ -192,21 +216,6 @@ const SubscriptionPage = () => {
                     <div className="bg-white/5 p-4 rounded-xl border border-white/10 mb-6 text-xs text-slate-500 font-mono">
                         Status: Polling database... (Attempt {Math.min(20, Math.ceil(Date.now() / 3000 % 20))})
                     </div>
-                    <div className="flex flex-col gap-3">
-                        <button
-                            onClick={async () => {
-                                setLoading(true);
-                                await fetchProfile(user.id);
-                                setLoading(false);
-                            }}
-                            className="bg-white/5 hover:bg-white/10 text-white text-sm font-bold py-2 px-6 rounded-xl transition-all"
-                        >
-                            {loading ? 'Checking...' : 'Check Status Manually'}
-                        </button>
-                        <p className="text-[10px] text-slate-600 italic">
-                            If you've been waiting for more than 1 minute, please check your internet or refresh the page.
-                        </p>
-                    </div>
                 </div>
             </div>
         );
@@ -220,20 +229,11 @@ const SubscriptionPage = () => {
                 </div>
                 <div>
                     <h2 className="text-3xl font-bold text-white mb-2">Still Waiting...</h2>
-                    <p className="text-slate-400 max-w-md mx-auto mb-8">
-                        The payment is taking longer than usual to reflect. You can try refreshing manually or contact support if the issue persists.
-                    </p>
                     <div className="flex flex-col sm:flex-row gap-4 justify-center">
-                        <button
-                            onClick={() => window.location.reload()}
-                            className="bg-primary hover:bg-indigo-600 text-white font-bold py-4 px-8 rounded-2xl transition-all shadow-lg shadow-primary/20"
-                        >
+                        <button onClick={() => window.location.reload()} className="bg-primary hover:bg-indigo-600 text-white font-bold py-4 px-8 rounded-2xl transition-all shadow-lg shadow-primary/20">
                             Refresh Page
                         </button>
-                        <button
-                            onClick={() => setPaymentStatus(null)}
-                            className="bg-white/5 hover:bg-white/10 text-white font-bold py-4 px-8 rounded-2xl transition-all border border-white/10"
-                        >
+                        <button onClick={() => setPaymentStatus(null)} className="bg-white/5 hover:bg-white/10 text-white font-bold py-4 px-8 rounded-2xl transition-all border border-white/10">
                             Back to Pricing
                         </button>
                     </div>
@@ -245,22 +245,12 @@ const SubscriptionPage = () => {
     if (paymentStatus === 'success' && !isExpired && !isTrial) {
         return (
             <div className="flex flex-col items-center justify-center min-h-[60vh] gap-6 text-center">
-                <motion.div
-                    initial={{ scale: 0.5, opacity: 0 }}
-                    animate={{ scale: 1, opacity: 1 }}
-                    className="w-20 h-20 bg-emerald-500/20 rounded-full flex items-center justify-center text-emerald-500 border border-emerald-500/30 mb-4"
-                >
+                <div className="w-20 h-20 bg-emerald-500/20 rounded-full flex items-center justify-center text-emerald-500 border border-emerald-500/30 mb-4">
                     <Check size={40} />
-                </motion.div>
+                </div>
                 <div>
                     <h2 className="text-3xl font-bold text-white mb-2">Payment Successful!</h2>
-                    <p className="text-slate-400 max-w-md mx-auto mb-8">
-                        Thank you for your subscription. Your account has been upgraded and all features are now unlocked.
-                    </p>
-                    <button
-                        onClick={() => window.location.href = '/'}
-                        className="bg-primary hover:bg-indigo-600 text-white font-bold py-4 px-8 rounded-2xl transition-all shadow-lg shadow-primary/20"
-                    >
+                    <button onClick={() => window.location.href = '/'} className="bg-primary hover:bg-indigo-600 text-white font-bold py-4 px-8 rounded-2xl transition-all shadow-lg shadow-primary/20">
                         Go to Dashboard
                     </button>
                 </div>
@@ -269,17 +259,30 @@ const SubscriptionPage = () => {
     }
 
     return (
-        <div className="space-y-8 max-w-5xl mx-auto">
-            {paymentStatus === 'cancelled' && (
+        <div className="space-y-8 max-w-7xl mx-auto">
+            {subscription?.is_virtual && profile?.role !== 'Admin' && (
                 <motion.div
-                    initial={{ opacity: 0, y: -20 }}
+                    initial={{ opacity: 0, y: -10 }}
                     animate={{ opacity: 1, y: 0 }}
-                    className="bg-red-500/10 border border-red-500/20 p-4 rounded-2xl flex items-center gap-3 text-red-400 text-sm mb-4"
+                    className="bg-amber-500/10 border border-amber-500/20 p-6 rounded-2xl flex items-center gap-4 text-amber-500 mb-6 group hover:bg-amber-500/20 transition-all"
                 >
-                    <AlertCircle size={18} />
-                    <span>Your payment was cancelled. If this was a mistake, please try again.</span>
+                    <div className="p-3 rounded-xl bg-amber-500/20 text-amber-500 group-hover:scale-110 transition-transform">
+                        <ShieldCheck size={28} />
+                    </div>
+                    <div>
+                        <h4 className="font-bold text-white">Free Access - Organization Managed</h4>
+                        <p className="text-xs text-amber-400/80">Your subscription is covered by your Organization Administrator via the special early access program.</p>
+                    </div>
                 </motion.div>
             )}
+
+            {paymentStatus === 'cancelled' && (
+                <div className="bg-red-500/10 border border-red-500/20 p-4 rounded-2xl flex items-center gap-3 text-red-400 text-sm mb-4">
+                    <AlertCircle size={18} />
+                    <span>Your payment was cancelled. If this was a mistake, please try again.</span>
+                </div>
+            )}
+
             {/* Status Card */}
             <motion.div
                 initial={{ opacity: 0, y: 20 }}
@@ -304,24 +307,13 @@ const SubscriptionPage = () => {
                             </p>
                         </div>
                     </div>
-                    <div className="text-center md:text-right">
-                        <div className={`text-4xl font-black mb-1 ${daysLeft > 3 ? 'text-white' : 'text-amber-500 animate-pulse'}`}>
-                            {daysLeft}
-                        </div>
-                        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest text-nowrap">Days Remaining</p>
-                    </div>
                 </div>
             </motion.div>
 
             {/* Pricing Section */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
                 {/* Monthly Plan */}
-                <motion.div
-                    initial={{ opacity: 0, x: -20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: 0.1 }}
-                    className="glass-card p-8 flex flex-col group hover:border-primary/30 transition-all"
-                >
+                <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.1 }} className="glass-card p-8 flex flex-col group hover:border-primary/30 transition-all">
                     <div className="flex justify-between items-start mb-8">
                         <div>
                             <h4 className="text-xl font-bold text-white mb-2">Monthly Plan</h4>
@@ -354,30 +346,15 @@ const SubscriptionPage = () => {
                         ))}
                     </div>
 
-                    <button
-                        onClick={() => handlePayment('monthly')}
-                        disabled={loading || !canRenew}
-                        className={`w-full font-bold py-4 rounded-2xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-primary/5 ${!canRenew
-                            ? 'bg-white/5 text-slate-500 cursor-not-allowed border border-white/5'
-                            : 'bg-white/5 hover:bg-primary text-white group-hover:bg-primary'
-                            }`}
-                    >
+                    <button onClick={() => handlePayment('monthly')} disabled={loading || !canRenew || isSpecialActive} className={`w-full font-bold py-4 rounded-2xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-primary/5 ${(!canRenew || isSpecialActive) ? 'bg-white/5 text-slate-500 cursor-not-allowed border border-white/5' : 'bg-white/5 hover:bg-primary text-white group-hover:bg-primary'}`}>
                         {loading ? <Loader2 className="animate-spin" size={20} /> : <CreditCard size={20} />}
-                        {loading ? 'Processing...' : !canRenew ? `Renewal opens in ${daysLeft - 2} days` : 'Subscribe Monthly'}
+                        {loading ? 'Processing...' : isSpecialActive ? 'Special Plan Active' : !canRenew ? `Renewal opens in ${daysLeft - 2} days` : 'Subscribe Monthly'}
                     </button>
                 </motion.div>
 
                 {/* Yearly Plan */}
-                <motion.div
-                    initial={{ opacity: 0, x: 20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: 0.2 }}
-                    className="glass-card p-8 flex flex-col border-primary/20 relative overflow-hidden group hover:border-primary/50 transition-all shadow-xl shadow-primary/10"
-                >
-                    <div className="absolute top-0 right-0 bg-primary px-4 py-1 text-[10px] font-black uppercase text-white tracking-widest rounded-bl-xl">
-                        Save 1 Month
-                    </div>
-
+                <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.2 }} className="glass-card p-8 flex flex-col border-primary/20 relative overflow-hidden group hover:border-primary/50 transition-all shadow-xl shadow-primary/10">
+                    <div className="absolute top-0 right-0 bg-primary px-4 py-1 text-[10px] font-black uppercase text-white tracking-widest rounded-bl-xl">Save 1 Month</div>
                     <div className="flex justify-between items-start mb-8">
                         <div>
                             <h4 className="text-xl font-bold text-white mb-2">Yearly Plan</h4>
@@ -410,15 +387,93 @@ const SubscriptionPage = () => {
                         ))}
                     </div>
 
-                    <button
-                        onClick={() => handlePayment('yearly')}
-                        disabled={loading}
-                        className="w-full bg-primary hover:bg-indigo-600 text-white font-bold py-4 rounded-2xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-primary/20"
-                    >
+                    <button onClick={() => handlePayment('yearly')} disabled={loading || isSpecialActive} className={`w-full font-bold py-4 rounded-2xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-primary/20 ${isSpecialActive ? 'bg-white/5 text-slate-500 cursor-not-allowed border border-white/5' : 'bg-primary hover:bg-indigo-600 text-white'}`}>
                         {loading ? <Loader2 className="animate-spin" size={20} /> : <ExternalLink size={20} />}
-                        {loading ? 'Processing...' : 'Subscribe Yearly'}
+                        {loading ? 'Processing...' : isSpecialActive ? 'Special Plan Active' : 'Subscribe Yearly'}
                     </button>
                 </motion.div>
+
+                {/* Special / Early Adopter Plan - ONLY FOR ADMINS */}
+                {profile?.role === 'Admin' && (isSpecialEnabled || subscription?.is_virtual || subscription?.tier === 'special_admin') && (
+                    <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.3 }} className={`glass-card p-8 flex flex-col relative overflow-hidden group hover:border-amber-400/50 transition-all shadow-xl shadow-amber-500/10 ${(subscription?.is_virtual || subscription?.tier === 'special_admin') ? 'border-amber-400 ring-1 ring-amber-400/50' : 'border-amber-500/20'}`}>
+                        <div className="absolute top-0 right-0 bg-amber-500 px-4 py-1 text-[10px] font-black uppercase text-black tracking-widest rounded-bl-xl">Early Access</div>
+                        <div className="flex justify-between items-start mb-8">
+                            <div>
+                                <h4 className="text-xl font-bold text-white mb-2">Special Plan</h4>
+                                <p className="text-slate-400 text-sm">Exclusive tier for early partners</p>
+                            </div>
+                        </div>
+                        <div className="space-y-4 mb-10 flex-grow">
+                            {[`Up to ${specialLimit} Free Providers`, 'Priority support lane', 'Early feature access', 'Custom billing agreement', 'Cancel anytime'].map((feature, i) => (
+                                <div key={i} className="flex items-center gap-3 text-slate-300 text-sm">
+                                    <div className="p-0.5 rounded-full bg-amber-500/20 text-amber-400"><Check size={14} /></div>
+                                    {feature}
+                                </div>
+                            ))}
+                        </div>
+                        {(() => {
+                            const isOwner = user?.id === profile?.business?.owner_id;
+
+                            // 1. Staff Members (Free Virtual Slot) - Simple Active Badge
+                            if (subscription?.is_virtual && !isOwner) {
+                                return (
+                                    <div className="w-full bg-amber-500/20 border border-amber-500/50 text-amber-400 font-bold py-4 rounded-2xl flex items-center justify-center gap-2 cursor-default">
+                                        <ShieldCheck size={20} /> Active Plan
+                                    </div>
+                                );
+                            }
+
+                            if (subscription?.tier === 'special_admin') {
+                                const expiryDate = new Date(subscription.expires_at);
+                                const today = new Date();
+                                const diffTime = expiryDate - today;
+                                const daysLeft = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                                const renewalWindow = 7; // Days before expiry when renewal opens
+
+                                if (daysLeft > renewalWindow) {
+                                    return (
+                                        <button disabled className="w-full bg-slate-800/50 text-slate-400 border border-slate-700 font-bold py-4 rounded-2xl flex items-center justify-center gap-2 cursor-not-allowed">
+                                            <CreditCard size={20} /> Renewal opens in {daysLeft - renewalWindow} days
+                                        </button>
+                                    );
+                                } else {
+                                    return (
+                                        <button onClick={() => handlePayment('special')} disabled={loading} className="w-full bg-amber-500 hover:bg-amber-400 text-black border border-amber-500 font-bold py-4 rounded-2xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20">
+                                            {loading ? <Loader2 className="animate-spin" size={20} /> : <CreditCard size={20} />}
+                                            Renew Subscription
+                                        </button>
+                                    );
+                                }
+                            }
+
+                            // 3. Already Subscribed to another plan (Monthly/Yearly)
+                            if (subscription?.status === 'active' && subscription?.tier !== 'special_admin' && !subscription?.is_virtual) {
+                                return (
+                                    <button disabled className="w-full bg-slate-800/50 text-slate-500 border border-slate-700 font-bold py-4 rounded-2xl flex items-center justify-center gap-2 cursor-not-allowed">
+                                        <AlertCircle size={20} /> Current Plan Active
+                                    </button>
+                                );
+                            }
+
+                            // 4. Organization Toggle is ALREADY ON (Manual Activation by Master Admin)
+                            if (profile?.business?.special_plan_active && subscription?.tier !== 'special_admin' && !subscription?.is_virtual) {
+                                return (
+                                    <div className="w-full bg-amber-500/20 border border-amber-500/50 text-amber-400 font-bold py-4 rounded-2xl flex items-center justify-center gap-2 cursor-default">
+                                        <ShieldCheck size={20} /> Active Plan
+                                    </div>
+                                );
+                            }
+
+                            // 5. Fallback (Not Subscribed & Toggle is OFF)
+                            return (
+                                <button onClick={() => handlePayment('special')} disabled={loading || !isSpecialEnabled} className={`w-full font-bold py-4 rounded-2xl transition-all flex items-center justify-center gap-2 border ${isSpecialEnabled ? 'bg-amber-500 hover:bg-amber-400 text-black border-amber-500 cursor-pointer shadow-lg shadow-amber-500/20' : 'bg-white/5 text-slate-500 border-white/5 cursor-not-allowed'}`}>
+                                    {loading ? <Loader2 className="animate-spin" size={20} /> : <CreditCard size={20} />}
+                                    {isSpecialEnabled ? `Subscribe for ${formatCurrency(specialPrice)}/mo` : 'Invite Only'}
+                                </button>
+                            );
+                        })()}
+                    </motion.div>
+                )}
             </div>
 
             {/* PayFast Badge */}

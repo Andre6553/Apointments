@@ -4,6 +4,7 @@ import { Search, Plus, Trash2, Phone, Mail, User, AlertCircle, Loader2, X, Edit2
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../hooks/useAuth';
 import EditClientModal from './EditClientModal';
+import AddAppointmentModal from './AddAppointmentModal';
 
 const ClientList = ({ initialClientId, onClientModalClose }) => {
     const [clients, setClients] = useState([]);
@@ -19,6 +20,8 @@ const ClientList = ({ initialClientId, onClientModalClose }) => {
     const [editingClient, setEditingClient] = useState(null);
     const [isEditOpen, setIsEditOpen] = useState(false);
     const [debouncedSearch, setDebouncedSearch] = useState('');
+    const [isBookingOpen, setIsBookingOpen] = useState(false);
+    const [bookingClient, setBookingClient] = useState(null);
 
     const { profile } = useAuth();
     const PAGE_SIZE = 20;
@@ -370,6 +373,17 @@ const ClientList = ({ initialClientId, onClientModalClose }) => {
                                     )}
                                 </div>
 
+                                <button
+                                    onClick={() => {
+                                        setBookingClient(c);
+                                        setIsBookingOpen(true);
+                                    }}
+                                    className="w-full bg-primary/10 hover:bg-primary text-primary hover:text-white py-2.5 rounded-xl font-bold transition-all mb-6 flex items-center justify-center gap-2 group/btn"
+                                >
+                                    <Plus size={16} className="group-hover/btn:scale-110 transition-transform" />
+                                    <span>Make Appointment</span>
+                                </button>
+
                                 <div className="space-y-4">
                                     <a href={`tel:${c.phone}`} className="flex items-center gap-4 text-slate-400 group/item hover:text-white transition-colors cursor-pointer p-2 hover:bg-white/5 rounded-lg -mx-2">
                                         <div className="p-2 bg-surface rounded-lg group-hover/item:text-primary transition-colors border border-white/5">
@@ -447,6 +461,16 @@ const ClientList = ({ initialClientId, onClientModalClose }) => {
                 }}
                 client={editingClient}
                 onUpdate={fetchClients}
+            />
+
+            <AddAppointmentModal
+                isOpen={isBookingOpen}
+                onClose={() => {
+                    setIsBookingOpen(false);
+                    setBookingClient(null);
+                }}
+                onRefresh={() => { }}
+                preselectedClientId={bookingClient?.id}
             />
         </div>
     );
