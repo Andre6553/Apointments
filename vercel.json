@@ -5,5 +5,11 @@
     "framework": "vite",
     "regions": [
         "sfo1"
+    ],
+    "rewrites": [
+        {
+            "source": "/(.*)",
+            "destination": "/index.html"
+        }
     ]
 }

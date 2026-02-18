@@ -107,35 +107,10 @@ workbox.routing.registerRoute(
   'DELETE'
 );
 
-// Offline Fallback for Navigation
-self.addEventListener('fetch', (event) => {
-  if (event.request.mode === 'navigate') {
-    event.respondWith((async () => {
-      try {
-        const preloadResp = await event.preloadResponse;
-        if (preloadResp) {
-          return preloadResp;
-        }
-        const networkResp = await fetch(event.request);
-        return networkResp;
-      } catch (error) {
-        const cache = await caches.open(CACHE);
-        const cachedResp = await cache.match(offlineFallbackPage);
-        return cachedResp;
-      }
-    })());
-  }
-});
-
-// 1. Claim clients immediately to update open tabs
-self.addEventListener('activate', (event) => {
-  event.waitUntil(self.clients.claim());
-});
-
-// General Caching Strategy
-// Use NetworkFirst for HTML (navigation) to ensure fresh updates
-workbox.routing.registerRoute(
-  ({ request }) => request.mode === 'navigate',
+// --- NAVIGATION HANDLING ---
+// Use Workbox NavigationRoute for robust handling of SPA navigations
+// This automatically handles the "Navigation Preload" response correctly.
+const navigationRoute = new workbox.routing.NavigationRoute(
   new workbox.strategies.NetworkFirst({
     cacheName: 'pages',
     plugins: [
@@ -143,8 +118,22 @@ workbox.routing.registerRoute(
         statuses: [200],
       }),
     ],
-  })
+  }),
+  {
+    // Fallback to offline.html if the network is completely down
+    handler: async (params) => {
+      try {
+        return await new workbox.strategies.NetworkFirst({
+          cacheName: 'pages'
+        }).handle(params);
+      } catch (error) {
+        return caches.match(offlineFallbackPage);
+      }
+    }
+  }
 );
+
+workbox.routing.registerRoute(navigationRoute);
 
 // Use StaleWhileRevalidate for CSS, JS, and Images
 workbox.routing.registerRoute(
