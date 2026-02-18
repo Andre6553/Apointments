@@ -35,7 +35,7 @@ export const sendReminders = async (supabase, businessId, options = {}) => {
             .from('business_settings')
             .select('*')
             .eq('business_id', businessId)
-            .single();
+            .maybeSingle();
 
         if (error || !data) {
             console.error('[WhatsAppAutomation] Failed to fetch settings', error);

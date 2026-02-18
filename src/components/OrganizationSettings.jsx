@@ -97,7 +97,7 @@ const OrganizationSettings = () => {
                 .from('business_settings')
                 .select('whatsapp_reminder_template, whatsapp_reminder_start_day, whatsapp_reminder_end_day, whatsapp_broadcast_template, whatsapp_reminder_send_day, whatsapp_reminder_send_time, whatsapp_reminder_enabled, whatsapp_reminder_enabled_2, whatsapp_reminder_send_day_2, whatsapp_reminder_send_time_2, whatsapp_reminder_start_day_2, whatsapp_reminder_end_day_2')
                 .eq('business_id', profile.business_id)
-                .single()
+                .maybeSingle()
 
             if (data) {
                 console.log('✅ Fetched Settings from DB:', data)
