@@ -73,7 +73,7 @@ const EditStaffModal = ({ isOpen, onClose, member, onUpdate }) => {
             if (error) throw error
 
             showToast('Team member updated', 'success')
-            if (onUpdate) onUpdate()
+            if (onUpdate) onUpdate(member.id)
             onClose()
         } catch (error) {
             console.error('Error updating staff:', error)

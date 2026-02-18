@@ -1228,7 +1228,12 @@ const OrganizationSettings = () => {
                 isOpen={isEditModalOpen}
                 onClose={() => setIsEditModalOpen(false)}
                 member={selectedStaff}
-                onUpdate={fetchStaff}
+                onUpdate={(updatedId) => {
+                    fetchStaff()
+                    if (updatedId === profile?.id) {
+                        fetchProfile(profile.id)
+                    }
+                }}
             />
         </div >
     )
