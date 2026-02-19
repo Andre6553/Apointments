@@ -308,6 +308,16 @@ const DailyTimeline = ({ selectedDate = new Date() }) => {
                                 return (
                                     <motion.div
                                         key={event.id}
+                                        onClick={() => {
+                                            if (event.type === 'appointment') {
+                                                // Find the full raw appointment object
+                                                const raw = rawAppointments.find(a => a.id === event.id);
+                                                if (raw) {
+                                                    setEditData(raw);
+                                                    setIsEditOpen(true);
+                                                }
+                                            }
+                                        }}
                                         initial={{ opacity: 0 }}
                                         animate={{ opacity: 1 }}
                                         whileHover={{ zIndex: 50, scale: 1.01 }}

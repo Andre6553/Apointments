@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
-import { X, Calendar, Clock, User, MessageCircle, ArrowRight, Loader2, Timer, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { X, Calendar, Clock, User, MessageCircle, ArrowRight, Loader2, Timer, AlertTriangle, CheckCircle2, Plus, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { format, isSameDay } from 'date-fns';
 import { useAuth } from '../hooks/useAuth';
@@ -8,7 +8,8 @@ import { getCache, setCache, CACHE_KEYS } from '../lib/cache';
 import { sendWhatsApp } from '../lib/notifications';
 import { logAppointment } from '../lib/logger';
 
-const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null, initialData = null, preselectedClientId = null }) => {
+const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null, selectedDate = null, selectedTime = null }) => {
+    console.log('AddAppointmentModal Rendered. isOpen:', isOpen, 'editData:', editData ? editData.id : 'null');
     const { user, profile } = useAuth();
     const [clients, setClients] = useState([]);
     const [formData, setFormData] = useState({
@@ -19,7 +20,9 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null, init
         notes: '',
         treatmentId: '',
         treatmentName: '',
-        cost: 0
+        treatmentName: '',
+        cost: 0,
+        additional_services: []
     });
     const [treatments, setTreatments] = useState([]);
     const [fetchingTreatments, setFetchingTreatments] = useState(false);
@@ -71,35 +74,27 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null, init
                     notes: editData.notes || '',
                     treatmentId: editData.treatment_id || '',
                     treatmentName: editData.treatment_name || '',
+                    treatmentName: editData.treatment_name || '',
                     cost: editData.cost || 0,
-                    requiredSkills: editData.required_skills || []
+                    requiredSkills: editData.required_skills || [],
+                    additional_services: editData.additional_services || []
                 });
             } else {
                 setTargetProviderId(user?.id);
 
-                // Pre-fill from shared data if available
-                let initialNotes = '';
-                if (initialData) {
-                    const parts = [];
-                    if (initialData.title) parts.push(`Title: ${initialData.title}`);
-                    if (initialData.text) parts.push(`Shared: ${initialData.text}`);
-                    if (initialData.url) parts.push(`Link: ${initialData.url}`);
-                    initialNotes = parts.join('\n');
-                }
-
                 setFormData({
-                    clientId: preselectedClientId || '',
+                    clientId: '',
                     date: format(new Date(), 'yyyy-MM-dd'),
                     time: '09:00',
                     duration: 30,
-                    notes: initialNotes,
+                    notes: '',
                     treatmentId: '',
                     treatmentName: '',
                     cost: 0
                 });
             }
         }
-    }, [isOpen, editData, initialData, profile?.business_id, preselectedClientId]);
+    }, [isOpen, editData, profile?.business_id]);
 
     useEffect(() => {
         if (isOpen && profile?.business_id && isAdmin) {
@@ -542,8 +537,8 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null, init
                 setSlotStatus({ type: 'error', message: msg, suggestion });
             };
 
-            // 0. Past Time Check (Instant)
-            if (slotStart < new Date()) {
+            // 0. Past Time Check (Instant) - Bypass if editing an existing appointment
+            if (!editData && slotStart < new Date()) {
                 setErrorWithSuggestion('This time slot has already passed');
                 return;
             }
@@ -709,20 +704,20 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null, init
 
     const handleTreatmentChange = (treatmentId) => {
         if (!treatmentId) {
-            setFormData({ ...formData, treatmentId: '', treatmentName: '', cost: 0 });
+            setFormData(prev => ({ ...prev, treatmentId: '', treatmentName: '', cost: 0, requiredSkills: [] }));
             return;
         }
 
         const selected = treatments.find(t => t.id === treatmentId);
         if (selected) {
-            setFormData({
-                ...formData,
+            setFormData(prev => ({
+                ...prev,
                 treatmentId: selected.id,
                 treatmentName: selected.name,
                 duration: selected.duration_minutes,
-                cost: selected.cost,
+                cost: selected.price,
                 requiredSkills: selected.required_skills || []
-            });
+            }));
         }
     };
 
@@ -768,6 +763,7 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null, init
                 treatment_name: formData.treatmentName,
                 treatment_id: formData.treatmentId || null,
                 required_skills: formData.requiredSkills || [],
+                additional_services: formData.additional_services || [],
                 cost: formData.cost,
                 status: editData ? editData.status : 'pending'
             };
@@ -1190,8 +1186,9 @@ const AddAppointmentModal = ({ isOpen, onClose, onRefresh, editData = null, init
                         </form>
                     </motion.div>
                 </div>
-            )}
-        </AnimatePresence>
+            )
+            }
+        </AnimatePresence >
     );
 };
 

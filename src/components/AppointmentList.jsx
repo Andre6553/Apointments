@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { format, isSameDay } from 'date-fns';
 import { useAuth } from '../hooks/useAuth';
 import AddAppointmentModal from './AddAppointmentModal';
-import { Edit2, Play, Square, AlertCircle, Clock, ArrowRight, Plus, Timer, Calendar as CalendarIcon, Loader2, CheckCircle2, Trash2, Sparkles, Globe, User } from 'lucide-react';
+import { Edit2, Play, Square, AlertCircle, Clock, ArrowRight, Plus, Timer, Calendar as CalendarIcon, Loader2, CheckCircle2, Trash2, Sparkles, Globe, User, History } from 'lucide-react';
 import TransferModal from './TransferModal';
 import CancelAppointmentModal from './CancelAppointmentModal';
 import AppointmentDetailsModal from './AppointmentDetailsModal';
@@ -208,6 +208,14 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
             if (viewMode === 'active') {
                 return allDocs.filter(a => a.status === 'active');
             }
+            if (viewMode === 'history') {
+                // History shows everything fetched (which is already filtered by status=completed)
+                // but we still respect the day view logic if we want to show day-by-day?
+                // The user said "last 5 days". 
+                // If we want to show a List of ALL history in the fetch window, we ignore getDayRange.
+                // Let's allow seeing everything in the buffer for now to give that "Recent History" feel.
+                return allDocs;
+            }
 
             const { start, end } = getDayRange(viewDate);
             return allDocs.filter(a => {
@@ -227,20 +235,37 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
                 provider:profiles!appointments_assigned_profile_id_fkey(full_name, skills, role), 
                 transfer_requests(id, status, receiver_id, sender_id)
             `)
-            .or(`status.eq.active,status.eq.pending`)
-            // Only limit by date if NOT in active view (Active view shows ALL active regardless of date)
             .order('scheduled_start', { ascending: true });
 
-        if (viewMode !== 'active') {
+        // MODE SWITCHING LOGIC
+        if (viewMode === 'history') {
+            // History View: Show ONLY completed items from the last 7 days (or selected window)
+            // We override the window to be strictly past if user hasn't selected a date manually? 
+            // Actually, let's respect the current viewDate but maybe widen the default fetch if needed.
+            // For now, let's stick to the windowStart/End strategy which is +/- 7 days.
+            // But we only want COMPLETED.
             query = query
                 .gte('scheduled_start', windowStart.toISOString())
-                .lte('scheduled_start', windowEnd.toISOString());
+                .lte('scheduled_start', windowEnd.toISOString())
+                .eq('status', 'completed');
+        } else if (viewMode === 'active') {
+            // Active View: Show ALL active/pending regardless of date? 
+            // Original logic had .or(active, pending) but let's stick to specific status
+            query = query.or(`status.eq.active,status.eq.pending`);
+            // Active view typically shows everything active globally, so we might skip date filtering?
+            // The original logic SKIPPED date filtering for 'active' mode.
+        } else {
+            // Standard Views (Global / My Clients): Show Pending/Active within date range
+            // HIDE completed to keep it clean.
+            query = query
+                .gte('scheduled_start', windowStart.toISOString())
+                .lte('scheduled_start', windowEnd.toISOString())
+                .or(`status.eq.active,status.eq.pending`);
         }
 
+        // PROVIDER FILTERING
         if (profile?.role?.toLowerCase() !== 'admin' || viewMode === 'my') {
             query = query.eq('assigned_profile_id', user?.id);
-        } else if (viewMode === 'active') {
-            query = query.eq('status', 'active');
         }
 
         const { data } = await query;
@@ -248,6 +273,7 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
             if (viewMode !== 'active') {
                 setCache(cacheKey, data);
             }
+            // For history view, we might want to ensure we don't filter out by time if it's the right day
             setAppointments(filterToView(data));
         }
         setLoading(false);
@@ -394,6 +420,20 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
                             <Sparkles size={16} />
                             <span>Active Sessions</span>
                         </button>
+                        <button
+                            onClick={() => {
+                                setViewMode('history');
+                                // Optional: Set viewDate to today so the fetch window covers "Recent" correctly
+                                setViewDate(new Date());
+                            }}
+                            className={`flex items-center gap-2 px-4 md:px-6 py-2.5 rounded-xl font-bold transition-all whitespace-nowrap ${viewMode === 'history'
+                                ? 'bg-indigo-500 text-white shadow-lg shadow-indigo-500/20'
+                                : 'text-slate-400 hover:text-white hover:bg-white/5'
+                                }`}
+                        >
+                            <History size={16} />
+                            <span>Recent History</span>
+                        </button>
                     </div>
                 </div>
             )}
@@ -411,7 +451,16 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
             />
             {selectedApt && <TransferModal isOpen={isTransferOpen} onClose={() => { setIsTransferOpen(false); setSelectedApt(null); }} appointment={selectedApt} onComplete={fetchAppointments} />}
             {selectedCancelApt && <CancelAppointmentModal isOpen={isCancelOpen} onClose={() => { setIsCancelOpen(false); setSelectedCancelApt(null); }} appointment={selectedCancelApt} onRefresh={fetchAppointments} />}
-            <AppointmentDetailsModal isOpen={isDetailsOpen} onClose={() => { setIsDetailsOpen(false); setSelectedAptDetails(null); }} appointment={selectedAptDetails} onStart={startAppointment} />
+            <AppointmentDetailsModal
+                isOpen={isDetailsOpen}
+                onClose={() => { setIsDetailsOpen(false); setSelectedAptDetails(null); }}
+                appointment={selectedAptDetails}
+                onStart={startAppointment}
+                onEdit={(apt) => {
+                    setEditData(apt);
+                    setIsModalOpen(true);
+                }}
+            />
 
             <div className="space-y-4">
                 {loading ? (
@@ -516,11 +565,16 @@ const AppointmentList = ({ virtualAssistantEnabled, assistantCountdown, isAssist
                                             {apt.status === 'active' && (
                                                 <div className="flex flex-col gap-2 w-full md:w-auto items-end">
                                                     <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-primary/20 border border-primary/20 text-primary text-[10px] font-bold uppercase tracking-widest animate-pulse mb-1"><div className="w-2 h-2 rounded-full bg-primary" />Live Session</div>
-                                                    <button onClick={() => endAppointment(apt.id)} className="w-full md:w-auto h-12 px-8 rounded-xl bg-gradient-to-r from-red-500 to-red-600 hover:from-red-400 hover:to-red-500 text-white font-bold transition-all shadow-lg shadow-red-500/20 active:scale-95 flex items-center justify-center gap-2"><Square size={16} className="fill-current animate-pulse" /><span>End Session</span></button>
+                                                    <div className="flex items-center gap-2 w-full md:w-auto">
+                                                        <button onClick={() => endAppointment(apt.id)} className="flex-1 md:w-auto h-12 px-8 rounded-xl bg-gradient-to-r from-red-500 to-red-600 hover:from-red-400 hover:to-red-500 text-white font-bold transition-all shadow-lg shadow-red-500/20 active:scale-95 flex items-center justify-center gap-2"><Square size={16} className="fill-current animate-pulse" /><span>End Session</span></button>
+                                                    </div>
                                                     <SessionTimer startTime={apt.actual_start} duration={apt.duration_minutes} />
                                                 </div>
                                             )}
-                                            {apt.status === 'completed' && <div className="flex items-center gap-2 text-emerald-400 font-bold bg-emerald-500/10 border border-emerald-500/20 px-6 py-3 rounded-xl shadow-[0_0_15px_rgba(16,185,129,0.1)]"><CheckCircle2 size={18} className="stroke-[3]" /><span className="text-sm">Completed</span></div>}
+                                            {apt.status === 'completed' && <div className="flex items-center gap-2">
+                                                <div className="flex items-center gap-2 text-emerald-400 font-bold bg-emerald-500/10 border border-emerald-500/20 px-6 py-3 rounded-xl shadow-[0_0_15px_rgba(16,185,129,0.1)]"><CheckCircle2 size={18} className="stroke-[3]" /><span className="text-sm">Completed</span></div>
+                                                <button onClick={() => { setEditData(apt); setIsModalOpen(true); }} className="p-3 rounded-xl bg-surface hover:bg-white/5 text-slate-500 hover:text-amber-400 border border-white/5 transition-all group" title="Edit Past Session"><Edit2 size={18} /></button>
+                                            </div>}
                                         </div>
                                     </div>
                                 </motion.div>

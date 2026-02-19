@@ -4,7 +4,7 @@ import { X, User, Calendar, Clock, Sparkles, CheckCircle2, AlertTriangle, Phone,
 import { format } from 'date-fns';
 import { supabase } from '../lib/supabase';
 
-const AppointmentDetailsModal = ({ isOpen, onClose, appointment, onStart }) => {
+const AppointmentDetailsModal = ({ isOpen, onClose, appointment, onStart, onEdit }) => {
     const [clientStats, setClientStats] = useState({ totalVisits: 0, lastVisit: null });
     const [loadingStats, setLoadingStats] = useState(false);
 
@@ -215,6 +215,18 @@ const AppointmentDetailsModal = ({ isOpen, onClose, appointment, onStart }) => {
                         {/* Footer / Actions */}
                         <div className="mt-8 pt-8 border-t border-white/5 flex gap-4">
                             {appointment.status === 'pending' && (
+                                <button
+                                    onClick={() => {
+                                        onEdit?.(appointment);
+                                        onClose();
+                                    }}
+                                    className="px-6 py-4 bg-surface hover:bg-indigo-500/10 text-slate-400 hover:text-indigo-400 font-bold rounded-2xl transition-all text-sm flex items-center gap-2 border border-white/5"
+                                >
+                                    <Edit2 size={16} /> Edit
+                                </button>
+                            )}
+
+                            {appointment.status === 'pending' && (
                                 <div className="flex-1 flex gap-3">
                                     <button
                                         onClick={() => {
@@ -229,7 +241,7 @@ const AppointmentDetailsModal = ({ isOpen, onClose, appointment, onStart }) => {
                             )}
                             <button
                                 onClick={onClose}
-                                className="px-8 py-4 bg-white/5 hover:bg-white/10 text-white font-bold rounded-2xl transition-all text-sm"
+                                className="px-8 py-4 bg-white/5 hover:bg-white/10 text-white font-bold rounded-2xl transition-all text-sm ml-auto"
                             >
                                 Close
                             </button>

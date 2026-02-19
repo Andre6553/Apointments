@@ -1,12 +1,14 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
-import { FileText, Download, Users, History, TrendingUp, Clock, AlertTriangle, CheckCircle2, Loader2, Calendar, ArrowRight, Shield, ShieldOff, Lock, Copy, Check } from 'lucide-react'
+import { FileText, Download, Users, History, TrendingUp, Clock, AlertTriangle, CheckCircle2, Loader2, Calendar, ArrowRight, Shield, ShieldOff, Lock, Copy, Check, Edit2 } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import { format, startOfDay, endOfDay, startOfWeek, endOfWeek, startOfMonth, endOfMonth } from 'date-fns'
 import { useAuth } from '../hooks/useAuth'
 import ReportPasswordScreen from './ReportPasswordScreen'
+import AddAppointmentModal from './AddAppointmentModal'
+import CompletedSessionModal from './CompletedSessionModal'
 
 const Reports = () => {
     const { user, profile, updateProfile } = useAuth()
@@ -18,6 +20,11 @@ const Reports = () => {
     const [isVerified, setIsVerified] = useState(false)
     const [togglingProtection, setTogglingProtection] = useState(false)
     const [copied, setCopied] = useState(false)
+
+    // Modal State
+    const [isAddModalOpen, setIsAddModalOpen] = useState(false) // Not used here but keeping if needed later or removing
+    const [isCompletedModalOpen, setIsCompletedModalOpen] = useState(false)
+    const [editData, setEditData] = useState(null)
 
     // Default to current month
     const [dateRange, setDateRange] = useState({
@@ -748,7 +755,16 @@ const Reports = () => {
                     ) : history.length === 0 ? (
                         <div className="px-6 py-12 text-center text-slate-500 italic">No history found for this range.</div>
                     ) : history.map(apt => (
-                        <div key={apt.id} className="p-4 space-y-3 active:bg-white/5 transition-colors">
+                        <div
+                            key={apt.id}
+                            onClick={() => {
+                                if (apt.status === 'completed') {
+                                    setEditData(apt)
+                                    setIsCompletedModalOpen(true)
+                                }
+                            }}
+                            className={`p-4 space-y-3 active:bg-white/5 transition-colors ${apt.status === 'completed' ? 'cursor-pointer' : ''}`}
+                        >
                             <div className="flex justify-between items-start">
                                 <div>
                                     <h4 className="font-bold text-white text-sm">{apt.client?.first_name} {apt.client?.last_name}</h4>
@@ -798,7 +814,22 @@ const Reports = () => {
                                             <span className="text-emerald-500 font-medium flex items-center gap-1 justify-end"><CheckCircle2 size={10} /> On Time</span>
                                         )
                                     ) : (
-                                        <span className="text-slate-500 italic text-[10px] truncate max-w-[100px] block">{apt.cancellation_reason || 'No reason'}</span>
+                                        <span className="text-slate-600">-</span>
+                                    )}
+
+                                    {apt.status === 'completed' && (
+                                        <button
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                console.log('Mobile Edit Button Clicked');
+                                                setEditData(apt);
+                                                setIsModalOpen(true);
+                                            }}
+                                            className="ml-2 p-1.5 hover:bg-white/10 rounded-lg text-slate-500 hover:text-white transition-colors"
+                                            title="Edit Appointment"
+                                        >
+                                            <Edit2 size={14} />
+                                        </button>
                                     )}
                                 </div>
                             </div>
@@ -808,36 +839,51 @@ const Reports = () => {
 
                 {/* Desktop Table (Hidden on mobile) */}
                 <div className="hidden md:block overflow-x-auto">
-                    <table className="w-full text-left">
-                        <thead className="text-xs uppercase tracking-wider text-slate-500 bg-black/20">
-                            <tr>
-                                <th className="px-6 py-4 font-bold">Date</th>
-                                <th className="px-6 py-4 font-bold">Client</th>
-                                <th className="px-6 py-4 font-bold">Treatment</th>
-                                <th className="px-6 py-4 font-bold">Cost</th>
-                                <th className="px-6 py-4 font-bold">Status</th>
-                                <th className="px-6 py-4 font-bold">Details</th>
-                                <th className="px-6 py-4 font-bold">Delay/Reason</th>
+                    <table className="w-full text-left border-collapse">
+                        <thead>
+                            <tr className="border-b border-white/5 text-[10px] font-black uppercase tracking-widest text-slate-500">
+                                <th className="p-4">Date/Time</th>
+                                <th className="p-4">Client</th>
+                                <th className="p-4">Provider</th>
+                                <th className="p-4">Treatment</th>
+                                <th className="p-4">Status</th>
+                                <th className="p-4 text-right">Cost</th>
+                                <th className="p-4 text-right">Performance</th>
+                                <th className="p-4 text-right">Actions</th>
                             </tr>
                         </thead>
-                        <tbody className="divide-y divide-white/5">
+                        <tbody className="divide-y divide-white/5 text-sm font-medium text-slate-300">
                             {loading ? (
-                                <tr><td colSpan="6" className="px-6 py-12 text-center text-slate-500 italic flex justify-center items-center gap-2"><Loader2 className="animate-spin" /> gathering history...</td></tr>
+                                <tr>
+                                    <td colSpan="8" className="p-8 text-center text-slate-500 italic"><div className="flex justify-center items-center gap-2"><Loader2 className="animate-spin" /> gathering history...</div></td>
+                                </tr>
                             ) : history.length === 0 ? (
-                                <tr><td colSpan="6" className="px-6 py-12 text-center text-slate-500 italic">No history found for this range.</td></tr>
+                                <tr>
+                                    <td colSpan="8" className="p-8 text-center text-slate-500 italic">No history found for this range.</td>
+                                </tr>
                             ) : history.map(apt => (
-                                <tr key={apt.id} className="hover:bg-white/5 transition-colors group">
-                                    <td className="px-6 py-4 text-sm font-medium text-slate-300">
-                                        <div className="flex items-center gap-2">
-                                            <Calendar size={14} className="text-slate-500" />
-                                            {format(new Date(apt.scheduled_start), 'MMM dd, HH:mm')}
+                                <tr
+                                    key={apt.id}
+                                    onClick={() => {
+                                        if (apt.status === 'completed') {
+                                            setEditData(apt)
+                                            setIsCompletedModalOpen(true)
+                                        }
+                                    }}
+                                    className={`hover:bg-white/[0.02] transition-colors group ${apt.status === 'completed' ? 'cursor-pointer' : ''}`}
+                                >
+                                    <td className="p-4 whitespace-nowrap text-white font-bold">{format(new Date(apt.scheduled_start), 'MMM dd, HH:mm')}</td>
+                                    <td className="p-4 font-bold text-white">{apt.client?.first_name} {apt.client?.last_name}</td>
+                                    <td className="p-4">
+                                        <div className="flex flex-col">
+                                            <span>{apt.provider?.full_name || '-'}</span>
+                                            {apt.original_provider && <span className="text-[9px] text-indigo-400 uppercase font-bold">From {apt.original_provider.full_name}</span>}
+                                            {apt.status === 'shifted' && apt.provider && <span className="text-[9px] text-rose-400 uppercase font-bold">To {apt.provider.full_name}</span>}
                                         </div>
                                     </td>
-                                    <td className="px-6 py-4 text-sm font-bold text-white">{apt.client?.first_name} {apt.client?.last_name}</td>
-                                    <td className="px-6 py-4 text-sm text-slate-400 font-medium">{apt.treatment_name || '-'}</td>
-                                    <td className="px-6 py-4 text-emerald-400 font-bold">{profile?.currency_symbol || '$'}{apt.cost || 0}</td>
-                                    <td className="px-6 py-4">
-                                        <span className={`text-[10px] px-2.5 py-1 rounded-full uppercase font-bold tracking-widest border ${apt.status === 'completed' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' :
+                                    <td className="p-4 table-cell max-w-[200px] truncate"><span className="text-xs uppercase tracking-wide opacity-80" title={apt.treatment_name}>{apt.treatment_name || '-'}</span></td>
+                                    <td className="p-4">
+                                        <span className={`text-[9px] px-2 py-0.5 rounded-full uppercase font-black tracking-widest border ${apt.status === 'completed' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' :
                                             apt.status === 'active' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' :
                                                 apt.status === 'cancelled' ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' :
                                                     apt.status === 'noshow' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' :
@@ -847,32 +893,33 @@ const Reports = () => {
                                             {apt.status}
                                         </span>
                                     </td>
-                                    <td className="px-6 py-4 min-w-[150px]">
-                                        {apt.original_provider ? (
-                                            <div className="flex items-center gap-1.5">
-                                                <ArrowRight size={10} className="text-indigo-400" />
-                                                <span className="text-[11px] text-slate-400 font-medium">From <span className="text-indigo-400 font-bold">{apt.original_provider.full_name}</span></span>
-                                            </div>
-                                        ) : apt.status === 'shifted' && apt.provider ? (
-                                            <div className="flex items-center gap-1.5">
-                                                <ArrowRight size={10} className="text-rose-400 rotate-180" />
-                                                <span className="text-[11px] text-slate-400 font-medium">To <span className="text-rose-400 font-bold">{apt.provider.full_name}</span></span>
-                                            </div>
-                                        ) : (
-                                            <span className="text-[10px] text-slate-600 italic">Direct booking</span>
-                                        )}
-                                    </td>
-                                    <td className="px-6 py-4">
+                                    <td className="p-4 text-right font-bold text-emerald-400">{profile?.currency_symbol || '$'}{apt.cost || 0}</td>
+                                    <td className="p-4 text-right">
                                         {apt.status === 'completed' || apt.status === 'active' ? (
                                             apt.delay_minutes > 5 ? (
-                                                <span className="text-rose-400 font-bold flex items-center gap-1"><AlertTriangle size={12} /> +{apt.delay_minutes}m</span>
+                                                <span className="text-rose-400 font-bold flex items-center gap-1 justify-end"><AlertTriangle size={14} /> +{apt.delay_minutes}m</span>
                                             ) : apt.delay_minutes > 0 ? (
-                                                <span className="text-amber-400 font-medium h-[24px] flex items-center">+{apt.delay_minutes}m</span>
+                                                <span className="text-amber-400 font-medium flex items-center justify-end">+{apt.delay_minutes}m</span>
                                             ) : (
-                                                <span className="text-emerald-500 font-medium flex items-center gap-1"><CheckCircle2 size={12} /> On Time</span>
+                                                <span className="text-emerald-500 font-medium flex items-center gap-1 justify-end"><CheckCircle2 size={14} /> On Time</span>
                                             )
                                         ) : (
                                             <span className="text-slate-500 italic text-xs">{apt.cancellation_reason || 'No reason provided'}</span>
+                                        )}
+                                    </td>
+                                    <td className="p-4 text-right">
+                                        {apt.status === 'completed' && (
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation(); // Prevent double trigger
+                                                    setEditData(apt);
+                                                    setIsCompletedModalOpen(true);
+                                                }}
+                                                className="p-2 hover:bg-white/10 rounded-lg text-slate-500 hover:text-white transition-colors"
+                                                title="Edit Appointment"
+                                            >
+                                                <Edit2 size={14} />
+                                            </button>
                                         )}
                                     </td>
                                 </tr>
@@ -881,6 +928,12 @@ const Reports = () => {
                     </table>
                 </div>
             </motion.div>
+            <CompletedSessionModal
+                isOpen={isCompletedModalOpen}
+                onClose={() => { setIsCompletedModalOpen(false); setEditData(null); }}
+                onRefresh={fetchHistory}
+                appointment={editData}
+            />
         </div>
     )
 }
